@@ -33,6 +33,7 @@
 (declare-function efrit-do--start-async-session "efrit-do")
 (declare-function efrit-session-id "efrit-session")
 (declare-function efrit-agent--begin-session "efrit-agent-core")
+(declare-function efrit-agent-toggle-expand "efrit-agent")
 
 ;;; REPL Session State
 ;;
@@ -236,15 +237,20 @@ Key bindings:
     (efrit-agent--setup-completion)))
 
 (defun efrit-agent-input-send-or-newline ()
-  "Send input if on a single line, otherwise insert newline.
-Use S-RET to always insert a newline."
+  "RET, context-sensitive.
+In the conversation region: toggle the tool call at point, as the
+help text has always promised.  In the input region: send the input
+if it is a single line, otherwise insert a newline.  Use S-RET to
+always insert a newline."
   (interactive)
-  (let ((input (efrit-agent--get-input)))
-    (if (and input (not (string-match-p "\n" input)))
-        ;; Single line - send it
-        (efrit-agent-input-send)
-      ;; Multi-line or empty - insert newline
-      (newline))))
+  (if (not (efrit-agent--in-input-region-p))
+      (efrit-agent-toggle-expand)
+    (let ((input (efrit-agent--get-input)))
+      (if (and input (not (string-match-p "\n" input)))
+          ;; Single line - send it
+          (efrit-agent-input-send)
+        ;; Multi-line or empty - insert newline
+        (newline)))))
 
 (defun efrit-agent-input-send ()
   "Send the current input using the persistent REPL session model.

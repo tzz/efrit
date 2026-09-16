@@ -39,28 +39,8 @@
 
 ;;; Diff Generation
 
-(defun efrit-tool-edit-file--generate-diff (old-content new-content file-path)
-  "Generate a unified diff between OLD-CONTENT and NEW-CONTENT.
-FILE-PATH is used for the diff header."
-  (let ((old-file (make-temp-file "efrit-old-"))
-        (new-file (make-temp-file "efrit-new-"))
-        diff-output)
-    (unwind-protect
-        (progn
-          (with-temp-file old-file
-            (insert old-content))
-          (with-temp-file new-file
-            (insert new-content))
-          (with-temp-buffer
-            (call-process "diff" nil t nil
-                          "-u"
-                          "--label" (format "a/%s" (file-name-nondirectory file-path))
-                          "--label" (format "b/%s" (file-name-nondirectory file-path))
-                          old-file new-file)
-            (setq diff-output (buffer-string))))
-      (delete-file old-file)
-      (delete-file new-file))
-    diff-output))
+(define-obsolete-function-alias 'efrit-tool-edit-file--generate-diff
+  #'efrit-tool-unified-diff "0.5.0")
 
 ;;; Main Implementation
 
@@ -167,7 +147,7 @@ Returns a standard tool response with diff showing changes."
                                (buffer-string))))
 
             ;; Generate diff before saving
-            (let ((diff-output (efrit-tool-edit-file--generate-diff
+            (let ((diff-output (efrit-tool-unified-diff
                                 original-content new-content path)))
 
               ;; Write the new content

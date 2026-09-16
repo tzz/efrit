@@ -331,15 +331,6 @@ Status is shown in the header-line at top of window.
         (efrit-agent--refresh-status-line))
     (message "No active session to cancel")))
 
-(defun efrit-agent-pause ()
-  "Pause the current session.
-Note: Currently Efrit sessions can only be paused by Claude
-requesting user input. Arbitrary pause/resume is not yet supported."
-  (interactive)
-  (if (eq efrit-agent--status 'working)
-      (message "Arbitrary pause not yet implemented. Sessions pause when waiting for user input.")
-    (message "Session is not currently working")))
-
 (defun efrit-agent-resume ()
   "Resume a paused/waiting session by prompting for user input.
 If the session is waiting for user input, prompts for a response."

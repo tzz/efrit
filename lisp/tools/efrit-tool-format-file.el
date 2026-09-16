@@ -55,42 +55,8 @@ The file path is appended to the command."
 
 ;;; Diff Generation
 
-(defun efrit-tool-format-file--generate-diff (old-content new-content file-path)
-  "Generate a unified diff between OLD-CONTENT and NEW-CONTENT.
-FILE-PATH is used for the diff header."
-  (let ((old-file (make-temp-file "efrit-old-"))
-        (new-file (make-temp-file "efrit-new-"))
-        diff-output)
-    (unwind-protect
-        (progn
-          (with-temp-file old-file
-            (insert old-content))
-          (with-temp-file new-file
-            (insert new-content))
-          (with-temp-buffer
-            (call-process "diff" nil t nil
-                          "-u"
-                          "--label" (format "a/%s" (file-name-nondirectory file-path))
-                          "--label" (format "b/%s" (file-name-nondirectory file-path))
-                          old-file new-file)
-            (setq diff-output (buffer-string))))
-      (delete-file old-file)
-      (delete-file new-file))
-    diff-output))
-
-;;; Formatter Detection
-
-(defun efrit-tool-format-file--find-formatter (file-path)
-  "Find the appropriate formatter for FILE-PATH.
-Returns (COMMAND . ARGS) or nil if no formatter found."
-  (let ((filename (file-name-nondirectory file-path)))
-    (cl-loop for (pattern . cmd) in efrit-tool-format-file-formatters
-             when (string-match-p pattern filename)
-             return cmd)))
-
-(defun efrit-tool-format-file--elisp-file-p (file-path)
-  "Return non-nil if FILE-PATH is an Emacs Lisp file."
-  (string-match-p "\\.el$" file-path))
+(defalias 'efrit-tool-format-file--generate-diff #'efrit-tool-unified-diff
+  "Obsolete: use `efrit-tool-unified-diff'.")
 
 ;;; Elisp Formatting
 

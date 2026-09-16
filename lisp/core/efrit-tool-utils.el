@@ -468,6 +468,32 @@ Returns a plist with:
       (when (file-exists-p stderr-file)
         (delete-file stderr-file)))))
 
+;;; Unified diff between two strings
+
+(defun efrit-tool-unified-diff (old-content new-content file-path)
+  "Return a unified diff of OLD-CONTENT -> NEW-CONTENT labelled with FILE-PATH.
+Runs the local `diff' on local temp files (the inputs are strings, so
+this is host-independent).  Returns \"\" if diff is unavailable."
+  (if (not (executable-find "diff"))
+      ""
+    (let ((old-file (make-temp-file "efrit-old-"))
+          (new-file (make-temp-file "efrit-new-"))
+          (label (file-name-nondirectory (efrit-tool-local-name file-path))))
+      (unwind-protect
+          (progn
+            (with-temp-file old-file (insert old-content))
+            (with-temp-file new-file (insert new-content))
+            (with-temp-buffer
+              ;; Force the local host even if default-directory is remote
+              (let ((default-directory temporary-file-directory))
+                (call-process "diff" nil t nil "-u"
+                              "--label" (concat "a/" label)
+                              "--label" (concat "b/" label)
+                              old-file new-file))
+              (buffer-string)))
+        (delete-file old-file)
+        (delete-file new-file)))))
+
 ;;; Binary File Detection
 
 (defconst efrit-tool-binary-extensions

@@ -75,12 +75,12 @@ The agent buffer provides a conversation-style REPL where you can:
 - Have your context maintained across multiple commands
 
 Keybindings in the agent buffer:
-  RET       - Toggle tool call expansion
+  RET       - Send input (in the input area) / toggle tool call (in the conversation)
   TAB       - Next section
   Shift-TAB - Previous section
-  n/p       - Next/previous tool call
-  k         - Cancel current session
-  ?         - Show help
+  M-n/M-p   - Next/previous tool call
+  C-c C-k   - Cancel current session
+  C-c ?     - Show help
 
 Use M-x efrit-help for more information."
   (interactive)
