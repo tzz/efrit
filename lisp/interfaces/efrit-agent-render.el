@@ -20,6 +20,8 @@
 (require 'cl-lib)
 (require 'efrit-agent-core)
 (require 'efrit-usage)
+(declare-function efrit-agent-svg-header "efrit-agent-svg-header")
+(declare-function efrit-agent-svg--resize "efrit-agent-svg-header")
 
 (defvar efrit-agent--repl-session)
 (declare-function efrit-repl-session-id "efrit-repl-session")
@@ -322,8 +324,12 @@ Shows: status │ elapsed │ mode │ verbosity │ tool count │ hints"
     (efrit-usage-indicator id)))
 
 (defun efrit-agent--setup-header-line ()
-  "Set up the header-line for the agent buffer."
-  (setq header-line-format '(:eval (efrit-agent--format-header-line))))
+  "Set up the header-line for the agent buffer.
+`efrit-agent-svg-header' picks the graphical or text rendering per
+`efrit-agent-header-style'."
+  (require 'efrit-agent-svg-header)
+  (setq header-line-format '(:eval (efrit-agent-svg-header)))
+  (add-hook 'window-configuration-change-hook #'efrit-agent-svg--resize nil t))
 
 ;;; UI Helpers
 

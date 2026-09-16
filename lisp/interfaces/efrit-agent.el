@@ -35,6 +35,7 @@
 (require 'cl-lib)
 (require 'efrit-agent-core)
 (require 'efrit-agent-render)
+(require 'efrit-agent-svg-header)
 (require 'efrit-agent-tools)
 (require 'efrit-agent-input)
 (require 'efrit-agent-integration)
@@ -265,6 +266,7 @@
     (define-key map (kbd "C-c C-d") #'efrit-agent-collapse-all)
     (define-key map (kbd "C-c C-v") #'efrit-agent-cycle-verbosity)
     (define-key map (kbd "C-c C-o") #'efrit-agent-cycle-display-mode)
+    (define-key map (kbd "C-c C-l") #'efrit-agent-cycle-header-style)
 
     ;; Input handling
     (define-key map (kbd "C-c C-s") #'efrit-agent-send-input)
