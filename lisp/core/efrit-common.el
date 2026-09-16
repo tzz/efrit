@@ -56,6 +56,22 @@ Set to nil (the default) to use the centralized configuration."
                  (string :tag "Legacy full URL override"))
   :group 'efrit)
 
+(defcustom efrit-api-auth-scheme 'x-api-key
+  "How the API key is presented to the endpoint.
+
+- `x-api-key': Anthropic's native scheme; the key is sent in an
+  `x-api-key' header and must look like an Anthropic key (`sk-...').
+- `bearer': send `Authorization: Bearer KEY' and skip Anthropic key
+  format validation.  Use this for LLM proxies (LiteLLM, Bifrost,
+  OpenRouter, ...) that expose the Anthropic Messages API behind
+  their own token scheme.  Point `efrit-api-base-url' at the proxy's
+  Anthropic-compatible base.
+
+Custom headers from `efrit-api-custom-headers' still override either."
+  :type '(choice (const :tag "x-api-key (Anthropic)" x-api-key)
+                 (const :tag "Authorization: Bearer (proxies)" bearer))
+  :group 'efrit)
+
 (defcustom efrit-api-auth-source-host "api.anthropic.com"
   "Host to use for auth-source lookup of API key."
   :type 'string
@@ -67,13 +83,17 @@ Set to nil (the default) to use the centralized configuration."
   :group 'efrit)
 
 (defun efrit-common--validate-api-key (key)
-  "Validate that KEY looks like a valid Anthropic API key.
-Returns t if valid, signals error if not."
+  "Validate that KEY is usable under `efrit-api-auth-scheme'.
+Returns t if valid, signals error if not.  Under `x-api-key' the key
+must look like an Anthropic key; under `bearer' any non-empty string
+is accepted, since proxy tokens have arbitrary formats."
   (when (or (not (stringp key))
-            (string-empty-p key)
-            (< (length key) 20)
-            (not (string-prefix-p "sk-" key)))
-    (error "Invalid API key format. Anthropic keys should start with 'sk-' and be at least 20 characters"))
+            (string-empty-p key))
+    (error "API key is empty or not a string"))
+  (when (and (eq efrit-api-auth-scheme 'x-api-key)
+             (or (< (length key) 20)
+                 (not (string-prefix-p "sk-" key))))
+    (error "Invalid API key format. Anthropic keys should start with 'sk-' and be at least 20 characters (set `efrit-api-auth-scheme' to `bearer' for proxy tokens)"))
   t)
 
 (defun efrit-common--sanitize-key-for-logging (key)
@@ -207,28 +227,36 @@ Validates key format and throws error if not found."
 (defun efrit-common-get-base-url ()
   "Get the configured base URL for API endpoints.
 Handles both static strings and dynamic functions."
-  (cond
-   ((stringp efrit-api-base-url) efrit-api-base-url)
-   ((functionp efrit-api-base-url) (funcall efrit-api-base-url))
-   (t "https://api.anthropic.com")))
+  ;; Proxies often hand out bases with a trailing slash
+  ;; (e.g. "https://gw.example.com/anthropic/"); strip it so the
+  ;; "/v1/messages" suffix doesn't produce "//".
+  (string-remove-suffix
+   "/"
+   (cond
+    ((stringp efrit-api-base-url) efrit-api-base-url)
+    ((functionp efrit-api-base-url) (funcall efrit-api-base-url))
+    (t "https://api.anthropic.com"))))
 
 (defun efrit-common-get-api-url ()
   "Get the full API URL for messages endpoint."
   (concat (efrit-common-get-base-url) "/v1/messages"))
 
-(defconst efrit-common-api-version "2023-06-01" 
+(defconst efrit-common-api-version "2023-06-01"
   "Anthropic API version for all requests.")
+
+(defun efrit-common-auth-header (api-key)
+  "Return the (NAME . VALUE) auth header for API-KEY per `efrit-api-auth-scheme'."
+  (pcase efrit-api-auth-scheme
+    ('bearer (cons "authorization" (concat "Bearer " api-key)))
+    (_ (cons "x-api-key" api-key))))
 
 (defun efrit-common-build-headers (api-key)
   "Build standard HTTP headers using API-KEY with security validation."
   ;; Validate the API key before using it
   (efrit-common--validate-api-key api-key)
-  
-  ;; Build headers (API key will not be logged due to validation above)
   `(("Content-Type" . "application/json")
     ("anthropic-version" . ,efrit-common-api-version)
-    ("x-api-key" . ,api-key)
-    ("anthropic-beta" . "max-tokens-3-5-sonnet-2024-07-15")))
+    ,(efrit-common-auth-header api-key)))
 
 ;;; Error Handling
 

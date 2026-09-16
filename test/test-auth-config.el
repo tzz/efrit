@@ -92,6 +92,25 @@
   (should-error (efrit-common--validate-api-key "") :type 'error)
   (should-error (efrit-common--validate-api-key nil) :type 'error))
 
+(ert-deftest test-auth-config-bearer-scheme ()
+  "Under `bearer', arbitrary proxy tokens are accepted and sent as Authorization."
+  (let ((efrit-api-auth-scheme 'bearer))
+    (should (efrit-common--validate-api-key "proxy-token"))
+    (should-error (efrit-common--validate-api-key "") :type 'error)
+    (let ((headers (efrit-common-build-headers "proxy-token")))
+      (should (equal (cdr (assoc "authorization" headers)) "Bearer proxy-token"))
+      (should-not (assoc "x-api-key" headers))))
+  (let ((efrit-api-auth-scheme 'x-api-key))
+    (let ((headers (efrit-common-build-headers "sk-valid-key-1234567890abcdef")))
+      (should (equal (cdr (assoc "x-api-key" headers)) "sk-valid-key-1234567890abcdef"))
+      (should-not (assoc "authorization" headers)))))
+
+(ert-deftest test-auth-config-base-url-trailing-slash ()
+  "A base URL with a trailing slash must not yield a double slash."
+  (let ((efrit-api-base-url "https://gw.example.com/anthropic/"))
+    (should (string= (efrit-common-get-api-url)
+                     "https://gw.example.com/anthropic/v1/messages"))))
+
 ;; Integration test
 (ert-deftest test-auth-config-full-integration ()
   "Test full authentication and URL configuration integration."

@@ -52,11 +52,9 @@ Example: \\='(\"anthropic-version\" \"anthropic-beta\")"
   "Build HTTP headers for API requests with API-KEY.
 Applies header customization from `efrit-api-custom-headers' and
 `efrit-api-excluded-headers'."
-  (efrit-common--validate-api-key api-key)
-  (let ((default-headers `(("x-api-key" . ,api-key)
-                           ("anthropic-version" . ,efrit-common-api-version)
-                           ("anthropic-beta" . "max-tokens-3-5-sonnet-2024-07-15")
-                           ("content-type" . "application/json"))))
+  ;; efrit-common-build-headers validates the key and picks the auth
+  ;; scheme (x-api-key vs. Authorization: Bearer for proxies).
+  (let ((default-headers (efrit-common-build-headers api-key)))
     ;; Remove excluded headers
     (when efrit-api-excluded-headers
       (setq default-headers
