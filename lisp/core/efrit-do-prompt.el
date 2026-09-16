@@ -15,6 +15,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'efrit-log)
 
 ;; Forward declarations for functions used from efrit-do.el
 (declare-function efrit-do--get-context-items "efrit-do")
@@ -29,6 +30,49 @@
 (defvar efrit-do--last-result)
 (defvar efrit-do-max-retries)
 (defvar efrit-project-root)
+
+;;; Extension hook
+
+(defcustom efrit-system-prompt-functions nil
+  "Abnormal hook returning extra text for the system prompt.
+
+Each function is called with one argument, SESSION-ID (a string, or
+nil for a fresh one-shot command), and should return a string to
+append to the system prompt, or nil to contribute nothing.  Results
+are joined with blank lines and placed after the project's
+AGENTS.md/CLAUDE.md instructions, before the closing reminder.
+
+Use this for site- or user-specific standing instructions (\"we use
+British spelling\", \"our git remotes live on host X\"), for
+per-mode guidance, or to inject a harness.  Functions run on every
+API call, so they should be cheap and must not signal: an error is
+logged and that function's contribution is dropped.
+
+Example:
+  (add-hook \\='efrit-system-prompt-functions
+            (lambda (_id)
+              (when (derived-mode-p \\='org-mode)
+                \"The user is in an Org buffer; prefer org-* functions.\")))"
+  :type 'hook
+  :group 'efrit)
+
+(defun efrit-do--run-system-prompt-functions (session-id)
+  "Collect non-nil contributions from `efrit-system-prompt-functions'.
+Returns a string (possibly empty) ready to splice into the prompt."
+  (let ((parts nil))
+    (dolist (fn efrit-system-prompt-functions)
+      (condition-case err
+          (let ((text (funcall fn session-id)))
+            (when (and (stringp text) (not (string-empty-p text)))
+              (push text parts)))
+        (error
+         (efrit-log 'warn "efrit-system-prompt-functions: %S signalled: %s"
+                    fn (error-message-string err)))))
+    (if parts
+        (concat "\n\nADDITIONAL INSTRUCTIONS:\n"
+                (mapconcat #'identity (nreverse parts) "\n\n")
+                "\n\n")
+      "")))
 
 (defun efrit-do--session-protocol-instructions ()
   "Return detailed instructions for Claude about the session protocol."
@@ -188,29 +232,6 @@
    "  - eval_sexp: (byte-compile-file \"path.el\") to check for errors\n"
    "  - eval_sexp: (load-file \"path.el\") to test loading\n"
    "  - get_diagnostics after editing to check for issues\n\n"))
-
-(defun efrit-do--classify-task-complexity (command)
-  "Classify COMMAND as simple or complex based on content analysis.
-Returns \\='simple for single-action tasks, \\='complex for multi-step workflows."
-  (let ((simple-patterns '("open" "find" "goto" "show" "display" "list" 
-                           "create buffer" "insert" "delete" "replace"
-                           "navigate" "search" "close" "save"))
-        (complex-patterns '("fix all" "organize" "process each" "download"
-                           "batch" "multiple" "series" "workflow" "pipeline"
-                           "for each" "all.*and.*" "scan.*then.*")))
-    (cond
-     ;; Check for complex indicators
-     ((cl-some (lambda (pattern) 
-                 (string-match-p pattern (downcase command))) 
-               complex-patterns)
-      'complex)
-     ;; Check for simple indicators  
-     ((cl-some (lambda (pattern)
-                 (string-match-p pattern (downcase command)))
-               simple-patterns)
-      'simple)
-     ;; Default to simple for ambiguous cases
-     (t 'simple))))
 
 (defun efrit-do--remote-root-guidance ()
   "Return prompt text describing a remote (Tramp) project root, or \"\".
@@ -439,7 +460,10 @@ If SESSION-ID is provided, include session continuation protocol with WORK-LOG."
           
           ;; Include project-specific agent instructions (AGENTS.md/CLAUDE.md)
           (efrit-tool--format-agent-instructions-for-prompt)
-          
+
+          ;; User/site extension point
+          (efrit-do--run-system-prompt-functions session-id)
+
           "Remember: Generate safe, valid Elisp and execute immediately."
           (or context-info "")
           (or retry-info "")
