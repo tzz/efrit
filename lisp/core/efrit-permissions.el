@@ -52,6 +52,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'efrit-log)
+(require 'efrit-events)
 
 (declare-function efrit-tool-audit "efrit-tool-utils")
 (declare-function efrit-tool--get-project-root "efrit-tool-utils")
@@ -291,6 +292,8 @@ and writes an audit entry for every gated decision."
         (efrit-tool-audit tool (if (hash-table-p input) input (list :input input))
                           (if (eq decision 'allow) :permitted :denied)))
       (efrit-log 'info "permission %s: %s (%s)" decision tool class)
+      (efrit-publish 'permission `((:session-id . ,session-id)
+                                   (:tool . ,tool) (:decision . ,decision)))
       decision)))
 
 (defconst efrit-permission-denied-result

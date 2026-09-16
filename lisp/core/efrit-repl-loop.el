@@ -34,6 +34,7 @@
 (require 'efrit-repl-session)
 (require 'efrit-loop)
 (require 'efrit-context-sources)
+(require 'efrit-events)
 
 (declare-function efrit-agent-set-status "efrit-agent")
 (declare-function efrit-agent--add-error-message "efrit-agent-render")
@@ -141,6 +142,8 @@ Returns the session ID."
 
       ;; Begin the turn
       (efrit-repl-session-begin-turn session)
+      (efrit-publish 'turn-start `((:session-id . ,session-id)
+                                   (:input . ,user-input)))
 
       ;; Update agent buffer status
       (when (fboundp 'efrit-agent-set-status)

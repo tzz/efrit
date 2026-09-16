@@ -46,6 +46,7 @@
 (require 'efrit-api)
 (require 'efrit-chat-response)
 (require 'efrit-permissions)   ; efrit-permission-denied-result
+(require 'efrit-events)
 
 (declare-function efrit-do--execute-tool "efrit-do-dispatch")
 (declare-function efrit-do--command-system-prompt "efrit-do-prompt")
@@ -106,6 +107,11 @@ CALLBACK and does the remhash)."
 REASON is the engine's stop reason; the adapter translates it to its
 own conventions.  ERROR-MESSAGE and COMPLETION-MESSAGE are surfaced to
 the user where the session type supports it."
+  (efrit-publish 'turn-complete
+                 `((:session-id . ,(funcall (efrit-loop-adapter-id-fn adapter) session))
+                   (:stop-reason . ,reason)
+                   (:error-message . ,error-message)
+                   (:completion-message . ,completion-message)))
   (funcall (efrit-loop-adapter-finish-fn adapter)
            session reason error-message completion-message))
 
@@ -154,6 +160,8 @@ the next API request."
                    (efrit-loop-adapter-state-hash adapter))
           (efrit-log 'debug "%s %s: sending request (iteration %d)"
                      name session-id (1+ iteration-count))
+          (efrit-publish 'api-request `((:session-id . ,session-id)
+                                        (:iteration . ,(1+ iteration-count))))
           (efrit-loop--send-request session adapter)))))))
 
 ;;; Request / Response
@@ -238,6 +246,10 @@ response's stop_reason."
                  (gethash "output_tokens" usage)
                  (gethash "cache_creation_input_tokens" usage)
                  (gethash "cache_read_input_tokens" usage)))
+    (efrit-publish 'api-response
+                   `((:session-id . ,session-id)
+                     (:usage . ,(efrit-response-usage response))
+                     (:stop-reason . ,(efrit-response-stop-reason response))))
     (let ((content (efrit-response-content response))
           (stop-reason (efrit-response-stop-reason response)))
       (when content
@@ -316,6 +328,8 @@ continues the loop."
               (funcall fn session tool-name))
             (efrit-loop--event adapter session-id 'tool_started
                                `((:tool . ,tool-name) (:input . ,input)))
+            (efrit-publish 'tool-start `((:session-id . ,session-id)
+                                         (:tool . ,tool-name) (:input . ,input)))
             ;; Show tool start in agent buffer and track time
             (let ((agent-tool-id (when (fboundp 'efrit-agent-show-tool-start)
                                    (efrit-agent-show-tool-start tool-name input)))
@@ -336,6 +350,11 @@ continues the loop."
                                    `((:tool . ,tool-name)
                                      (:result . ,tool-result)
                                      (:success . ,(not is-error))))
+                (efrit-publish 'tool-result `((:session-id . ,session-id)
+                                              (:tool . ,tool-name)
+                                              (:result . ,tool-result)
+                                              (:success . ,(not is-error))
+                                              (:elapsed . ,elapsed-secs)))
                 (when (and agent-tool-id (fboundp 'efrit-agent-show-tool-result))
                   (efrit-agent-show-tool-result agent-tool-id tool-result
                                                 (not is-error) elapsed-secs))

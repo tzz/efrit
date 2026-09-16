@@ -19,6 +19,10 @@
 
 (require 'cl-lib)
 (require 'efrit-agent-core)
+(require 'efrit-usage)
+
+(defvar efrit-agent--repl-session)
+(declare-function efrit-repl-session-id "efrit-repl-session")
 
 ;;; Message Rendering
 ;;
@@ -292,6 +296,9 @@ Shows: status │ elapsed │ mode │ verbosity │ tool count │ hints"
      (when (> tool-count 0)
        (concat sep (propertize (format "%d tools" tool-count)
                                'face 'efrit-agent-session-id)))
+     ;; Live context-window usage from the API's own numbers
+     (when-let* ((usage (efrit-agent--usage-segment)))
+       (concat sep usage))
      ;; Show action hints based on status
      (pcase efrit-agent--status
        ('idle
@@ -304,6 +311,15 @@ Shows: status │ elapsed │ mode │ verbosity │ tool count │ hints"
         (concat sep (propertize "k:cancel M:mode ?:help"
                                 'face 'efrit-agent-timestamp)))
        (_ "")))))
+
+(defun efrit-agent--usage-segment ()
+  "Token usage indicator for this buffer's session, or nil."
+  (when-let* ((id (cond ((and (boundp 'efrit-agent--repl-session)
+                              efrit-agent--repl-session
+                              (fboundp 'efrit-repl-session-id))
+                         (efrit-repl-session-id efrit-agent--repl-session))
+                        (efrit-agent--session-id))))
+    (efrit-usage-indicator id)))
 
 (defun efrit-agent--setup-header-line ()
   "Set up the header-line for the agent buffer."
