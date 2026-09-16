@@ -33,6 +33,7 @@
 (require 'efrit-config)
 (require 'efrit-repl-session)
 (require 'efrit-loop)
+(require 'efrit-context-sources)
 
 (declare-function efrit-agent-set-status "efrit-agent")
 (declare-function efrit-agent--add-error-message "efrit-agent-render")
@@ -111,6 +112,11 @@ requiring an active efrit-do session (ef-dcn).")
 Adds the user message to the session and runs the agentic loop.
 Optional ON-TURN-COMPLETE callback is called when Claude finishes the turn.
 
+An editor-context snapshot (`efrit-context-sources') of the buffer
+the user is working in is taken now, at submit time, and prepended to
+the copy of USER-INPUT sent to the API; the conversation shows the
+plain input.
+
 Unlike \\='efrit-do-async-loop\\=', this does not complete the session.
 Instead, it transitions to idle state, preserving conversation context
 for the next input.
@@ -123,8 +129,15 @@ Returns the session ID."
         (efrit-log 'warn "REPL session %s already working, ignoring input" session-id)
         (user-error "Session is already processing a request"))
 
-      ;; Add user message to session
-      (efrit-repl-session-add-user-message session user-input)
+      ;; Add user message to session, with the editor snapshot for the API
+      (efrit-repl-session-add-user-message
+       session user-input
+       (condition-case err
+           (efrit-context-wrap-user-input user-input)
+         (error
+          (efrit-log 'warn "REPL session %s: context snapshot failed: %s"
+                     session-id (error-message-string err))
+          nil)))
 
       ;; Begin the turn
       (efrit-repl-session-begin-turn session)

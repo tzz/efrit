@@ -113,6 +113,7 @@
     ("undo_edit"          . (efrit-do--handle-undo-edit . :tool-input))
     ("edit_file"          . (efrit-do--handle-edit-file . :tool-input))
     ("create_file"        . (efrit-do--handle-create-file . :tool-input))
+    ("editor_state"       . (efrit-do--handle-editor-state . :tool-input))
     ("file_info"          . (efrit-do--handle-file-info . :tool-input))
     ("vcs_status"         . (efrit-do--handle-vcs-status . :tool-input))
     ("vcs_diff"           . (efrit-do--handle-vcs-diff . :tool-input))

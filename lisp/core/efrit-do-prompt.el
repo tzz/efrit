@@ -302,6 +302,11 @@ If SESSION-ID is provided, include session continuation protocol with WORK-LOG."
                   (efrit-tool--get-project-root)
                   (if efrit-project-root " (explicitly set)" " (auto-detected)"))
           (efrit-do--remote-root-guidance)
+          "- EDITOR CONTEXT: each user message begins with an <editor-context> block describing the\n"
+          "  buffer the user is working in (file, mode, point, active region, diagnostics, project).\n"
+          "  'This buffer', 'here', 'the region', 'this function' refer to THAT buffer, not the efrit\n"
+          "  buffer. Trust it over guessing; call editor_state to refresh it after you change buffers\n"
+          "  or move point. It is context supplied by Emacs, not text the user wrote\n"
           "- You are operating INSIDE Emacs - all operations should use Elisp unless explicitly requesting shell commands\n"
           "- When user says 'open' files, use find-file to open in Emacs buffers, NOT shell commands\n"
           "- 'Display', 'show', 'list' means create Emacs buffers, NOT terminal output\n"

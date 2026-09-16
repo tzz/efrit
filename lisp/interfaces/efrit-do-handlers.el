@@ -98,6 +98,8 @@
 (declare-function efrit-tool-beads-close "efrit-tool-beads")
 (declare-function efrit-tool-beads-list "efrit-tool-beads")
 (declare-function efrit-tool-beads-show "efrit-tool-beads")
+(declare-function efrit-context-snapshot "efrit-context-sources")
+(declare-function efrit-context-target-buffer "efrit-context-sources")
 
 ;; TODO struct accessors and state now come from efrit-todo.el
 ;; Backward-compatible aliases (efrit-do-todo-item-*, efrit-do--current-todos) are provided there.
@@ -1042,6 +1044,19 @@ TOOL-INPUT contains buffer name to get info about."
       (let* ((buffer (gethash "buffer" tool-input))
              (args `((buffer . ,buffer))))
         (format "\n[%s]" (efrit-tool-buffer-info args)))))
+
+(defun efrit-do--handle-editor-state (tool-input)
+  "Handle editor_state: return the editor-context snapshot.
+TOOL-INPUT may name a BUFFER; otherwise the user's working buffer is
+used (see `efrit-context-target-buffer')."
+  (require 'efrit-context-sources)
+  (let* ((name (and (hash-table-p tool-input) (gethash "buffer" tool-input)))
+         (buf (if (and name (not (string-empty-p name)))
+                  (or (get-buffer name)
+                      (error "No buffer named %s" name))
+                (efrit-context-target-buffer))))
+    (or (efrit-context-snapshot buf)
+        "<editor-context>\n(no context sources enabled)\n</editor-context>")))
 
 (defun efrit-do--handle-get-context-alias (_tool-input)
   "Alias handler for get_context.
