@@ -212,6 +212,31 @@ Returns \\='simple for single-action tasks, \\='complex for multi-step workflows
      ;; Default to simple for ambiguous cases
      (t 'simple))))
 
+(defun efrit-do--remote-root-guidance ()
+  "Return prompt text describing a remote (Tramp) project root, or \"\".
+Pure context: it states facts about where paths and processes land
+so the model can target the right host; no task logic."
+  (let* ((root (efrit-tool--get-project-root))
+         (remote (file-remote-p root)))
+    (if (not remote)
+        ""
+      (format (concat
+               "- REMOTE PROJECT: the project root is on a remote host via Tramp (%s).\n"
+               "  * project_files, search_content, read_file, edit_file, create_file,\n"
+               "    vcs_*, format_file and shell_exec all operate ON THAT HOST.\n"
+               "  * In tool arguments you may give paths relative to the root, host-local\n"
+               "    absolute paths (%s), or full Tramp paths (%s...).  A bare absolute\n"
+               "    path is interpreted on the remote host, not on the local machine.\n"
+               "  * In eval_sexp, file functions take the FULL Tramp path (%s/...); a bare\n"
+               "    /path there refers to the LOCAL machine.  To run a program remotely\n"
+               "    from elisp, bind default-directory to a path under the root and use\n"
+               "    process-file / start-file-process, never call-process.\n"
+               "  * Report paths to the user in the form they used (usually host-local).\n")
+              remote
+              (or (file-remote-p root 'localname) "/...")
+              remote
+              (string-remove-suffix "/" root)))))
+
 (defun efrit-do--command-system-prompt (&optional retry-count error-msg previous-code session-id work-log)
   "Generate system prompt for command execution with optional context.
 Uses previous command context if available. If RETRY-COUNT is provided,
@@ -255,6 +280,7 @@ If SESSION-ID is provided, include session continuation protocol with WORK-LOG."
           (format "- Project root: %s%s\n"
                   (efrit-tool--get-project-root)
                   (if efrit-project-root " (explicitly set)" " (auto-detected)"))
+          (efrit-do--remote-root-guidance)
           "- You are operating INSIDE Emacs - all operations should use Elisp unless explicitly requesting shell commands\n"
           "- When user says 'open' files, use find-file to open in Emacs buffers, NOT shell commands\n"
           "- 'Display', 'show', 'list' means create Emacs buffers, NOT terminal output\n"

@@ -110,15 +110,22 @@ Returns the formatted content string."
 FORMATTER is (COMMAND . ARGS).
 Returns (success . error-message)."
   (let* ((cmd (car formatter))
-         (args (append (cdr formatter) (list file-path)))
+         ;; Run on the file's host: a remote file gets the remote
+         ;; formatter, with the host-local path as its argument.
+         (default-directory (file-name-directory file-path))
+         (args (append (cdr formatter)
+                       (list (efrit-tool-local-name file-path))))
          (exit-code nil)
          (output nil))
     ;; Check if formatter is available
-    (if (not (executable-find cmd))
-        (cons nil (format "Formatter '%s' not found in PATH" cmd))
+    (if (not (efrit-tool-executable-find cmd))
+        (cons nil (format "Formatter '%s' not found in PATH%s" cmd
+                          (if (file-remote-p default-directory)
+                              (format " on %s" (file-remote-p default-directory))
+                            "")))
       ;; Run the formatter
       (with-temp-buffer
-        (setq exit-code (apply #'call-process cmd nil t nil args))
+        (setq exit-code (apply #'efrit-tool-call-process cmd nil t nil args))
         (setq output (buffer-string)))
       (if (= exit-code 0)
           (cons t nil)

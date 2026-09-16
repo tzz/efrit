@@ -358,12 +358,19 @@ than TIMEOUT seconds.  `shell-command-to-string' wrapped in
 blocks inside `call-process'.  This loop checks the clock between
 `accept-process-output' calls instead."
   (with-temp-buffer
-    (let ((proc (make-process :name "efrit-shell-exec"
-                              :buffer (current-buffer)
-                              :command (list shell-file-name
-                                             shell-command-switch command)
-                              :connection-type 'pipe))
-          (deadline (+ (float-time) timeout)))
+    ;; Run in the project root, on its host: for a Tramp root
+    ;; `start-file-process' spawns the shell remotely (efrit-tramp).
+    (let* ((default-directory (efrit-tool--get-project-root))
+           (proc (if (file-remote-p default-directory)
+                     (start-file-process "efrit-shell-exec" (current-buffer)
+                                         shell-file-name shell-command-switch
+                                         command)
+                   (make-process :name "efrit-shell-exec"
+                                 :buffer (current-buffer)
+                                 :command (list shell-file-name
+                                                shell-command-switch command)
+                                 :connection-type 'pipe)))
+           (deadline (+ (float-time) timeout)))
       (set-process-query-on-exit-flag proc nil)
       (while (process-live-p proc)
         (accept-process-output proc 0.2)
@@ -387,8 +394,11 @@ Returns output or security error."
                                   input-str efrit-do-shell-timeout))
                    (end-time (current-time))
                    (duration (float-time (time-subtract end-time start-time))))
-              (format "\n[Executed: %s]\n[Duration: %.2fs]\n[Result: %s]"
-                      input-str duration
+              (format "\n[Executed: %s]%s\n[Duration: %.2fs]\n[Result: %s]"
+                      input-str
+                      (let ((remote (file-remote-p (efrit-tool--get-project-root))))
+                        (if remote (format "\n[On host: %s]" remote) ""))
+                      duration
                       (if (> (length shell-result) 1000)
                           (concat (substring shell-result 0 1000) "\n... (output truncated)")
                         shell-result)))
