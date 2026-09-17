@@ -25,8 +25,13 @@ Cache it if minting is slow; re-mint on a 401."
       (auth-source-pick-first-password :host "gateway.example.com")))
 
 (use-package efrit
-  :load-path "~/src/efrit/lisp"          ; efrit.el adds its subdirectories itself
-  :commands (efrit efrit-do efrit-doctor)
+  :load-path "~/src/efrit/lisp"
+  ;; With :load-path nothing loads until a :commands entry runs, so
+  ;; register every command up front from the generated autoloads file
+  ;; (run `make autoloads' in the checkout once; it also puts the
+  ;; lisp/ subdirectories on load-path).  Without this, M-x efrit-doctor
+  ;; is unknown until M-x efrit has loaded efrit.el.
+  :init (load "efrit-autoloads" t t)
   :bind (("C-c e" . efrit-do)
          ("C-c E" . efrit))
   :custom

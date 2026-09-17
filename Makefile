@@ -21,10 +21,10 @@ DOC_FILES = README.md CONTRIBUTING.md AUTHORS AGENTS.md LICENSE
 # Distribution files
 DIST_FILES = lisp/ test/ bin/ plans/ $(DOC_FILES) Makefile .gitignore
 
-.PHONY: all compile test test-unit clean distclean install uninstall check help dist mcp-install mcp-build mcp-test mcp-start mcp-clean coverage coverage-simple coverage-report coverage-check lint lint-defun lint-toplevel clean-orphan-elc checkdoc
+.PHONY: all compile test test-unit autoloads clean distclean install uninstall check help dist mcp-install mcp-build mcp-test mcp-start mcp-clean coverage coverage-simple coverage-report coverage-check lint lint-defun lint-toplevel clean-orphan-elc checkdoc
 
 # Default target
-all: compile
+all: compile autoloads
 
 # Help target
 help:
@@ -269,6 +269,15 @@ lint-defun:
 ERT_TEST_FILES := $(filter-out test/test-fibonacci-scenario.el,$(wildcard test/test-*.el))
 ERT_LOAD_ARGS  := $(foreach f,$(ERT_TEST_FILES),-l $(f))
 
+# Autoloads.  package.el only scans lisp/ itself, so the commands that
+# live in lisp/{core,interfaces,support,tools} (efrit-doctor,
+# efrit-select-model, efrit-menu, ...) would not be reachable before
+# something loads efrit.el.  This generates one file covering every
+# subdirectory; users on :load-path do (load "efrit-autoloads").
+autoloads: lisp/efrit-autoloads.el
+lisp/efrit-autoloads.el: $(EL_FILES) lisp/dev/efrit-gen-autoloads.el
+	@$(EMACS_BATCH) -l lisp/dev/efrit-gen-autoloads.el
+
 test-unit:
 	@echo "Running ERT unit tests ($(words $(ERT_TEST_FILES)) files)..."
 	@$(EMACS_BATCH) $(LOAD_PATH) -L test -l ert $(ERT_LOAD_ARGS) \
@@ -385,7 +394,7 @@ mcp-clean:
 	@rm -rf mcp/node_modules mcp/dist mcp/coverage
 
 # Update existing targets to include MCP
-build: compile mcp-build
+build: compile autoloads mcp-build
 
 # Cleaning
 clean: mcp-clean

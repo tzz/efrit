@@ -182,6 +182,8 @@ Otherwise the live model/caching checks run only with a prefix arg."
     (dolist (pair efrit-doctor--obsolete-vars)
       (let ((old (car pair)) (new (cdr pair)))
         (when (and (boundp old) (symbol-value old)
+                   ;; an alias IS the new variable; nothing to migrate
+                   (not (eq (indirect-variable old) new))
                    ;; efrit-api-url is still honoured; only nag if the new one is also set
                    (not (and (eq old 'efrit-api-url)
                              (equal efrit-api-base-url "https://api.anthropic.com"))))
@@ -338,6 +340,12 @@ carries a cache_control block, which is the caching probe."
                                  (format "%s\nThe base URL is probably wrong (does the gateway need a path prefix?)." m)))
             ((string-match-p "403" m)
              (efrit-doctor--fail "403 Forbidden" (format "%s\nKey valid but not entitled to this model/route." m)))
+            ;; Unclassified but names a model: still offer the picker,
+            ;; since gateways phrase entitlement errors many ways
+            ((string-match-p "model" m)
+             (efrit-doctor--fail "API request failed (mentions the model)" m
+                                 "Select a working model"
+                                 (lambda () (efrit-select-model t))))
             (t (efrit-doctor--fail "API request failed" m)))))
         (_ (efrit-doctor--fail "No response" (format "%s\nNetwork-level failure after the TLS probe succeeded: proxy in the middle, or the endpoint hung." (cdr result))))))
     ;; Caching probe only if the plain request worked and caching is on
@@ -511,9 +519,22 @@ carries a cache_control block, which is the caching probe."
          (fails (cl-count 'fail findings :key #'car))
          (warns (cl-count 'warn findings :key #'car)))
     (insert (propertize "Efrit doctor\n" 'face 'bold))
-    (insert (format "%s  •  Emacs %s  •  %s\n\n"
+    (insert (format "%s  •  Emacs %s  •  %s\n"
                     (format-time-string "%Y-%m-%d %H:%M") emacs-version
                     (if live "with live API check" "static checks only (C-u for live check)")))
+    ;; Which doctor is this?  Stale .elc and half-reloaded sessions are
+    ;; the most common reason a fix "isn't there".
+    (let* ((src (or (locate-library "efrit-doctor") "?"))
+           (el (and (string-suffix-p ".elc" src) (substring src 0 -1))))
+      (insert (propertize
+               (format "doctor source: %s (%s)%s\n\n"
+                       (abbreviate-file-name src)
+                       (format-time-string "%Y-%m-%d %H:%M"
+                                           (file-attribute-modification-time (file-attributes src)))
+                       (if (and el (file-exists-p el) (file-newer-than-file-p el src))
+                           "  STALE .elc -- the .el is newer; M-x load-file it or make compile"
+                         ""))
+               'face 'shadow)))
     (dolist (f findings)
       (pcase-let ((`(,level ,title ,detail ,fix-label ,fix-fn) f))
         (insert (propertize (pcase level ('ok "  ✓ ") ('warn "  ⚠ ") ('fail "  ✗ ") (_ "  · "))
