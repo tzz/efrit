@@ -168,5 +168,47 @@
              (result (efrit-do--execute-tool item)))
         (should (string-match-p "ran" result))))))
 
+(ert-deftest test-perm-edit-choice-substitutes-input ()
+  "Choosing [e] and changing the field makes dispatch run the edited input."
+  (test-perm--fresh
+    (let ((ran-with nil))
+      (cl-letf (((symbol-function 'read-char-choice)
+                 (let ((n 0)) (lambda (&rest _) (cl-incf n) (if (= n 1) ?e ?y))))
+                ((symbol-function 'efrit-edit-in-buffer)
+                 (lambda (_text _desc &optional _mode) "(edited)"))
+                ((symbol-function 'efrit-show-preview) (lambda (&rest _) nil))
+                ((symbol-function 'efrit-do--handle-eval-sexp)
+                 (lambda (str &rest _) (setq ran-with str) "ok")))
+        (efrit-do--circuit-breaker-reset)
+        (let ((item (test-perm--input "id" "t3" "name" "eval_sexp"
+                                      "input" (test-perm--input "expr" "(original)"))))
+          (efrit-do--execute-tool item)
+          (should (equal ran-with "(edited)")))))))
+
+(ert-deftest test-perm-edit-unchanged-reprompts ()
+  (test-perm--fresh
+    (cl-letf (((symbol-function 'read-char-choice)
+               (let ((n 0)) (lambda (&rest _) (cl-incf n) (if (= n 1) ?e ?n))))
+              ((symbol-function 'efrit-edit-in-buffer) (lambda (text &rest _) text))
+              ((symbol-function 'efrit-show-preview) (lambda (&rest _) nil)))
+      (should (eq (efrit-permission-check "eval_sexp" (test-perm--input "expr" "x")) 'deny)))))
+
+(ert-deftest test-perm-preview-text ()
+  (let ((pv (efrit-permission--preview-text
+             "edit_file" (test-perm--input "path" "a.el" "old_str" "foo" "new_str" "bar"))))
+    (should (eq (cdr pv) 'diff-mode))
+    (should (string-match-p "^-foo" (car pv)))
+    (should (string-match-p "^\\+bar" (car pv))))
+  (let ((pv (efrit-permission--preview-text
+             "create_file" (test-perm--input "path" "n.txt" "content" "l1\nl2"))))
+    (should (string-match-p "\\+\\+\\+ b/n.txt" (car pv)))
+    (should (string-match-p "^\\+l1\n\\+l2" (car pv))))
+  (should-not (efrit-permission--preview-text "shell_exec" (test-perm--input "command" "ls"))))
+
+(ert-deftest test-perm-fence-for ()
+  (should (equal (efrit-fence-for "no ticks") "```"))
+  (should (equal (efrit-fence-for "a ``` b") "````"))
+  (should (equal (efrit-fence-for "x `````` y") "```````")))
+
 (provide 'test-permissions)
 ;;; test-permissions.el ends here

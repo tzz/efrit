@@ -53,9 +53,11 @@
 (require 'subr-x)
 (require 'efrit-log)
 (require 'efrit-events)
+(require 'efrit-ui-helpers)
 
 (declare-function efrit-tool-audit "efrit-tool-utils")
 (declare-function efrit-tool--get-project-root "efrit-tool-utils")
+(declare-function efrit-tool-unified-diff "efrit-tool-utils")
 
 (defgroup efrit-permissions nil
   "Consent for mutating tool calls."
@@ -217,28 +219,99 @@ Examples:
 (defvar efrit-permission--last-request nil
   "The most recent request alist, for `efrit-permission-show-last'.")
 
+(defvar efrit-permission-last-input nil
+  "The tool input to actually run after the latest `efrit-permission-check'.
+Equal to the input passed in unless the user chose [e]dit at the prompt.")
+
+(defcustom efrit-permission-preview t
+  "When non-nil, show a diff/content preview before asking about write tools."
+  :type 'boolean
+  :group 'efrit-permissions)
+
+(defconst efrit-permission--editable-fields
+  '(("eval_sexp" "expr" emacs-lisp-mode)
+    ("shell_exec" "command" sh-mode)
+    ("edit_file" "new_str" nil)
+    ("create_file" "content" nil)
+    ("buffer_create" "content" nil)
+    ("create_buffer" "content" nil)
+    ("edit_buffer" "content" nil))
+  "Per tool: the input field the user may edit before approving, and a mode.")
+
+(defun efrit-permission--preview-text (tool input)
+  "Return (TEXT . MODE) previewing what TOOL would write, or nil."
+  (let ((g (lambda (k) (efrit-permission--input-get input k))))
+    (pcase tool
+      ("edit_file"
+       (when (fboundp 'efrit-tool-unified-diff)
+         (let ((path (or (funcall g "path") "file")))
+           (cons (efrit-tool-unified-diff (or (funcall g "old_str") "")
+                                          (or (funcall g "new_str") "")
+                                          path)
+                 'diff-mode))))
+      ("create_file"
+       (let* ((path (or (funcall g "path") "file"))
+              (content (or (funcall g "content") "")))
+         (cons (concat (format "--- /dev/null\n+++ b/%s\n" (file-name-nondirectory path))
+                       (mapconcat (lambda (l) (concat "+" l))
+                                  (split-string content "\n") "\n"))
+               'diff-mode)))
+      ((or "buffer_create" "create_buffer" "edit_buffer")
+       (cons (or (funcall g "content") "") nil))
+      (_ nil))))
+
 (defun efrit-permission--prompt (request)
-  "Ask the user about REQUEST.  Returns allow/deny/allow-tool/allow-all."
+  "Ask the user about REQUEST.
+Returns allow/deny/allow-tool/allow-all, or (edit . NEW-INPUT) when
+the user edited the tool's primary field before approving."
   (let* ((tool (alist-get :tool request))
+         (input (alist-get :input request))
          (summary (alist-get :summary request))
          (root (alist-get :project-root request))
          (remote (and root (file-remote-p root)))
+         (editable (assoc tool efrit-permission--editable-fields))
          (header (format "Efrit wants to run %s%s:\n%s\n"
                          tool
                          (if remote (format " on %s" remote) "")
                          summary))
-         (choices '(?y ?n ?! ?a ??))
-         (legend "[y]es once  [n]o  [!] always this tool  [a]ll tools this session  [?] full input"))
+         (choices (append '(?y ?n ?! ?a ??) (and editable '(?e))))
+         (legend (concat "[y]es once  [n]o  [!] always this tool  [a]ll tools this session  [?] full input"
+                         (and editable "  [e]dit first")))
+         (preview-win nil))
     (setq efrit-permission--last-request request)
-    (catch 'decided
-      (while t
-        (let ((c (read-char-choice (concat header legend " ") choices)))
-          (pcase c
-            (?y (throw 'decided 'allow))
-            (?n (throw 'decided 'deny))
-            (?! (throw 'decided 'allow-tool))
-            (?a (throw 'decided 'allow-all))
-            (?? (efrit-permission-show-last))))))))
+    (unwind-protect
+        (progn
+          ;; Show what would change before asking
+          (when (and efrit-permission-preview (not noninteractive))
+            (when-let* ((pv (efrit-permission--preview-text tool input)))
+              (when (and (stringp (car pv)) (not (string-empty-p (car pv))))
+                (setq preview-win
+                      (efrit-show-preview "*efrit-permission-preview*" (car pv) (cdr pv))))))
+          (catch 'decided
+            (while t
+              (let ((c (read-char-choice (concat header legend " ") choices)))
+                (pcase c
+                  (?y (throw 'decided 'allow))
+                  (?n (throw 'decided 'deny))
+                  (?! (throw 'decided 'allow-tool))
+                  (?a (throw 'decided 'allow-all))
+                  (?e
+                   (let* ((field (nth 1 editable))
+                          (mode (nth 2 editable))
+                          (cur (or (efrit-permission--input-get input field) ""))
+                          (new (condition-case nil
+                                   (efrit-edit-in-buffer cur (format "%s %s" tool field) mode)
+                                 (quit nil))))
+                     (when (and new (not (equal new cur)))
+                       (let ((copy (if (hash-table-p input) (copy-hash-table input)
+                                     (make-hash-table :test 'equal))))
+                         (puthash field new copy)
+                         (throw 'decided (cons 'edit copy))))
+                     ;; unchanged or cancelled: ask again
+                     nil))
+                  (?? (efrit-permission-show-last)))))))
+      (when (window-live-p preview-win)
+        (ignore-errors (quit-window nil preview-win))))))
 
 (defun efrit-permission-show-last ()
   "Show the full input of the last permission request in a buffer."
@@ -264,7 +337,10 @@ Examples:
 (defun efrit-permission-check (tool input &optional session-id)
   "Decide whether TOOL may run with INPUT for SESSION-ID.
 Returns `allow' or `deny'.  Records session grants as a side effect
-and writes an audit entry for every gated decision."
+and writes an audit entry for every gated decision.  If the user
+edited the input at the prompt, the edited version is available from
+`efrit-permission-last-input' immediately after this returns `allow'."
+  (setq efrit-permission-last-input input)
   (if (not (efrit-permission-needed-p tool))
       'allow
     (let* ((class (efrit-permission-tool-class tool))
@@ -287,7 +363,10 @@ and writes an audit entry for every gated decision."
                   (quit 'deny))))))
       (pcase decision
         ('allow-tool (efrit-permission--grant session-id tool) (setq decision 'allow))
-        ('allow-all (efrit-permission--grant session-id 'all) (setq decision 'allow)))
+        ('allow-all (efrit-permission--grant session-id 'all) (setq decision 'allow))
+        (`(edit . ,new-input)
+         (setq efrit-permission-last-input new-input
+               decision 'allow)))
       (when (fboundp 'efrit-tool-audit)
         (efrit-tool-audit tool (if (hash-table-p input) input (list :input input))
                           (if (eq decision 'allow) :permitted :denied)))

@@ -235,6 +235,18 @@ Applies circuit breaker limits to prevent infinite loops."
           efrit-permission-denied-result)
 
          (t
+          ;; The user may have edited the input at the prompt
+          (unless (eq efrit-permission-last-input tool-input)
+            (setq tool-input efrit-permission-last-input
+                  input-str (cond
+                             ((stringp tool-input) tool-input)
+                             ((hash-table-p tool-input)
+                              (seq-some (lambda (key) (gethash key tool-input))
+                                        '("expr" "expression" "code" "command")))
+                             (t input-str)))
+            (when input-str
+              (setq input-str (efrit-do--sanitize-elisp-string input-str)))
+            (efrit-log 'info "Tool %s input edited by user before running" tool-name))
 
           ;; Circuit breaker allows execution - record the call
           (efrit-do--circuit-breaker-record-call tool-name tool-input)
