@@ -302,13 +302,14 @@ With `efrit-sandbox-enabled' nil this is a no-op that returns t."
       (_ (format "%s %s" cap target)))))
 
 (defconst efrit-sandbox-denied-prefix "Error sandbox denied: "
-  "Prefix of a denied tool result.  `efrit-loop' matches it to end the turn.")
+  "Prefix of a denied tool result.  The agent buffer recognises it to
+render the row as a denial rather than a tool failure.")
 
 (defun efrit-sandbox-denied-tool-result (req)
   "The tool_result text (after `efrit-sandbox-denied-prefix') for a denied REQ.
-Says what was refused and that the turn is over, so the model asks
-instead of retrying."
-  (format "%s%s. The user declined to widen the sandbox; the turn ends here. Do not retry or route around it. If the task needs this, explain to the user exactly what access is required and why, and wait."
+Says what was refused.  The turn continues: the model is told to go
+on without that access, not to retry it or route around it."
+  (format "%s%s. The user declined. Do not retry this or work around it (no other tool, no other path). Continue the task without it if you can; otherwise say what access you need and why, and stop."
           (efrit-sandbox-describe-request req)
           (if (efrit-sandbox-request-detail req)
               (format " (%s)" (efrit-sandbox-request-detail req))

@@ -13,24 +13,31 @@
 ;;
 ;; - `efrit-sandbox-ui-prompt' is installed as
 ;;   `efrit-sandbox-request-function'.  When a tool needs more than the
-;;   granted scope it shows, in the echo area (and as a line in the
-;;   agent buffer so the transcript records it), what is being asked
-;;   and for what, and offers:
+;;   granted scope it opens a transient menu (`efrit-sandbox-ask')
+;;   that names the tool, what it wants, and the exact scope each
+;;   answer would grant:
 ;;
-;;       [o]nce  [s]ession  [p]roject  [n]o  [?]details
+;;       o  once      this one operation
+;;       s  session   until this Emacs exits
+;;       p  project   saved in <project>/.efrit/sandbox.json
+;;       n  no        deny (C-g and q do the same)
+;;       ?  details   the full request and the grants in force
 ;;
-;;   o    this one operation
-;;   s    until this Emacs exits
-;;   p    saved in <project>/.efrit/sandbox.json for next time
-;;   n    deny; the turn ends and the model is told why
+;;   The menu runs inside a `recursive-edit' so the calling tool gets
+;;   an answer synchronously; `transient-post-exit-hook' exits the
+;;   recursive edit once the menu closes for any reason.  Without a
+;;   display (batch, no transient) it falls back to `read-char-choice'.
 ;;
 ;;   The grant is as narrow as the request: allowing a write to
 ;;   ~/notes/todo.org for the project grants write under ~/notes/, not
-;;   under ~.  The request line says exactly what will be granted.
+;;   under ~.  The menu says exactly what will be granted.
+;;
+;; - A denial is not the end of the turn.  The model gets a tool
+;;   result saying the access was refused and carries on without it.
 ;;
 ;; - `M-x efrit-sandbox' lists every grant in force for the current
-;;   project (project ones marked as saved) in a tabulated-list with
-;;   `d' to revoke, `g' to refresh, `s' to add a grant by hand.
+;;   project in a tabulated-list with `d' to revoke, `g' to refresh,
+;;   `s' to add a grant by hand.
 ;;
 ;; - The agent buffer gets a one-line record of each grant and denial,
 ;;   so reading back a transcript shows where the fence moved.
@@ -42,6 +49,7 @@
 (require 'efrit-sandbox)
 (require 'efrit-sandbox-store)
 
+(defvar transient-post-exit-hook)
 (declare-function efrit-agent--append-to-conversation "efrit-agent-core")
 (declare-function efrit-show-preview "efrit-ui-helpers")
 (defvar efrit-agent-buffer-name)
@@ -88,27 +96,113 @@
       ('net "make network requests")
       (_ (format "%s %s" cap target)))))
 
+(defvar efrit-sandbox-ui--request nil
+  "The request the open `efrit-sandbox-ask' menu is about.")
+
+(defvar efrit-sandbox-ui--answer 'pending
+  "Answer chosen in the menu: once/session/project/nil, or `pending'.")
+
+(defvar efrit-sandbox-ui--depth nil
+  "Recursion depth of the recursive edit waiting on the menu, or nil.")
+
+(defun efrit-sandbox-ui--menu-description ()
+  "Header of the menu: tool, request, detail."
+  (let* ((req efrit-sandbox-ui--request)
+         (tool (or (efrit-sandbox-request-tool req) "a tool"))
+         (detail (efrit-sandbox-request-detail req)))
+    (concat
+     (propertize (format "Efrit: %s wants to %s" tool (efrit-sandbox-ui--scope-word req))
+                 'face 'efrit-sandbox-prompt-face)
+     (when (and detail (not (string-empty-p detail)))
+       (concat "\n  " (truncate-string-to-width
+                       (replace-regexp-in-string "\n" " " detail) (- (frame-width) 6) nil nil "…")))
+     "\n")))
+
+(defun efrit-sandbox-ui--project-label ()
+  (format "this project (%s, saved)"
+          (abbreviate-file-name (directory-file-name (efrit-sandbox-project-root)))))
+
+(defun efrit-sandbox-ui--choose (answer)
+  (setq efrit-sandbox-ui--answer answer))
+
+(defun efrit-sandbox-ui--exit-recursive-edit ()
+  "Leave the recursive edit that waits on the menu, if we are in it."
+  (when (and efrit-sandbox-ui--depth
+             (= (recursion-depth) efrit-sandbox-ui--depth))
+    (exit-recursive-edit)))
+
+(defun efrit-sandbox-ui--define-menu ()
+  "Define `efrit-sandbox-ask' if transient is available.  Return non-nil on success."
+  (when (require 'transient nil t)
+    (unless (fboundp 'efrit-sandbox-ask)
+      (eval
+       '(transient-define-prefix efrit-sandbox-ask ()
+          "Allow the sandbox request?"
+          [:description efrit-sandbox-ui--menu-description
+           ["Allow"
+            ("o" "once" (lambda () (interactive) (efrit-sandbox-ui--choose 'once)))
+            ("s" "for this Emacs session" (lambda () (interactive) (efrit-sandbox-ui--choose 'session)))
+            ("p" (lambda () (interactive) (efrit-sandbox-ui--choose 'project))
+             :description efrit-sandbox-ui--project-label)]
+           ["Refuse"
+            ("n" "no, the model continues without it"
+             (lambda () (interactive) (efrit-sandbox-ui--choose nil)))]
+           ["More"
+            ("?" "show the full request" (lambda () (interactive) (efrit-sandbox-ui--show-details efrit-sandbox-ui--request))
+             :transient t)
+            ("l" "grants in force" (lambda () (interactive) (efrit-sandbox (efrit-sandbox-project-root)))
+             :transient t)]])
+       t))
+    (fboundp 'efrit-sandbox-ask)))
+
+(defun efrit-sandbox-ui--ask-with-menu (req)
+  "Open the transient menu for REQ and wait for an answer.
+Returns once/session/project or nil.  Closing the menu any other way
+\(C-g, q, another command) is a denial."
+  (setq efrit-sandbox-ui--request req
+        efrit-sandbox-ui--answer 'pending)
+  (let ((efrit-sandbox-ui--depth (1+ (recursion-depth))))
+    (unwind-protect
+        (progn
+          (add-hook 'transient-post-exit-hook #'efrit-sandbox-ui--exit-recursive-edit)
+          ;; Open the menu from the command loop, not from inside the
+          ;; tool's call stack: transient needs to be a command.
+          (run-at-time 0 nil (lambda () (call-interactively #'efrit-sandbox-ask)))
+          (condition-case nil
+              (recursive-edit)
+            (quit nil)))
+      (remove-hook 'transient-post-exit-hook #'efrit-sandbox-ui--exit-recursive-edit)
+      (setq efrit-sandbox-ui--request nil)))
+  (if (eq efrit-sandbox-ui--answer 'pending) nil efrit-sandbox-ui--answer))
+
+(defun efrit-sandbox-ui--ask-in-echo-area (req)
+  "Fallback prompt in the echo area when no menu can be shown."
+  (let* ((tool (or (efrit-sandbox-request-tool req) "a tool"))
+         (header (format "Efrit (%s) wants to %s\n" tool (efrit-sandbox-ui--scope-word req)))
+         (legend (format "[o]nce  [s]ession  [p]roject %s  [n]o  [?]details "
+                         (abbreviate-file-name (efrit-sandbox-project-root)))))
+    (catch 'decided
+      (while t
+        (pcase (read-char-choice (concat header legend) '(?o ?s ?p ?n ??))
+          (?o (throw 'decided 'once))
+          (?s (throw 'decided 'session))
+          (?p (throw 'decided 'project))
+          (?n (throw 'decided nil))
+          (?? (efrit-sandbox-ui--show-details req)))))))
+
+(defun efrit-sandbox-ui-use-menu-p ()
+  "Non-nil when the transient menu can be used for the prompt."
+  (and (not noninteractive)
+       (efrit-sandbox-ui--define-menu)))
+
 (defun efrit-sandbox-ui-prompt (req)
   "Ask the user about REQ; return `once', `session', `project', or nil."
   (let* ((tool (or (efrit-sandbox-request-tool req) "a tool"))
-         (detail (efrit-sandbox-request-detail req))
-         (what (efrit-sandbox-ui--scope-word req))
-         (root (abbreviate-file-name (efrit-sandbox-project-root)))
-         (header (format "Efrit (%s) wants to %s%s\n" tool what
-                         (if (and detail (not (string-empty-p detail)))
-                             (format "\n  for: %s" (truncate-string-to-width detail 100 nil nil "…"))
-                           "")))
-         (legend (format "[o]nce  [s]ession  [p]roject %s  [n]o  [?]details " root)))
+         (what (efrit-sandbox-ui--scope-word req)))
     (efrit-sandbox-ui--note (format "%s asks to %s" tool what) 'efrit-sandbox-prompt-face)
-    (let ((answer
-           (catch 'decided
-             (while t
-               (pcase (read-char-choice (concat header legend) '(?o ?s ?p ?n ??))
-                 (?o (throw 'decided 'once))
-                 (?s (throw 'decided 'session))
-                 (?p (throw 'decided 'project))
-                 (?n (throw 'decided nil))
-                 (?? (efrit-sandbox-ui--show-details req)))))))
+    (let ((answer (if (efrit-sandbox-ui-use-menu-p)
+                      (efrit-sandbox-ui--ask-with-menu req)
+                    (efrit-sandbox-ui--ask-in-echo-area req))))
       (efrit-sandbox-ui--note
        (pcase answer
          ('once (format "granted once: %s" what))

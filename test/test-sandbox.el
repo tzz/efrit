@@ -244,9 +244,12 @@
 ;;; UI
 
 (require 'efrit-sandbox-ui)
+(defvar transient-post-exit-hook)
 
 (ert-deftest test-sb-ui-prompt-maps-keys-to-scopes ()
+  "The echo-area fallback (batch has no menu) maps keys to scopes."
   (test-sb--in-project
+    (should-not (efrit-sandbox-ui-use-menu-p))   ; noninteractive
     (cl-letf (((symbol-function 'efrit-sandbox-ui--note) #'ignore))
       (dolist (case '((?o . once) (?s . session) (?p . project) (?n . nil)))
         (cl-letf (((symbol-function 'read-char-choice) (lambda (&rest _) (car case))))
@@ -265,6 +268,38 @@
         ;; and it is remembered: no prompt this time
         (cl-letf (((symbol-function 'read-char-choice) (lambda (&rest _) (error "must not prompt"))))
           (should (efrit-sandbox-check 'write (expand-file-name "y" root) "edit_file")))))))
+
+(ert-deftest test-sb-ui-menu-answer-plumbing ()
+  "The menu path returns whatever the suffix chose, nil when closed unanswered."
+  (test-sb--in-project
+    (let ((req (efrit-sandbox-request-create :cap 'shell :target t :tool "shell_exec")))
+      ;; simulate: menu opens, user picks a suffix, transient exits
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_t _r fn &rest _) (ignore fn) nil))
+                ((symbol-function 'recursive-edit)
+                 (lambda () (efrit-sandbox-ui--choose 'project))))
+        (should (eq (efrit-sandbox-ui--ask-with-menu req) 'project)))
+      (cl-letf (((symbol-function 'run-at-time) (lambda (&rest _) nil))
+                ((symbol-function 'recursive-edit) #'ignore))
+        (should-not (efrit-sandbox-ui--ask-with-menu req)))
+      ;; C-g inside the recursive edit is a denial, not an escape
+      (cl-letf (((symbol-function 'run-at-time) (lambda (&rest _) nil))
+                ((symbol-function 'recursive-edit) (lambda () (signal 'quit nil))))
+        (should-not (efrit-sandbox-ui--ask-with-menu req)))
+      (should-not efrit-sandbox-ui--request)
+      (should-not (memq #'efrit-sandbox-ui--exit-recursive-edit transient-post-exit-hook)))))
+
+(ert-deftest test-sb-ui-menu-definition ()
+  "The transient prefix defines and its description names the request."
+  (skip-unless (require 'transient nil t))
+  (test-sb--in-project
+    (should (efrit-sandbox-ui--define-menu))
+    (should (fboundp 'efrit-sandbox-ask))
+    (let ((efrit-sandbox-ui--request
+           (efrit-sandbox-request-create :cap 'write :target root :tool "edit_file" :detail "x.el")))
+      (let ((d (substring-no-properties (efrit-sandbox-ui--menu-description))))
+        (should (string-match-p "edit_file wants to write files under" d))
+        (should (string-match-p "x\\.el" d))))))
 
 (ert-deftest test-sb-ui-list-shows-and-revokes ()
   (test-sb--in-project

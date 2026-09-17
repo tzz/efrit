@@ -21,6 +21,7 @@
 (require 'efrit-agent-core)
 (require 'efrit-agent-render)
 (require 'efrit-do-dispatch)
+(require 'efrit-sandbox)   ; efrit-sandbox-denied-prefix
 
 ;; Forward declarations
 (declare-function efrit-executor-cancel "efrit-executor")
@@ -55,11 +56,35 @@ Follows precedence: explicit summary > annotations > truncated result."
       (efrit-agent--summary-from-annotations tv)
       (efrit-agent--default-summary tv)))
 
+(defun efrit-agent--denied-result-p (result)
+  "Non-nil if RESULT is a sandbox or permission denial, not a tool failure."
+  (and (stringp result)
+       (or (string-prefix-p efrit-sandbox-denied-prefix result)
+           (string-prefix-p "Error permission denied" result))))
+
+(defun efrit-agent--error-gist (result)
+  "The first sentence of an error RESULT, without the leading `Error' noise."
+  (let* ((s (replace-regexp-in-string "[\n\r]+" " " (format "%s" result)))
+         (s (replace-regexp-in-string "\\`Error:? *\\(sandbox denied: \\|permission denied: \\)?" "" s))
+         (end (and (string-match "[.!?]\\( \\|\\'\\)" s) (match-beginning 0))))
+    (string-trim (if end (substring s 0 end) s))))
+
 (defun efrit-agent--smart-result-summary (tool-name result success-p)
   "Generate a smart summary for TOOL-NAME's RESULT.
 SUCCESS-P indicates if the tool succeeded."
   (let ((result-str (format "%s" result)))
     (cond
+     ;; A denial: say so, plus what was refused unless the row's
+     ;; target (the command) already says it
+     ((efrit-agent--denied-result-p result)
+      (if (string-match-p "bash\\|shell" tool-name)
+          "denied"
+        (concat "denied · "
+                (replace-regexp-in-string " *([^)]*)\\'" ""
+                                          (efrit-agent--error-gist result-str)))))
+     ;; Any other failure: the error's first sentence beats a bare
+     ;; "Failed" or a bogus line count
+     ((not success-p) (efrit-agent--error-gist result-str))
      ;; session_complete - its message IS Claude's final answer; show it
      ;; in full, never truncated (ef-gi82)
      ((string-match-p "session_complete" tool-name)
@@ -68,10 +93,12 @@ SUCCESS-P indicates if the tool succeeded."
        (if (string-match "\\[SESSION-COMPLETE: \\(\\(?:.\\|\n\\)*\\)\\]" result-str)
            (match-string 1 result-str)
          result-str)))
-     ;; Read tool - show line count
+     ;; Read tool - show size
      ((string-match-p "Read\\|read" tool-name)
       (let ((lines (length (split-string result-str "\n"))))
-        (format "%d lines" lines)))
+        (if (= lines 1)
+            (format "%d chars" (length result-str))
+          (format "%d lines" lines))))
      ;; Edit/Create tool - show change summary
      ((string-match-p "edit_file\\|create_file\\|Edit\\|Create" tool-name)
       (cond
@@ -203,18 +230,22 @@ marking the end of the turn."
          ;; Compute display elements
          (expand-char (efrit-agent--char
                        (if expanded-p 'expand-expanded 'expand-collapsed)))
+         (denied (efrit-agent--denied-result-p result))
          (status-char (cond
                        (running (efrit-agent--char 'tool-running))
+                       (denied (efrit-agent--char 'tool-denied))
                        ((eq importance 'error) (efrit-agent--char 'tool-failure))
                        (success-p (efrit-agent--char 'tool-success))
                        (t (efrit-agent--char 'tool-failure))))
-         (status-face (pcase importance
-                        ('error 'efrit-agent-importance-error)
-                        ('warning 'efrit-agent-importance-warning)
-                        ('success 'efrit-agent-importance-success)
-                        (_ (if (and (not running) (not success-p))
-                               'efrit-agent-error
-                             nil))))
+         (status-face (cond
+                       (denied 'efrit-agent-timestamp)
+                       (t (pcase importance
+                            ('error 'efrit-agent-importance-error)
+                            ('warning 'efrit-agent-importance-warning)
+                            ('success 'efrit-agent-importance-success)
+                            (_ (if (and (not running) (not success-p))
+                                   'efrit-agent-error
+                                 nil))))))
          (summary (efrit-agent--tool-view-summary tv))
          (start (point)))
     ;; Insert header line
@@ -237,14 +268,16 @@ marking the end of the turn."
       (let ((sum (string-trim (or summary "done"))))
         (unless (string-empty-p sum)
           (insert (propertize " · " 'face 'efrit-agent-timestamp))
-          (insert (propertize (truncate-string-to-width sum 70 nil nil "…")
-                              'face (if success-p 'efrit-agent-session-id 'efrit-agent-error)))))))
+          (insert (propertize (truncate-string-to-width sum 90 nil nil "…")
+                              'face (cond (success-p 'efrit-agent-session-id)
+                                          (denied 'efrit-agent-timestamp)
+                                          (t 'efrit-agent-error))))))))
     (when (and elapsed (>= elapsed 0.05))
       (insert (propertize (format "  %.1fs" elapsed) 'face 'efrit-agent-timestamp)))
     (insert "\n")
     ;; Insert expanded body if expanded
     (when (and expanded-p (or input result))
-      (insert (efrit-agent--format-tool-expansion input result success-p id render-type annotations)))
+      (insert (efrit-agent--format-tool-expansion input result success-p id render-type annotations name)))
     ;; Apply text properties to the entire region
     (add-text-properties start (point)
                          (list 'efrit-type 'tool-call
@@ -282,44 +315,38 @@ Returns an efrit-agent-tool-view struct."
 
 ;;; Tool Call Display
 
+(defun efrit-agent--input-field (input &rest keys)
+  "First non-nil value among KEYS in INPUT (hash table, alist or plist)."
+  (catch 'found
+    (dolist (k keys)
+      (let ((v (cond
+                ((hash-table-p input) (gethash k input))
+                ((and (listp input) (keywordp (car-safe input)))
+                 (plist-get input (intern (concat ":" k))))
+                ((listp input)
+                 (or (cdr (assoc k input))
+                     (cdr (assoc (intern k) input))
+                     (cdr (assoc (intern (concat ":" k)) input)))))))
+        (when v (throw 'found v))))
+    nil))
+
 (defun efrit-agent--extract-tool-target (tool-name input)
   "Extract the primary target from INPUT for TOOL-NAME.
 Returns a short string describing what the tool is operating on."
   (when input
-    (let ((path (or (plist-get input :path)
-                    (plist-get input :file_path)
-                    (and (listp input)
-                         (or (cdr (assoc 'path input))
-                             (cdr (assoc :path input))
-                             (cdr (assoc 'file_path input))
-                             (cdr (assoc :file_path input)))))))
+    (let ((path (efrit-agent--input-field input "path" "file_path" "file"))
+          (pattern (and (string-match-p "grep\\|search" tool-name)
+                        (efrit-agent--input-field input "pattern" "query")))
+          (cmd (and (string-match-p "bash\\|shell" tool-name)
+                    (efrit-agent--input-field input "cmd" "command"))))
       (cond
-       ;; File path - abbreviate to filename or short path
-       (path
-        (let ((name (file-name-nondirectory path)))
-          (if (> (length name) 30)
-              (concat "..." (substring name -27))
-            name)))
-       ;; Pattern for Grep
-       ((and (string-match-p "Grep\\|grep\\|search" tool-name)
-             (or (plist-get input :pattern)
-                 (and (listp input) (cdr (assoc 'pattern input)))))
-        (let ((pat (or (plist-get input :pattern)
-                       (cdr (assoc 'pattern input)))))
-          (truncate-string-to-width (format "\"%s\"" pat) 30)))
-       ;; Command for Bash
-       ((and (string-match-p "Bash\\|bash\\|shell" tool-name)
-             (or (plist-get input :cmd)
-                 (plist-get input :command)
-                 (and (listp input)
-                      (or (cdr (assoc 'cmd input))
-                          (cdr (assoc 'command input))))))
-        (let ((cmd (or (plist-get input :cmd)
-                       (plist-get input :command)
-                       (and (listp input)
-                            (or (cdr (assoc 'cmd input))
-                                (cdr (assoc 'command input)))))))
-          (truncate-string-to-width cmd 30)))
+       ((stringp path)
+        (let ((name (file-name-nondirectory (directory-file-name path))))
+          (if (> (length name) 30) (concat "..." (substring name -27)) name)))
+       ((stringp pattern)
+        (truncate-string-to-width (format "\"%s\"" pattern) 30 nil nil "…"))
+       ((stringp cmd)
+        (truncate-string-to-width (replace-regexp-in-string "[\n\r]+" " " cmd) 40 nil nil "…"))
        (t nil)))))
 
 (defun efrit-agent--tool-progress-text (tool-name _input)
@@ -403,12 +430,10 @@ Returns t if the tool should be expanded by default."
       ('minimal nil)       ; Always collapsed
       ('verbose t)         ; Always expanded
       ('smart
-       ;; Smart mode: expand errors, collapse successes unless short
-       (if (not success-p)
-           t  ; Errors auto-expand
-         ;; Successes: only expand if very short
-         (and (< (length (format "%s" result)) 200)
-              (< (cl-count ?\n (format "%s" result)) 5))))
+       ;; Smart mode: failures expand (the message matters), successes
+       ;; and denials stay collapsed -- the row already summarises them
+       (and (not success-p)
+            (not (efrit-agent--denied-result-p result))))
       (_ nil))))  ; Fallback to collapsed
 
 (defun efrit-agent--update-tool-result (tool-id result success-p &optional elapsed)
@@ -458,7 +483,7 @@ Uses the centralized tool-view renderer for consistent display."
 
 ;;; Tool Call Expansion (collapsed/expanded toggle)
 
-(defun efrit-agent--format-tool-expansion (tool-input result success-p &optional tool-id render-type annotations)
+(defun efrit-agent--format-tool-expansion (tool-input result success-p &optional tool-id render-type annotations tool-name)
   "Format the expansion content for a tool call.
 TOOL-INPUT is the input parameters, RESULT is the output.
 SUCCESS-P indicates status. TOOL-ID enables error recovery buttons.
@@ -471,28 +496,57 @@ Diffs are syntax-highlighted if `efrit-agent-show-diff' is non-nil."
                      ('normal 10)
                      ('verbose 50))))
     (concat
-     ;; Input section
+     ;; Input section.  A bare command/expr is shown as-is with a
+     ;; `$' (shell) or `λ' (lisp) marker; other inputs keep Input:.
      (when tool-input
-       (concat
-        indent (propertize "Input: " 'face 'efrit-agent-section-header) "\n"
-        (efrit-agent--format-indented-lines
-         (efrit-agent--format-tool-input tool-input) indent max-lines)))
+       (let ((text (efrit-agent--format-tool-input tool-input))
+             (marker (efrit-agent--bare-input-marker tool-name tool-input)))
+         (if marker
+             (efrit-agent--format-indented-lines text (concat indent marker) max-lines)
+           (concat
+            indent (propertize "Input: " 'face 'efrit-agent-section-header) "\n"
+            (efrit-agent--format-indented-lines text indent max-lines)))))
      ;; Result section (with render-type aware formatting)
      (when result
-       (concat
-        indent (propertize (if success-p "Result: " "Error: ")
-                           'face (if success-p 'efrit-agent-section-header 'efrit-agent-error))
-        "\n"
-        ;; Use render-type if available, otherwise use old diff detection
-        (if render-type
-            (efrit-agent--format-by-render-type (format "%s" result) render-type indent max-lines)
-          (efrit-agent--format-tool-result-with-diff result success-p indent max-lines))))
+       (cond
+        ;; A denial: one dim line for the human.  The rest of the
+        ;; result text is instructions for the model, not for here.
+        ((efrit-agent--denied-result-p result)
+         (concat indent "  "
+                 (propertize "You declined; the model was told to continue without it."
+                             'face 'efrit-agent-timestamp)
+                 "\n"))
+        (success-p
+         (concat
+          indent (propertize "Result: " 'face 'efrit-agent-section-header) "\n"
+          (if render-type
+              (efrit-agent--format-by-render-type (format "%s" result) render-type indent max-lines)
+            (efrit-agent--format-tool-result-with-diff result success-p indent max-lines))))
+        (t
+         ;; Failure: the message itself, wrapped, in the error face.
+         (efrit-agent--format-wrapped-paragraph
+          (replace-regexp-in-string "\\`Error:? *" "" (format "%s" result))
+          (concat indent "  ") 'efrit-agent-error))))
      ;; Annotations section (line-level notes from display_hint)
      (when (and annotations (listp annotations) (> (length annotations) 0))
        (efrit-agent--format-annotations annotations indent))
-     ;; Error recovery buttons (only when tool failed and tool-id is known)
-     (when (and tool-id (not success-p))
+     ;; Recovery buttons only for a real failure: a denial was the
+     ;; user's own decision and the model has already moved on
+     (when (and tool-id (not success-p) (not (efrit-agent--denied-result-p result)))
        (efrit-agent--format-error-recovery-buttons tool-id result tool-input)))))
+
+(defun efrit-agent--format-wrapped-paragraph (text indent face)
+  "TEXT filled to the window width, every line prefixed with INDENT, in FACE."
+  (let ((width (max 40 (- (or (and (get-buffer-window) (window-width)) fill-column) (length indent) 2))))
+    (with-temp-buffer
+      (insert (string-trim text))
+      (let ((fill-column width)
+            (fill-prefix nil))
+        (fill-region (point-min) (point-max)))
+      (concat (mapconcat (lambda (l) (concat indent (propertize l 'face face)))
+                         (split-string (buffer-string) "\n")
+                         "\n")
+              "\n"))))
 
 (defun efrit-agent--format-annotations (annotations indent)
   "Format ANNOTATIONS list as a section with INDENT prefix.
@@ -515,6 +569,18 @@ ANNOTATIONS is a list of hash-tables or alists with line and note keys."
                         (propertize note 'face 'efrit-agent-session-id)
                         "\n")))))
     result))
+
+(defun efrit-agent--bare-input-marker (tool-name input)
+  "Marker string for a single-field INPUT shown bare, or nil.
+`$' when TOOL-NAME runs a shell, `λ' when it evaluates Lisp."
+  (when (and (hash-table-p input) (= (hash-table-count input) 1))
+    (let ((key (catch 'k (maphash (lambda (k _) (throw 'k (format "%s" k))) input))))
+      (cond
+       ((member key '("command" "cmd")) "$")
+       ((and (member key '("expr" "expression" "code"))
+             (stringp tool-name) (string-match-p "sexp\\|eval\\|elisp" tool-name))
+        (efrit-agent--char 'lisp-marker))
+       (t nil)))))
 
 (defun efrit-agent--format-tool-input (input)
   "Return INPUT (hash table, alist, plist or string) as readable text.

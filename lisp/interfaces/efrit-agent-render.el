@@ -114,6 +114,11 @@ Creates markers for tracking the message region for future appends."
     ;; Move to end of conversation region
     (save-excursion
       (goto-char (marker-position efrit-agent--conversation-end))
+      ;; Prose after tool rows gets a blank line, so the answer does
+      ;; not read as the last row's continuation
+      (when (and (> (point) (point-min))
+                 (eq (get-text-property (1- (point)) 'efrit-type) 'tool-call))
+        (insert (propertize "\n" 'read-only t)))
       (setq start-marker (point-marker))
       ;; Insert the text
       (insert (propertize text 'face 'efrit-agent-claude-message))

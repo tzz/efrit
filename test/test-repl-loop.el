@@ -91,6 +91,48 @@ string every stubbed tool dispatch returns."
         (should (equal (mapcar (lambda (m) (alist-get 'role m)) messages)
                        '("user" "assistant" "user" "assistant")))))))
 
+(ert-deftest test-repl-loop-sandbox-denial-continues-turn ()
+  "A sandbox denial is a failed tool result: the model answers after it.
+The turn does not end at the denial (it used to), and the model's
+follow-up response is delivered."
+  (require 'efrit-sandbox)
+  (let ((session (efrit-repl-session-create))
+        (turn-reason nil))
+    (test-repl-loop--with-mocks
+        (list (test-repl-loop--make-response
+               (vector (test-repl-loop--make-tool-use
+                        "tool-1" "shell_exec" '(("command" . "cat ~/x"))))
+               "tool_use")
+              (test-repl-loop--make-response
+               (vector (test-repl-loop--make-text "No access to that file; here is what I can do."))
+               "end_turn"))
+        (concat efrit-sandbox-denied-prefix "run shell commands. The user declined.")
+      (efrit-repl-continue session "read my notes"
+                           (lambda (_s reason) (setq turn-reason reason)))
+      (should (equal turn-reason "end_turn"))
+      (should (eq (efrit-repl-session-status session) 'idle))
+      (let ((messages (efrit-repl-session-api-messages session)))
+        (should (= (length messages) 4))
+        ;; the denial went back as an is_error tool_result
+        (let* ((tr (nth 2 messages))
+               (block (aref (alist-get 'content tr) 0)))
+          (should (eq (alist-get 'is_error block) t))
+          (should (string-prefix-p efrit-sandbox-denied-prefix (alist-get 'content block))))))))
+
+(ert-deftest test-repl-loop-c-g-ends-turn ()
+  "C-g during a tool still ends the turn as interrupted."
+  (let ((session (efrit-repl-session-create))
+        (turn-reason nil))
+    (test-repl-loop--with-mocks
+        (list (test-repl-loop--make-response
+               (vector (test-repl-loop--make-tool-use
+                        "tool-1" "eval_sexp" '(("expr" . "(sleep-for 9)"))))
+               "tool_use"))
+        efrit-loop--interrupt-result
+      (efrit-repl-continue session "wait"
+                           (lambda (_s reason) (setq turn-reason reason)))
+      (should (equal turn-reason "interrupted")))))
+
 (ert-deftest test-repl-loop-waiting-for-user-pauses-turn ()
   "A request_user_input result pauses the turn in waiting status."
   (let ((session (efrit-repl-session-create))

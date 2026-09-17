@@ -45,8 +45,8 @@
 (require 'efrit-log)
 (require 'efrit-api)
 (require 'efrit-chat-response)
-(require 'efrit-permissions)   ; efrit-permission-denied-result
-(require 'efrit-sandbox)       ; efrit-sandbox-denied-prefix
+(require 'efrit-permissions)
+(require 'efrit-sandbox)
 (require 'efrit-events)
 
 (declare-function efrit-do--execute-tool "efrit-do-dispatch")
@@ -346,7 +346,7 @@ continues the loop."
               ;; remaining tool_use so the conversation stays valid.
               (push (efrit-api-build-tool-result
                      (nth 0 tool-use-info)
-                     "Error skipped: the turn was ended by the user (interrupt or permission denial)" t)
+                     "Error skipped: the turn was ended by the user (C-g)" t)
                     results)
             (let* ((tool-id (nth 0 tool-use-info))
                  (tool-name (nth 1 tool-use-info))
@@ -408,11 +408,11 @@ continues the loop."
                          tool-result)
                     (setq completion-message
                           (match-string 1 tool-result))))
-                ;; A C-g mid-tool, or a permission denial, both hand
-                ;; control back to the user: no further tools this turn.
-                (when (or (string= tool-result efrit-loop--interrupt-result)
-                          (string= tool-result efrit-permission-denied-result)
-                          (string-prefix-p efrit-sandbox-denied-prefix tool-result))
+                ;; Only a C-g mid-tool hands control back to the user.
+                ;; A sandbox or permission denial is an ordinary failed
+                ;; tool result: the model reads it and carries on, as
+                ;; it would after a failed command.
+                (when (string= tool-result efrit-loop--interrupt-result)
                   (setq user-interrupted t))
                 (when is-waiting
                   (setq waiting-for-user t)))))))))

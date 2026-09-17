@@ -382,10 +382,10 @@ edited the input at the prompt, the edited version is available from
       decision)))
 
 (defconst efrit-permission-denied-result
-  "Error permission denied: the user declined to allow this tool call. The turn ends here; do not retry. Wait for the user's next instruction."
+  "Error permission denied: the user declined this tool call. Do not retry it or work around it. Continue without it if you can; otherwise say what you need and stop."
   "Tool result recorded when the user denies a call.
-Starts with \"Error \" so the loop's error detection sees it, and is
-matched literally by `efrit-loop-execute-tools' to end the turn.")
+Starts with \"Error \" so the loop's error detection sees it.  The
+turn continues; the model decides how to proceed without the call.")
 
 (provide 'efrit-permissions)
 

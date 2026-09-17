@@ -39,10 +39,12 @@
       (set-window-point w (marker-position efrit-agent--conversation-end))
       (should (memq w (efrit-agent--following-windows))))))
 
-(provide 'test-agent-scroll)
-;;; test-agent-scroll.el ends here
-
 ;;; Conversation integrity across a streamed turn
+
+(defconst test-agent-scroll--dir
+  (file-name-directory (or load-file-name buffer-file-name
+                           (locate-library "test-agent-scroll")))
+  "Directory of this test file, resolved at load time.")
 
 (ert-deftest test-agent-user-turn-survives-streamed-answer ()
   "The user's line must still be in the buffer after the model answers."
@@ -52,8 +54,7 @@
         (efrit-api-auth-scheme 'x-api-key)
         (efrit-api-streaming t) (efrit-permission-policy nil)
         (efrit-api-stream-curl-program
-         (expand-file-name "scripts/mock-anthropic-stream.py"
-                           (file-name-directory (or load-file-name buffer-file-name))))
+         (expand-file-name "scripts/mock-anthropic-stream.py" test-agent-scroll--dir))
         (efrit-agent-buffer-name "*efrit-agent-test*"))
     (unwind-protect
         (progn
@@ -98,6 +99,46 @@
               (efrit-agent-show-tool-result id "3" t 0.2))
             (let ((text (buffer-substring-no-properties (point-min) (point-max))))
               (should (string-match-p "✓ eval_sexp · 3  0\\.2s" text))
-              (should (string-match-p "^         (\\+ 1 2)$" text))   ; bare expr, not #s(hash-table
+              (should (string-match-p "^       λ  (\\+ 1 2)$" text))   ; bare expr, not #s(hash-table
               (should-not (string-match-p "hash-table" text)))))
       (when (get-buffer efrit-agent-buffer-name) (kill-buffer efrit-agent-buffer-name)))))
+
+(ert-deftest test-agent-denied-row-is-quiet ()
+  "A sandbox denial renders as a dim ⊘ row: no Failed, no Error:, no Retry bar."
+  (require 'efrit-sandbox)
+  (let ((efrit-agent-buffer-name "*efrit-agent-test4*") (efrit-agent-display-mode 'verbose))
+    (unwind-protect
+        (progn
+          (efrit-agent-open)
+          (with-current-buffer efrit-agent-buffer-name
+            (let* ((h (make-hash-table :test 'equal))
+                   (_ (puthash "command" "cat ~/x" h))
+                   (id (efrit-agent-show-tool-start "shell_exec" h)))
+              (efrit-agent-show-tool-result
+               id (concat efrit-sandbox-denied-prefix "run shell commands. The user declined. Continue without it.")
+               nil 1.0))
+            (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+              (should (string-match-p "⊘ shell_exec: cat ~/x · denied  1\\.0s" text))
+              (should (string-match-p "^       \\$  cat ~/x$" text))
+              (should-not (string-match-p "Failed\\|Error:\\|\\[Retry\\]\\|\\[Skip\\]" text)))))
+      (when (get-buffer efrit-agent-buffer-name) (kill-buffer efrit-agent-buffer-name)))))
+
+(ert-deftest test-agent-failed-row-shows-gist-and-recovery ()
+  "A real failure: first sentence of the error on the row, message in the body, Retry bar."
+  (let ((efrit-agent-buffer-name "*efrit-agent-test5*") (efrit-agent-display-mode 'verbose))
+    (unwind-protect
+        (progn
+          (efrit-agent-open)
+          (with-current-buffer efrit-agent-buffer-name
+            (let* ((h (make-hash-table :test 'equal))
+                   (_ (puthash "path" "nope.el" h))
+                   (id (efrit-agent-show-tool-start "read_file" h)))
+              (efrit-agent-show-tool-result id "Error: file not found: nope.el. Check the path." nil 0.1))
+            (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+              (should (string-match-p "✗ read_file: nope.el · file not found: nope.el  0\\.1s" text))
+              (should (string-match-p "\\[Retry\\] \\[Skip\\]" text))
+              (should-not (string-match-p "Failed\\|Error: $" text)))))
+      (when (get-buffer efrit-agent-buffer-name) (kill-buffer efrit-agent-buffer-name)))))
+
+(provide 'test-agent-scroll)
+;;; test-agent-scroll.el ends here
