@@ -92,6 +92,18 @@
   (should-error (efrit-common--validate-api-key "") :type 'error)
   (should-error (efrit-common--validate-api-key nil) :type 'error))
 
+(defun test-auth-config--named-key-fn () "sk-named-function-key-1234567890abcdef")
+
+(ert-deftest test-auth-config-named-function-symbol ()
+  "A quoted function NAME (#\='fn) must be called, not treated as an env var.
+Regression: the symbolp branch used to win over functionp."
+  (let ((efrit-api-key #'test-auth-config--named-key-fn))
+    (should (string= (efrit-common-get-api-key) "sk-named-function-key-1234567890abcdef")))
+  ;; A symbol that is NOT a function is still an env-var name
+  (test-auth-config-with-env "TEST_ENV_NAME_KEY" "sk-env-key-1234567890abcdefghij"
+    (let ((efrit-api-key 'TEST_ENV_NAME_KEY))
+      (should (string= (efrit-common-get-api-key) "sk-env-key-1234567890abcdefghij")))))
+
 (ert-deftest test-auth-config-bearer-scheme ()
   "Under `bearer', arbitrary proxy tokens are accepted and sent as Authorization."
   (let ((efrit-api-auth-scheme 'bearer))

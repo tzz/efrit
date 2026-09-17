@@ -192,15 +192,21 @@ Validates key format and throws error if not found."
                  (message "⚠️  WARNING: API key stored directly in variable (security risk)"))
                efrit-api-key)
               
-              ;; Symbol naming an environment variable (recommended)
-              ((and (symbolp efrit-api-key) efrit-api-key)
-               (or (getenv (symbol-name efrit-api-key))
-                   (error "Environment variable %s not set" efrit-api-key)))
-              
-              ;; Function that returns API key (advanced)
+              ;; Function that returns the key.  Checked BEFORE the
+              ;; env-var case: a named function like #\='my-key-fn is
+              ;; also a symbol, and used to be looked up as an
+              ;; environment variable.
               ((functionp efrit-api-key)
                (or (funcall efrit-api-key)
-                   (error "API key function returned nil")))
+                   (error "API key function %s returned nil"
+                          (if (symbolp efrit-api-key) efrit-api-key "(lambda)"))))
+
+              ;; Symbol naming an environment variable
+              ((and (symbolp efrit-api-key) efrit-api-key)
+               (or (getenv (symbol-name efrit-api-key))
+                   (error "Environment variable %s not set%s" efrit-api-key
+                          (if (fboundp efrit-api-key) ""
+                            " (and it is not a function either)"))))
               
               ;; Try ANTHROPIC_API_KEY environment variable (fallback)
               ((getenv "ANTHROPIC_API_KEY"))

@@ -170,6 +170,20 @@
     (should (test-doctor--has (test-doctor--levels #'efrit-doctor--check-permissions)
                               'fail "signalled"))))
 
+(ert-deftest test-doctor-context-layer-without-prompt-module-loaded ()
+  "The context layer must not fail if efrit-do-prompt was not yet loaded."
+  (let ((efrit-context-sources '(buffer)))
+    (cl-letf (((symbol-function 'featurep)
+               (lambda (f &rest _) (and (not (eq f 'efrit-do-prompt)) t))))
+      (should-not (test-doctor--has (test-doctor--levels #'efrit-doctor--check-context)
+                                    'fail "check itself failed")))))
+
+(ert-deftest test-doctor-credentials-named-function ()
+  (defun test-doctor--key () "gateway-token-xyz")
+  (let ((efrit-api-key #'test-doctor--key) (efrit-api-auth-scheme 'bearer))
+    (let ((levels (test-doctor--levels #'efrit-doctor--check-credentials)))
+      (should (test-doctor--has levels 'ok "via function test-doctor--key")))))
+
 (ert-deftest test-doctor-context-and-hooks ()
   (require 'efrit-context-sources)
   (let ((efrit-context-sources '(buffer bogus-source))

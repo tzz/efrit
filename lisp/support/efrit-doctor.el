@@ -206,7 +206,9 @@ Otherwise the live model/caching checks run only with a prefix arg."
 (defun efrit-doctor--check-credentials ()
   (efrit-doctor--layer "Credentials"
     (let ((source (cond ((stringp efrit-api-key) "literal string in efrit-api-key (not recommended)")
-                        ((functionp efrit-api-key) "function in efrit-api-key")
+                        ((functionp efrit-api-key)
+                         (format "function %s in efrit-api-key"
+                                 (if (symbolp efrit-api-key) efrit-api-key "(lambda)")))
                         ((and efrit-api-key (symbolp efrit-api-key))
                          (format "environment variable %s" efrit-api-key))
                         ((getenv "ANTHROPIC_API_KEY") "ANTHROPIC_API_KEY")
@@ -434,6 +436,7 @@ carries a cache_control block, which is the caching probe."
 (defun efrit-doctor--check-context ()
   (efrit-doctor--layer "Context"
     (require 'efrit-context-sources)
+    (require 'efrit-do-prompt)   ; efrit-system-prompt-functions
     (let ((bad (cl-remove-if (lambda (s) (or (functionp s)
                                              (memq s '(buffer position region diagnostic project
                                                        visible-buffers recent-files))))
