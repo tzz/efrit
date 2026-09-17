@@ -38,6 +38,7 @@
 (require 'url-parse)
 (require 'efrit-config)
 (require 'efrit-common)
+(require 'efrit-models)
 
 (declare-function efrit-api-request-async "efrit-api")
 (declare-function efrit-api-build-headers "efrit-api")
@@ -324,9 +325,11 @@ carries a cache_control block, which is the caching probe."
             ((string-match-p "401\\|authentication\\|invalid x-api-key\\|Unauthorized" m)
              (efrit-doctor--fail "Endpoint rejected the credentials (401)"
                                  (format "%s\nKey resolves locally but the server refuses it: expired/rotated key, wrong auth scheme (%s), or wrong environment." m efrit-api-auth-scheme)))
-            ((string-match-p "not_found_error.*model\\|model.*not found" m)
-             (efrit-doctor--fail (format "Model %s unknown to this endpoint" efrit-default-model)
-                                 (format "%s\nGateways often use their own model ids; check the list your gateway publishes." m)))
+            ((efrit-models-model-error-p m)
+             (efrit-doctor--fail (format "Model %s not available at this endpoint" efrit-default-model)
+                                 (format "%s\nGateways expose their own model ids and per-key entitlements.  Pick one that answers here." m)
+                                 "Select a working model"
+                                 (lambda () (efrit-select-model t))))
             ((string-match-p "404" m)
              (efrit-doctor--fail "404 from endpoint"
                                  (format "%s\nThe base URL is probably wrong (does the gateway need a path prefix?)." m)))

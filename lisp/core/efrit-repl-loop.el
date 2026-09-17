@@ -35,8 +35,10 @@
 (require 'efrit-loop)
 (require 'efrit-context-sources)
 (require 'efrit-events)
+(require 'efrit-models)
 
 (declare-function efrit-agent-set-status "efrit-agent")
+(defvar efrit-default-model)
 (declare-function efrit-agent--add-error-message "efrit-agent-render")
 
 ;;; Customization
@@ -198,8 +200,19 @@ CALLBACK is (lambda (response error) ...) called when complete."
   "Handle API ERROR for REPL SESSION."
   (efrit-log 'error "REPL session %s: API error: %s"
              (efrit-repl-session-id session) error)
-  (efrit-repl-loop--display-error session (format "%s" error))
+  (efrit-repl-loop--display-error session (efrit-repl-loop--explain-api-error error))
   (efrit-repl-loop--end-turn session "api-error"))
+
+(defun efrit-repl-loop--explain-api-error (error)
+  "Return ERROR as a string, with a next step appended when we know one."
+  (let ((msg (format "%s" error)))
+    (cond
+     ((efrit-models-model-error-p msg)
+      (format "%s\n\nThe endpoint does not serve model %s.  Run M-x efrit-select-model (C-u to probe candidates) or C-u M-x efrit-doctor."
+              msg efrit-default-model))
+     ((string-match-p "401\\|authentication\\|Unauthorized" msg)
+      (format "%s\n\nCredentials were rejected.  If the key is minted per session it may have expired; refresh it and run M-x efrit-doctor." msg))
+     (t msg))))
 
 (defun efrit-repl-loop--finish (session stop-reason error-message
                                         _completion-message)

@@ -272,6 +272,9 @@ Executes all ERT tests and displays results in a buffer."
 ;;;###autoload
 (autoload 'efrit-doctor "efrit-doctor"
   "Verify every layer of the efrit configuration and suggest fixes." t)
+;;;###autoload
+(autoload 'efrit-select-model "efrit-models"
+  "Choose efrit-default-model from what the endpoint offers." t)
 
 ;; Initialize on load
 (provide 'efrit)

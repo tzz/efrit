@@ -145,7 +145,8 @@
 (ert-deftest test-doctor-live-classifies-http-errors ()
   (let ((efrit-api-prompt-caching nil) (efrit-default-model "m"))
     (dolist (case '(("HTTP error: (error http 401)" . "401")
-                    ("API Error (not_found_error): model: m not found" . "unknown to this endpoint")
+                    ("API Error (not_found_error): model: m not found" . "not available at this endpoint")
+                    ("API Error (api_error): no keys found that support model: claude-sonnet-4-5" . "not available at this endpoint")
                     ("HTTP error: (error http 404)" . "404 from endpoint")
                     ("HTTP error: (error http 403)" . "403")))
       (test-doctor--with-api (lambda (_req _ok err) (funcall err (car case)))
@@ -153,6 +154,15 @@
                                   'fail (cdr case)))))))
 
 ;;; Permissions / context / whole run
+
+(ert-deftest test-doctor-model-error-offers-select-model ()
+  (let ((efrit-api-prompt-caching nil) (efrit-default-model "m") (called nil))
+    (test-doctor--with-api
+        (lambda (_req _ok err) (funcall err "API Error (api_error): no keys found that support model: m"))
+      (test-doctor--levels #'efrit-doctor--check-live)
+      (cl-letf (((symbol-function 'efrit-select-model) (lambda (&optional p) (setq called p))))
+        (funcall (test-doctor--fix-for "not available")))
+      (should (eq called t)))))
 
 (ert-deftest test-doctor-permissions ()
   (require 'efrit-permissions)
