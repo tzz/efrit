@@ -311,6 +311,7 @@ Should be called after `efrit-agent--init-regions' when the buffer is empty."
     (setq conversation-end-pos (point))
     ;; Insert separator between conversation and input
     (insert (propertize (concat (make-string 60 ?─) "\n")
+                        'face 'efrit-agent-timestamp
                         'efrit-agent-separator t
                         'read-only t
                         'rear-nonsticky t))

@@ -153,10 +153,40 @@ Returns nil if no annotations or unknown kind."
                (or (plist-get ann :bytes-written) 0)))
       (_ nil))))
 
+(defun efrit-agent--session-complete-message (result)
+  "The user-facing message inside a session_complete RESULT string, or nil."
+  (let ((s (format "%s" (or result ""))))
+    (when (string-match "\\[SESSION-COMPLETE: \\(\\(?:.\\|\n\\)*\\)\\]" s)
+      (string-trim (match-string 1 s)))))
+
 (defun efrit-agent--render-tool-call (tv)
   "Render tool call described by TV (efrit-agent-tool-view) at point.
 Inserts both header line and (if expanded) body content.
-Returns the end position of the inserted content."
+Returns the end position of the inserted content.
+
+session_complete is not shown as a tool at all: its message is the
+assistant's final answer and is rendered as prose, with a thin rule
+marking the end of the turn."
+  (if (and (equal (efrit-agent-tool-view-name tv) "session_complete")
+           (not (efrit-agent-tool-view-running tv)))
+      (let* ((start (point))
+             (msg (or (efrit-agent--session-complete-message
+                       (efrit-agent-tool-view-result tv))
+                      (efrit-agent--format-tool-input (efrit-agent-tool-view-input tv)))))
+        (when (and msg (not (string-empty-p msg)))
+          (insert (propertize msg 'face 'efrit-agent-claude-message) "\n"))
+        (insert (propertize (concat (make-string 3 ?·) "\n") 'face 'efrit-agent-timestamp))
+        (add-text-properties start (point)
+                             (list 'efrit-type 'tool-call
+                                   'efrit-id (efrit-agent-tool-view-id tv)
+                                   'efrit-tool-name "session_complete"
+                                   'efrit-tool-result (efrit-agent-tool-view-result tv)
+                                   'efrit-tool-success t))
+        (point))
+    (efrit-agent--render-tool-call-1 tv)))
+
+(defun efrit-agent--render-tool-call-1 (tv)
+  "Render a regular tool call TV at point (see `efrit-agent--render-tool-call')."
   (let* ((id (efrit-agent-tool-view-id tv))
          (name (efrit-agent-tool-view-name tv))
          (input (efrit-agent-tool-view-input tv))
@@ -197,23 +227,21 @@ Returns the end position of the inserted content."
     ;; Show target (file path, pattern, etc.)
     (when target
       (insert (propertize (format ": %s" target) 'face 'efrit-agent-session-id)))
-    ;; Show elapsed time
-    (when elapsed
-      (insert (propertize (format " (%.2fs)" elapsed) 'face 'efrit-agent-timestamp)))
-    ;; Show result summary or running indicator
+    ;; One line: the summary follows the name on the same row; the
+    ;; status glyph at the start already says success/failure
     (cond
      (running
-      (insert "\n")
-      (insert (propertize (format "     %s\n" (efrit-agent--tool-progress-text name input))
+      (insert (propertize (format "  %s" (efrit-agent--tool-progress-text name input))
                           'face 'efrit-agent-timestamp)))
      (result
-      (insert "\n")
-      (insert (propertize (format "     %s %s\n"
-                                  (if success-p "✓" "✗")
-                                  (or summary "Done"))
-                          'face (if success-p 'efrit-agent-success 'efrit-agent-error)))))
-    (unless (or running result)
-      (insert "\n"))
+      (let ((sum (string-trim (or summary "done"))))
+        (unless (string-empty-p sum)
+          (insert (propertize " · " 'face 'efrit-agent-timestamp))
+          (insert (propertize (truncate-string-to-width sum 70 nil nil "…")
+                              'face (if success-p 'efrit-agent-session-id 'efrit-agent-error)))))))
+    (when (and elapsed (>= elapsed 0.05))
+      (insert (propertize (format "  %.1fs" elapsed) 'face 'efrit-agent-timestamp)))
+    (insert "\n")
     ;; Insert expanded body if expanded
     (when (and expanded-p (or input result))
       (insert (efrit-agent--format-tool-expansion input result success-p id render-type annotations)))
@@ -314,19 +342,23 @@ Returns the tool ID for later update with result."
   ;; Hide thinking indicator when tool starts
   (efrit-agent--hide-thinking)
   (let* ((tool-id (format "tool-%d" (cl-incf efrit-agent--message-counter)))
+         (silent (equal tool-name "session_complete"))
          (target (efrit-agent--extract-tool-target tool-name input))
          (progress (efrit-agent--tool-progress-text tool-name input))
          (formatted-text
-          (concat
-           "  "
-           (propertize (format "%s " (efrit-agent--char 'tool-running))
-                       'face 'efrit-agent-status-working)
-           (propertize tool-name 'face 'efrit-agent-tool-name)
-           (when target
-             (propertize (format ": %s" target) 'face 'efrit-agent-session-id))
-           "\n"
-           (propertize (format "     %s\n" progress)
-                       'face 'efrit-agent-timestamp))))
+          (if silent
+              ;; session_complete: the result renders as the answer; a
+              ;; zero-width placeholder keeps the id findable for update
+              (propertize " " 'invisible t)
+            (concat
+             "  "
+             (propertize (format "%s " (efrit-agent--char 'tool-running))
+                         'face 'efrit-agent-status-working)
+             (propertize tool-name 'face 'efrit-agent-tool-name)
+             (when target
+               (propertize (format ": %s" target) 'face 'efrit-agent-session-id))
+             (propertize (format "  %s" progress) 'face 'efrit-agent-timestamp)
+             "\n"))))
     ;; Store the tool info for later result update
     (efrit-agent--append-to-conversation
      formatted-text
@@ -444,7 +476,7 @@ Diffs are syntax-highlighted if `efrit-agent-show-diff' is non-nil."
        (concat
         indent (propertize "Input: " 'face 'efrit-agent-section-header) "\n"
         (efrit-agent--format-indented-lines
-         (pp-to-string tool-input) indent max-lines)))
+         (efrit-agent--format-tool-input tool-input) indent max-lines)))
      ;; Result section (with render-type aware formatting)
      (when result
        (concat
@@ -460,10 +492,7 @@ Diffs are syntax-highlighted if `efrit-agent-show-diff' is non-nil."
        (efrit-agent--format-annotations annotations indent))
      ;; Error recovery buttons (only when tool failed and tool-id is known)
      (when (and tool-id (not success-p))
-       (efrit-agent--format-error-recovery-buttons tool-id result tool-input))
-     ;; Separator
-     indent (propertize (make-string 50 (efrit-agent--char 'box-horizontal))
-                        'face 'efrit-agent-timestamp) "\n")))
+       (efrit-agent--format-error-recovery-buttons tool-id result tool-input)))))
 
 (defun efrit-agent--format-annotations (annotations indent)
   "Format ANNOTATIONS list as a section with INDENT prefix.
@@ -486,6 +515,29 @@ ANNOTATIONS is a list of hash-tables or alists with line and note keys."
                         (propertize note 'face 'efrit-agent-session-id)
                         "\n")))))
     result))
+
+(defun efrit-agent--format-tool-input (input)
+  "Return INPUT (hash table, alist, plist or string) as readable text.
+Hash tables are printed key: value, one per line, instead of the
+#s(hash-table ...) reader syntax; a lone `expr'/`command' value is
+shown bare since that IS the call."
+  (cond
+   ((null input) "")
+   ((stringp input) input)
+   ((hash-table-p input)
+    (let (pairs)
+      (maphash (lambda (k v) (push (cons (format "%s" k) v) pairs)) input)
+      (setq pairs (sort pairs (lambda (a b) (string< (car a) (car b)))))
+      (if (and (= (length pairs) 1)
+               (member (caar pairs) '("expr" "expression" "code" "command")))
+          (format "%s" (cdar pairs))
+        (mapconcat (lambda (p)
+                     (let ((v (cdr p)))
+                       (format "%s: %s" (car p)
+                               (if (and (stringp v) (string-match-p "\n" v))
+                                   (concat "\n" v) v))))
+                   pairs "\n"))))
+   (t (pp-to-string input))))
 
 (defun efrit-agent--format-indented-lines (text indent max-lines)
   "Format TEXT with INDENT prefix, limiting to MAX-LINES."

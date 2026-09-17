@@ -40,3 +40,63 @@
 
 (provide 'test-agent-scroll)
 ;;; test-agent-scroll.el ends here
+
+;;; Conversation integrity across a streamed turn
+
+(ert-deftest test-agent-user-turn-survives-streamed-answer ()
+  "The user's line must still be in the buffer after the model answers."
+  (skip-unless (executable-find "python3"))
+  (require 'efrit-api-stream)
+  (let ((efrit-api-key "sk-test-key-1234567890abcdefghij")
+        (efrit-api-auth-scheme 'x-api-key)
+        (efrit-api-streaming t) (efrit-permission-policy nil)
+        (efrit-api-stream-curl-program
+         (expand-file-name "scripts/mock-anthropic-stream.py"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+        (efrit-agent-buffer-name "*efrit-agent-test*"))
+    (unwind-protect
+        (progn
+          (efrit-agent-open)
+          (with-current-buffer efrit-agent-buffer-name
+            (goto-char (point-max)) (insert "please text")
+            (efrit-agent-input-send)
+            (let ((deadline (+ (float-time) 8)))
+              (while (and (< (float-time) deadline) (not (eq efrit-agent--status 'idle)))
+                (accept-process-output nil 0.05)))
+            (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+              (should (string-match-p "❯ please text" text))
+              (should (string-match-p "Hello, world\\." text))
+              ;; the user turn precedes the answer
+              (should (< (string-match "please text" text) (string-match "Hello" text)))
+              ;; no raw protocol markers leak into the transcript
+              (should-not (string-match-p "SESSION-COMPLETE\\|#s(hash-table" text)))))
+      (when (get-buffer efrit-agent-buffer-name) (kill-buffer efrit-agent-buffer-name)))))
+
+(ert-deftest test-agent-session-complete-renders-as-answer ()
+  (let ((efrit-agent-buffer-name "*efrit-agent-test2*"))
+    (unwind-protect
+        (progn
+          (efrit-agent-open)
+          (with-current-buffer efrit-agent-buffer-name
+            (let ((id (efrit-agent-show-tool-start "session_complete" nil)))
+              (efrit-agent-show-tool-result id "[SESSION-COMPLETE: The answer is 42.]" t 0.0))
+            (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+              (should (string-match-p "^The answer is 42\\.$" text))
+              (should-not (string-match-p "session_complete\\|SESSION-COMPLETE\\|Result:" text)))))
+      (when (get-buffer efrit-agent-buffer-name) (kill-buffer efrit-agent-buffer-name)))))
+
+(ert-deftest test-agent-tool-row-is-one-line-with-readable-input ()
+  (let ((efrit-agent-buffer-name "*efrit-agent-test3*") (efrit-agent-display-mode 'verbose))
+    (unwind-protect
+        (progn
+          (efrit-agent-open)
+          (with-current-buffer efrit-agent-buffer-name
+            (let* ((h (make-hash-table :test 'equal))
+                   (_ (puthash "expr" "(+ 1 2)" h))
+                   (id (efrit-agent-show-tool-start "eval_sexp" h)))
+              (efrit-agent-show-tool-result id "3" t 0.2))
+            (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+              (should (string-match-p "✓ eval_sexp · 3  0\\.2s" text))
+              (should (string-match-p "^         (\\+ 1 2)$" text))   ; bare expr, not #s(hash-table
+              (should-not (string-match-p "hash-table" text)))))
+      (when (get-buffer efrit-agent-buffer-name) (kill-buffer efrit-agent-buffer-name)))))
