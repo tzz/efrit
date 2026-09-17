@@ -21,6 +21,7 @@
 ;;; Code:
 
 (require 'efrit-tool-utils)
+(require 'efrit-file-io)
 (require 'cl-lib)
 (require 'efrit-tool-undo-edit)
 
@@ -87,9 +88,14 @@ Returns a standard tool response with creation details."
           (push (format "Created directory: %s" (file-relative-name parent-dir (plist-get path-info :project-root)))
                 warnings))
 
-        ;; Write the file
-        (with-temp-file path
-          (insert content))
+        ;; Write the file, through the visiting buffer if one exists
+        ;; (overwrite case), so the user's buffer and disk agree
+        (let ((w (efrit-file-write-string path content)))
+          (when (eq (plist-get w :via) 'buffer)
+            (push (format "Replaced contents of the live buffer visiting %s%s"
+                          path-relative
+                          (if (plist-get w :saved) " and saved" " (not saved)"))
+                  warnings)))
 
         ;; Register with undo system (empty string for new files)
         (efrit-undo-edit--register-edit path "")
