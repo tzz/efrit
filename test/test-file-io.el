@@ -101,5 +101,13 @@
         (should (cl-some (lambda (w) (string-match-p "UNSAVED" w))
                          (append (alist-get 'warnings resp) nil)))))))
 
+(ert-deftest test-fio-edit-file-warns-on-unbalanced-lisp ()
+  (test-fio--with-file "(defun ok () 1)\n"
+    (let ((efrit-project-root (file-name-directory path)) (efrit-project-sandbox t))
+      (let ((resp (efrit-tool-edit-file `((path . ,path) (old_str . "1)") (new_str . "1")))))
+        (should (eq (alist-get 'success resp) t))   ; the edit is applied...
+        (should (cl-some (lambda (w) (string-match-p "Lisp syntax problem" w))  ; ...and flagged
+                         (append (alist-get 'warnings resp) nil)))))))
+
 (provide 'test-file-io)
 ;;; test-file-io.el ends here

@@ -22,6 +22,7 @@
 
 (require 'efrit-tool-utils)
 (require 'efrit-file-io)
+(require 'efrit-common)
 (require 'cl-lib)
 (require 'efrit-tool-undo-edit)
 
@@ -99,6 +100,11 @@ Returns a standard tool response with creation details."
 
         ;; Register with undo system (empty string for new files)
         (efrit-undo-edit--register-edit path "")
+        ;; Balance check for Lisp targets: tell the model now, not at load
+        (when (string-match-p "\\.el\\'" path)
+          (when-let* ((problem (efrit-lisp-syntax-problem content)))
+            (push (format "Lisp syntax problem in the written file: %s. Fix it before evaluating." problem)
+                  warnings)))
 
         ;; Generate a diff-like output for new files
         (let* ((line-count (with-temp-buffer

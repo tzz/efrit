@@ -424,6 +424,91 @@ Example usage:
            (message "%s\nRecovery: %s" msg recovery-hint))
          (cons nil msg))))))
 
+;;; Output truncation, warn-once, templates, syntax check
+
+(defun efrit-truncate-output (text max-chars &optional keep)
+  "Truncate TEXT to about MAX-CHARS characters for a tool result.
+KEEP is `tail' (default), `head', or `both'.  Tool output usually
+ends with the interesting part (the failing test, the error), so the
+default keeps the tail.  A marker says how much was dropped."
+  (let ((len (length text)))
+    (if (<= len max-chars)
+        text
+      (pcase (or keep 'tail)
+        ('head (concat (substring text 0 max-chars)
+                       (format "\n... [%d more chars truncated]" (- len max-chars))))
+        ('both (let ((half (/ max-chars 2)))
+                 (concat (substring text 0 half)
+                         (format "\n... [%d chars omitted] ...\n" (- len max-chars))
+                         (substring text (- len half)))))
+        (_ (concat (format "[first %d chars omitted] ...\n" (- len max-chars))
+                   (substring text (- len max-chars))))))))
+
+(defvar efrit--warned (make-hash-table :test 'equal)
+  "Keys already warned about, for `efrit-warn-once'.")
+
+(defun efrit-warn-once (key format-string &rest args)
+  "Display a warning once per KEY (and message text) per session.
+Re-warns only if the message changes, so a flapping condition doesn't
+spam but a *different* failure is still shown.  Returns non-nil if a
+warning was displayed."
+  (let* ((msg (apply #'format format-string args))
+         (prev (gethash key efrit--warned)))
+    (unless (equal prev msg)
+      (puthash key msg efrit--warned)
+      (display-warning 'efrit msg :warning)
+      t)))
+
+(defun efrit-expand-template (template lookup)
+  "Expand {{{:key}}} placeholders in TEMPLATE using LOOKUP.
+LOOKUP is a function from the keyword (e.g. :key) to a string, a
+symbol whose value is a string, a function returning a string, or
+nil.  A nil slot expands to the empty string.  Single pass with
+`string-search': replacement text is inserted verbatim, never
+rescanned, and never passed through a regexp replacement, so `\\1',
+`\\&' and backslashes in file contents cannot corrupt the result.
+\(minuet's expander.)"
+  (let ((out nil) (pos 0) (len (length template)))
+    (while (< pos len)
+      (let ((start (string-search "{{{" template pos)))
+        (if (not start)
+            (progn (push (substring template pos) out) (setq pos len))
+          (let ((end (string-search "}}}" template (+ start 3))))
+            (if (not end)
+                (progn (push (substring template pos) out) (setq pos len))
+              (push (substring template pos start) out)
+              (let* ((name (substring template (+ start 3) end))
+                     (key (intern (if (string-prefix-p ":" name) name (concat ":" name))))
+                     (raw (funcall lookup key))
+                     (val (cond ((null raw) "")
+                                ((stringp raw) raw)
+                                ((functionp raw) (funcall raw))
+                                ((and (symbolp raw) (boundp raw)) (symbol-value raw))
+                                (t raw))))
+                (unless (stringp val)
+                  (signal 'wrong-type-argument (list 'stringp val key)))
+                (push val out))
+              (setq pos (+ end 3)))))))
+    (apply #'concat (nreverse out))))
+
+(defun efrit-lisp-syntax-problem (text &optional mode)
+  "Return a description of an unbalanced-paren/string problem in TEXT, or nil.
+Checks in a temp buffer under MODE (default `emacs-lisp-mode') using
+the mode's syntax table, so quotes and comments are respected.
+Use after writing Lisp so the model gets \"you produced unbalanced
+code at line N\" instead of a later load error."
+  (with-temp-buffer
+    (insert text)
+    (condition-case nil (funcall (or mode #'emacs-lisp-mode)) (error nil))
+    (condition-case err
+        (progn (check-parens) nil)
+      (user-error
+       ;; check-parens leaves point at the problem
+       (format "%s at line %d, column %d"
+               (error-message-string err)
+               (line-number-at-pos) (current-column)))
+      (error (error-message-string err)))))
+
 ;;; Health check lives in efrit-doctor.el (M-x efrit-doctor)
 
 (provide 'efrit-common)

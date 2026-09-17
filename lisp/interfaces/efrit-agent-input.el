@@ -520,10 +520,16 @@ Called after sending input to exit history navigation mode."
   "Save global history to `efrit-agent-history-file'."
   (when (and efrit-agent-history-file efrit-agent--global-history)
     (condition-case err
-        (with-temp-file efrit-agent-history-file
-          (insert ";; Efrit Agent Input History\n")
-          (insert ";; Do not edit manually\n")
-          (pp efrit-agent--global-history (current-buffer)))
+        (with-file-modes #o600
+          (with-temp-file efrit-agent-history-file
+            (insert ";; Efrit Agent Input History\n")
+            (insert ";; Do not edit manually\n")
+            ;; Plain strings only: text properties would round-trip
+            ;; through `read' and could carry keymap/display props
+            (let ((print-length nil) (print-level nil))
+              (pp (mapcar (lambda (h) (if (stringp h) (substring-no-properties h) h))
+                          efrit-agent--global-history)
+                  (current-buffer)))))
       (error
        (message "Failed to save efrit-agent history: %s" (error-message-string err))))))
 
@@ -538,7 +544,14 @@ Called after sending input to exit history navigation mode."
           ;; Skip comment lines
           (while (looking-at "^;")
             (forward-line 1))
-          (setq efrit-agent--global-history (read (current-buffer))))
+          (let ((data (read (current-buffer))))
+            ;; Accept only a list of strings, stripped of any properties
+            ;; a tampered file might carry (keymap, display, read-only)
+            (setq efrit-agent--global-history
+                  (if (listp data)
+                      (delq nil (mapcar (lambda (h) (and (stringp h) (substring-no-properties h)))
+                                        data))
+                    nil))))
       (error
        (message "Failed to load efrit-agent history: %s" (error-message-string err))
        (setq efrit-agent--global-history nil)))))

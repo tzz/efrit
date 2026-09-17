@@ -37,6 +37,7 @@
 (require 'efrit-agent-render)
 (require 'efrit-agent-svg-header)
 (declare-function efrit-api-stream-cancel "efrit-api-stream")
+(autoload 'efrit-menu "efrit-menu" nil t)
 (require 'efrit-agent-tools)
 (require 'efrit-agent-input)
 (require 'efrit-agent-integration)
@@ -268,6 +269,7 @@
     (define-key map (kbd "C-c C-v") #'efrit-agent-cycle-verbosity)
     (define-key map (kbd "C-c C-o") #'efrit-agent-cycle-display-mode)
     (define-key map (kbd "C-c C-l") #'efrit-agent-cycle-header-style)
+    (define-key map (kbd "C-c C-m") #'efrit-menu)
 
     ;; Input handling
     (define-key map (kbd "C-c C-s") #'efrit-agent-send-input)

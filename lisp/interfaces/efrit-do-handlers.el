@@ -121,6 +121,11 @@ Prevents runaway searches from overwhelming the system."
   :type 'integer
   :group 'efrit-do)
 
+(defcustom efrit-do-shell-output-max 8000
+  "Characters of shell_exec output returned to the model; the tail is kept."
+  :type 'integer
+  :group 'efrit-do)
+
 (defcustom efrit-do-shell-timeout 10
   "Seconds to allow a shell_exec command before it is killed."
   :type 'integer
@@ -401,9 +406,8 @@ Returns output or security error."
                       (let ((remote (file-remote-p (efrit-tool--get-project-root))))
                         (if remote (format "\n[On host: %s]" remote) ""))
                       duration
-                      (if (> (length shell-result) 1000)
-                          (concat (substring shell-result 0 1000) "\n... (output truncated)")
-                        shell-result)))
+                      ;; Keep the tail: that's where the error is
+                      (efrit-truncate-output shell-result efrit-do-shell-output-max 'tail)))
           (efrit-shell-timeout
            (format "\n[Shell command killed after exceeding the %d second timeout: %s]"
                    efrit-do-shell-timeout input-str))
