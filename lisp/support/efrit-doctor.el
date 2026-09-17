@@ -40,6 +40,14 @@
 (require 'efrit-config)
 (require 'efrit-common)
 (require 'efrit-models)
+;; Modules whose variables the layers inspect.  Loaded eagerly: a
+;; lazy (require ...) inside a layer that `let'-binds one of these
+;; variables would define it as special while it is lexically bound.
+(require 'efrit-api-stream)
+(require 'efrit-context-sources)
+(require 'efrit-do-prompt)
+(require 'efrit-permissions)
+(require 'efrit-tool-utils)
 
 (declare-function efrit-api-request-async "efrit-api")
 (declare-function efrit-api-build-headers "efrit-api")
@@ -60,15 +68,7 @@
 (defvar efrit-api-excluded-headers)
 (defvar efrit-api-prompt-caching)
 (defvar efrit-default-model)
-(defvar efrit-project-sandbox)
-(defvar efrit-project-root)
-(defvar efrit-permission-policy)
-(defvar efrit-permission-responder-function)
-(defvar efrit-context-sources)
 (defvar efrit-agent-header-style)
-(defvar efrit-system-prompt-functions)
-(defvar efrit-api-streaming)
-(defvar efrit-api-stream-curl-program)
 
 (defgroup efrit-doctor nil
   "Configuration verifier."
@@ -355,7 +355,6 @@ carries a cache_control block, which is the caching probe."
 
 (defun efrit-doctor--check-sandbox ()
   (efrit-doctor--layer "Sandbox"
-    (require 'efrit-tool-utils)
     (let* ((root (efrit-tool--get-project-root))
            (remote (file-remote-p root)))
       (efrit-doctor--info (format "Project root: %s%s" (abbreviate-file-name root)
@@ -410,7 +409,6 @@ carries a cache_control block, which is the caching probe."
 
 (defun efrit-doctor--check-permissions ()
   (efrit-doctor--layer "Permissions"
-    (require 'efrit-permissions)
     (cond
      ((null efrit-permission-policy)
       (efrit-doctor--warn "Permission policy is nil"
@@ -441,8 +439,6 @@ carries a cache_control block, which is the caching probe."
 
 (defun efrit-doctor--check-context ()
   (efrit-doctor--layer "Context"
-    (require 'efrit-context-sources)
-    (require 'efrit-do-prompt)   ; efrit-system-prompt-functions
     (let ((bad (cl-remove-if (lambda (s) (or (functionp s)
                                              (memq s '(buffer position region diagnostic project
                                                        visible-buffers recent-files))))
@@ -468,7 +464,6 @@ carries a cache_control block, which is the caching probe."
 
 (defun efrit-doctor--check-transport ()
   (efrit-doctor--layer "Transport"
-    (require 'efrit-api-stream)
     (if (not (bound-and-true-p efrit-api-streaming))
         (efrit-doctor--info "Streaming transport off; using url-retrieve"
                             "Responses render only when complete and cannot be cancelled mid-flight.  Set efrit-api-streaming to t (needs curl).")
