@@ -327,51 +327,6 @@ Returns a string with current Emacs state, buffer info, and recent history."
     ;; Join all context parts
     (string-join (reverse context-parts) "\n")))
 
-(defun efrit-do--extract-error-info (result)
-  "Extract error information from RESULT string.
-Returns (error-p . error-msg) where error-p is t if errors found."
-  (when (stringp result)
-    (cond
-     ;; Syntax errors
-     ((string-match "\\[Syntax Error in \\([^:]+\\): \\(.+\\)\\]" result)
-      (cons t (format "Syntax error in %s: %s" 
-                      (match-string 1 result) 
-                      (match-string 2 result))))
-     ;; Runtime errors
-     ((string-match "\\[Error executing \\([^:]+\\): \\(.+\\)\\]" result)
-      (cons t (format "Runtime error in %s: %s"
-                      (match-string 1 result)
-                      (match-string 2 result))))
-     ;; Efrit-internal dispatch errors (ef-hn6)
-     ((string-match "\\[Efrit internal error: \\(.+\\)\\]" result)
-      (cons t (format "Efrit internal error: %s" (match-string 1 result))))
-     ;; API errors - match the specific format from efrit-do--process-api-response
-     ;; Format: "API Error (type): message" - must have parenthesized type
-     ((string-match "^API Error ([^)]+):" result)
-      (cons t result))
-     ;; General errors - match at start of line to avoid false positives
-     ((string-match "^Error:" result)
-      (cons t result))
-     ;; No error detected
-     (t (cons nil nil)))))
-
-(defun efrit-do--extract-executed-code (result)
-  "Extract the executed code from RESULT string.
-Returns the code string that was executed, or nil if not found."
-  (when (stringp result)
-    (cond
-     ;; Extract from syntax error message
-     ((string-match "\\[Syntax Error in \\([^:]+\\):" result)
-      (match-string 1 result))
-     ;; Extract from runtime error message
-     ((string-match "\\[Error executing \\([^:]+\\):" result)
-      (match-string 1 result))
-     ;; Extract from successful execution message
-     ((string-match "\\[Executed: \\([^]]+\\)\\]" result)
-      (match-string 1 result))
-     ;; No code found
-     (t nil))))
-
 (defun efrit-do--extract-response-text (response-buffer)
   "Extract response text from RESPONSE-BUFFER with proper cleanup.
 Returns the response body as a string, or nil if extraction fails.

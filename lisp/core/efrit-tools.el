@@ -53,12 +53,13 @@
 (declare-function efrit-log "efrit-log")
 (condition-case nil
     (require 'efrit-log)
-(require 'efrit-sandbox-eval)
   (error 
    (defun efrit-log (level format-string &rest args)
      "Fallback logging function when efrit-log is not available."
      (when (memq level '(warn error))
        (message (apply #'format format-string args))))))
+
+(require 'efrit-sandbox-eval)   ; wraps eval_sexp; see efrit-tools-eval-sexp
 
 ;; Declare functions from efrit-common.el
 (declare-function efrit-common-get-api-key "efrit-common")

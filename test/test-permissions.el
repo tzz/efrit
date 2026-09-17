@@ -6,7 +6,6 @@
 (require 'efrit-permissions)
 (require 'efrit-do-dispatch)
 (require 'efrit-do-handlers)
-(require 'efrit-do)   ; efrit-do--extract-error-info, used by the circuit breaker
 (require 'efrit-sandbox)
 (defvar efrit-sandbox-enabled)
 
