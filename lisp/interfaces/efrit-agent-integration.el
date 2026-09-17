@@ -92,22 +92,17 @@ Uses incremental conversation update instead of activity list."
         (efrit-agent--init-pending-tools)
         ;; Add tool call to conversation and get the tool-id
         (let ((tool-id (efrit-agent--add-tool-call tool-name input)))
-          ;; Track the tool-id for later result matching
-          ;; Store: tool-id, start-time, and input for potential retry
-          ;; Push to front of list (most recent first)
+          ;; Track the tool-id for later result matching, most recent first
           (let ((existing (gethash tool-name efrit-agent--pending-tools)))
             (puthash tool-name
-                     (cons (list :id tool-id
-                                 :start-time (current-time)
-                                 :input input)
+                     (cons (list :id tool-id :start-time (current-time))
                            existing)
                      efrit-agent--pending-tools)))))))
 
 (defun efrit-agent--on-tool-result (tool-name result success-p)
   "Advice function called when a tool completes.
 Updates the most recently started (not yet completed) tool call for TOOL-NAME.
-Uses in-place update instead of full re-render.
-When a tool fails, stores its context for potential retry."
+Uses in-place update instead of full re-render."
   (let ((buffer (get-buffer efrit-agent-buffer-name)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
@@ -118,17 +113,10 @@ When a tool fails, stores its context for potential retry."
             (let* ((entry (car pending-list))
                    (tool-id (plist-get entry :id))
                    (start-time (plist-get entry :start-time))
-                   (tool-input (plist-get entry :input))
                    (elapsed (when start-time
                               (float-time (time-subtract (current-time) start-time)))))
               ;; Update the tool in-place
               (efrit-agent--update-tool-result tool-id result success-p elapsed)
-              ;; If tool failed, store context for retry
-              (when (not success-p)
-                (let ((tool-item (make-hash-table :test 'equal)))
-                  (puthash "name" tool-name tool-item)
-                  (puthash "input" tool-input tool-item)
-                  (efrit-agent--store-failed-tool tool-id tool-name tool-input tool-item)))
               ;; Remove from pending list
               (puthash tool-name (cdr pending-list) efrit-agent--pending-tools))))))))
 

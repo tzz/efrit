@@ -54,7 +54,7 @@
 (require 'efrit-log)
 (require 'efrit-events)
 (require 'efrit-ui-helpers)
-(defvar efrit-sandbox-enabled)
+(require 'efrit-sandbox)   ; efrit-sandbox-enabled decides whether this layer runs
 
 (declare-function efrit-tool-audit "efrit-tool-utils")
 (declare-function efrit-tool--get-project-root "efrit-tool-utils")
@@ -176,7 +176,7 @@ When the scope sandbox is enabled it owns consent for reads, writes,
 eval, shell and network -- per project, with remembered grants -- so
 this per-call prompt would only double-ask; it then applies to nothing.
 Set `efrit-sandbox-enabled' to nil to get the per-call prompt back."
-  (and (not (bound-and-true-p efrit-sandbox-enabled))
+  (and (not efrit-sandbox-enabled)
        (memq (efrit-permission-tool-class tool) efrit-permission-policy)))
 
 (defun efrit-permission--input-get (input key)

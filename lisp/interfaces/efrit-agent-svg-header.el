@@ -51,7 +51,8 @@
 (defvar efrit-default-model)
 (declare-function efrit-agent--status-string "efrit-agent-core")
 (declare-function efrit-agent--format-elapsed "efrit-agent-core")
-(declare-function efrit-agent--spinner-frame "efrit-agent-core")
+(require 'efrit-agent-spinner)
+(defvar efrit-agent--spinner-index)
 (declare-function efrit-agent--format-header-line "efrit-agent-render")
 (declare-function efrit-agent--usage-segment "efrit-agent-render")
 (declare-function efrit-repl-session-id "efrit-repl-session")
@@ -163,9 +164,13 @@ propertized string; `none' hides the header."
       (:directory . ,(and root (abbreviate-file-name root)))
       (:status . ,(substring-no-properties status))
       (:status-face . ,(or (get-text-property 0 'face status) 'default))
-      (:spinner . ,(and efrit-agent--thinking-label
-                        (format "%s %s" (efrit-agent--spinner-frame)
-                                efrit-agent--thinking-label)))
+      ;; The header is one SVG, so the spinner is drawn into it: the
+      ;; label text here, the arc's angle index as a separate key.
+      (:spinner . ,(and efrit-agent--thinking-label efrit-agent--thinking-label))
+      (:spinner-index . ,(and efrit-agent--thinking-label
+                              (mod efrit-agent--spinner-index efrit-agent-spinner-steps)))
+      (:spinner-color . ,(and efrit-agent--thinking-label
+                              (efrit-agent-spinner--hex 'efrit-agent-spinner)))
       (:elapsed . ,(and efrit-agent--start-time (efrit-agent--format-elapsed)))
       (:tools . ,(and tools (> tools 0) (format "%d tools" tools)))
       (:mode . ,(and (boundp 'efrit-agent-display-mode)
@@ -182,24 +187,56 @@ propertized string; `none' hides the header."
 
 (defun efrit-agent-svg--row (x y font-size family segments)
   "Build a text NODE at X,Y from SEGMENTS, a list of (TEXT . FACE).
-Segments are separated by ➤ in the default foreground."
+Segments are separated by ➤ in the default foreground.  A segment
+whose TEXT is (:spinner INDEX COLOR LABEL) reserves room for an arc
+drawn afterwards by `efrit-agent-svg--place-spinners' and shows LABEL."
   (let ((node (dom-node 'text `((x . ,x) (y . ,y)
                                 (font-size . ,font-size)
                                 (font-family . ,family))))
         (first t))
     (dolist (seg segments)
-      (when (and (car seg) (not (string-empty-p (car seg))))
-        (unless first
+      (let* ((text (car seg))
+             (spin (and (consp text) (eq (car text) :spinner) text))
+             (label (if spin (nth 3 spin) text)))
+        (when (and label (not (string-empty-p label)))
+          (unless first
+            (dom-append-child node (dom-node 'tspan
+                                             `((fill . ,(efrit-agent-svg--hex 'default))
+                                               (dx . "8"))
+                                             "➤")))
+          (when spin
+            ;; An empty tspan carrying the arc's parameters; its dx is
+            ;; the arc's width, so following text moves right of it.
+            (dom-append-child node (dom-node 'tspan
+                                             `((dx . ,(if first "0" "8"))
+                                               (efrit-spinner . ,spin))
+                                             "")))
           (dom-append-child node (dom-node 'tspan
-                                           `((fill . ,(efrit-agent-svg--hex 'default))
-                                             (dx . "8"))
-                                           "➤")))
-        (dom-append-child node (dom-node 'tspan
-                                         `((fill . ,(efrit-agent-svg--hex (cdr seg)))
-                                           ,@(unless first '((dx . "8"))))
-                                         (car seg)))
-        (setq first nil)))
+                                           `((fill . ,(efrit-agent-svg--hex (cdr seg)))
+                                             (dx . ,(if spin (format "%d" (+ 4 font-size)) "8")))
+                                           label))
+          (setq first nil))))
     node))
+
+(defun efrit-agent-svg--place-spinners (svg font-size)
+  "Draw the arc for every tspan in SVG that carries `efrit-spinner'.
+The arc is centred on the tspan's x position (computed from the widths
+of everything before it on its row) and the row's baseline."
+  (dolist (row (dom-by-tag svg 'text))
+    (let ((x (string-to-number (format "%s" (dom-attr row 'x))))
+          (y (string-to-number (format "%s" (dom-attr row 'y)))))
+      (dolist (child (dom-children row))
+        (when (and (consp child) (eq (dom-tag child) 'tspan))
+          (setq x (+ x (string-to-number (format "%s" (or (dom-attr child 'dx) 0)))))
+          (when-let* ((spin (dom-attr child 'efrit-spinner)))
+            (let* ((size font-size)
+                   (frame (efrit-agent-spinner--svg size (nth 1 spin) (nth 2 spin)
+                                                    (efrit-agent-svg--hex 'default :background)))
+                   (g (dom-node 'g `((transform . ,(format "translate(%.1f,%.1f)"
+                                                           x (- y (* 0.8 size))))))))
+              (dolist (n (dom-children frame)) (dom-append-child g n))
+              (svg--append svg g)))
+          (setq x (+ x (string-pixel-width (or (car (dom-children child)) "")))))))))
 
 (defun efrit-agent-svg--build (model)
   "Build the SVG DOM for MODEL (pure; no image support needed)."
@@ -232,13 +269,18 @@ Segments are separated by ➤ in the default foreground."
     (svg--append svg (efrit-agent-svg--row
                       text-x y2 fs family
                       `((,(alist-get :directory model) . efrit-agent-header-directory)
-                        (,(or (alist-get :spinner model) (alist-get :status model))
+                        (,(if (alist-get :spinner model)
+                              (list :spinner (alist-get :spinner-color model)
+                                    (alist-get :spinner-index model)
+                                    (alist-get :spinner model))
+                            (alist-get :status model))
                          . ,(alist-get :status-face model))
                         (,(alist-get :elapsed model) . font-lock-comment-face)
                         (,(alist-get :tools model) . font-lock-comment-face)
                         (,(and (alist-get :mode model) (format "[%s]" (alist-get :mode model)))
                          . font-lock-comment-face)
                         (,(alist-get :session model) . font-lock-comment-face))))
+    (efrit-agent-svg--place-spinners svg fs)
     ;; Shrink the canvas to what was drawn: every pixel is re-blitted on
     ;; each spinner tick.  Overshoot is transparent, undershoot clips.
     (dom-set-attribute svg 'width

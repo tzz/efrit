@@ -123,8 +123,8 @@
               (should-not (string-match-p "Failed\\|Error:\\|\\[Retry\\]\\|\\[Skip\\]" text)))))
       (when (get-buffer efrit-agent-buffer-name) (kill-buffer efrit-agent-buffer-name)))))
 
-(ert-deftest test-agent-failed-row-shows-gist-and-recovery ()
-  "A real failure: first sentence of the error on the row, message in the body, Retry bar."
+(ert-deftest test-agent-failed-row-shows-gist ()
+  "A real failure: first sentence of the error on the row, message in the body, no buttons."
   (let ((efrit-agent-buffer-name "*efrit-agent-test5*") (efrit-agent-display-mode 'verbose))
     (unwind-protect
         (progn
@@ -136,8 +136,8 @@
               (efrit-agent-show-tool-result id "Error: file not found: nope.el. Check the path." nil 0.1))
             (let ((text (buffer-substring-no-properties (point-min) (point-max))))
               (should (string-match-p "✗ read_file: nope.el · file not found: nope.el  0\\.1s" text))
-              (should (string-match-p "\\[Retry\\] \\[Skip\\]" text))
-              (should-not (string-match-p "Failed\\|Error: $" text)))))
+              (should (string-match-p "file not found: nope.el. Check the path." text))
+              (should-not (string-match-p "Failed\\|Error: $\\|\\[Retry\\]" text)))))
       (when (get-buffer efrit-agent-buffer-name) (kill-buffer efrit-agent-buffer-name)))))
 
 (provide 'test-agent-scroll)

@@ -96,7 +96,9 @@ requiring an active efrit-do session (ef-dcn).")
    :wrap-dispatch-fn (lambda (session thunk)
                        (let ((efrit-repl-loop--tool-session session))
                          (funcall thunk)))
-   :thinking-p nil
+   ;; The agent buffer is this loop's surface: show the activity
+   ;; indicator while a request is in flight.
+   :thinking-p t
    :handles-waiting-p t
    ;; Store Claude's final message so the conversation context carries
    ;; into the next turn

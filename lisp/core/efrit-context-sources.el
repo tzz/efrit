@@ -242,9 +242,11 @@ produced output."
         (let ((parts nil))
           (with-current-buffer buf
             (dolist (src efrit-context-sources)
-              (let ((fn (if (functionp src)
-                            src
-                          (alist-get src efrit-context--builtin-sources))))
+              ;; Builtin names first: `position' is also a function
+              ;; (the cl alias of `cl-position'), so functionp alone
+              ;; would call it with one argument and fail.
+              (let ((fn (or (alist-get src efrit-context--builtin-sources)
+                            (and (functionp src) src))))
                 (when fn
                   (condition-case err
                       (let ((text (save-excursion

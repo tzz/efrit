@@ -37,8 +37,12 @@
       (should (string-match-p "Working\\|waiting for Claude" xml))
       ;; two text rows plus the icon glyph
       (should (= 3 (length (dom-by-tag svg 'text))))
-      ;; colours are hex, never X11 names
-      (should-not (string-match-p "fill=\"[A-Za-z]" xml))
+      ;; colours are hex, never X11 names ("none" is the unfilled arc)
+      (let ((case-fold-search nil))
+        (should-not (string-match-p "fill=\"\\(?:[A-Za-mo-z]\\|n[^o]\\)" xml)))
+      ;; the spinner arc is drawn while a request is in flight
+      (should (string-match-p "<path" xml))
+      (should (string-match-p "waiting for Claude" xml))
       ;; canvas never exceeds the window width (in batch the frame is
       ;; 80 "pixels" wide, so shrinking cannot be observed; on a real
       ;; display the canvas ends just past the last glyph)
@@ -84,3 +88,27 @@
 
 (provide 'test-svg-header)
 ;;; test-svg-header.el ends here
+
+;;; Spinner
+
+(ert-deftest test-spinner-svg-frames-rotate-and-blend ()
+  (require 'efrit-agent-spinner)
+  (let* ((a (with-temp-buffer (svg-print (efrit-agent-spinner--svg 16 "#88c0d0" 0 "#2e3440")) (buffer-string)))
+         (b (with-temp-buffer (svg-print (efrit-agent-spinner--svg 16 "#88c0d0" 3 "#2e3440")) (buffer-string))))
+    ;; two arcs and a reference ring, different geometry per index
+    (should (= 2 (cl-count ?A a)))
+    (should-not (equal a b))
+    ;; opacity is baked into the colours: no opacity attributes
+    (should-not (string-match-p "opacity" a))
+    (should (string-match-p "stroke=\"#88c0d0\"" a))
+    (should (equal (efrit-agent-spinner--blend "#ffffff" "#000000" 0.5) "#808080"))))
+
+(ert-deftest test-spinner-frame-falls-back-without-display ()
+  (require 'efrit-agent-spinner)
+  (should-not (efrit-agent-spinner-frame 0))       ; batch: no SVG
+  (with-temp-buffer
+    (efrit-agent-mode)
+    (setq efrit-agent--spinner-index 0)
+    (should (stringp (efrit-agent--spinner-frame)))
+    (should (member (efrit-agent--spinner-frame t)
+                    (append efrit-agent--spinner-frames-unicode nil)))))

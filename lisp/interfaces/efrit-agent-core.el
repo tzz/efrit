@@ -247,10 +247,6 @@ Non-nil means an API call is in flight and the spinner is animating.")
 (defvar-local efrit-agent--message-counter 0
   "Counter for generating unique message IDs.")
 
-(defvar-local efrit-agent--failed-tools nil
-  "Alist mapping tool-id to tool execution context for retry.
-Each entry is (tool-id . (:name name :input input :item tool-item)).")
-
 (defvar-local efrit-agent--expansion-state nil
   "Hash table mapping tool-id to user-specified expansion state.
 When a user explicitly toggles a tool with RET, their preference
@@ -438,12 +434,19 @@ Does nothing in batch mode or when `efrit-agent-auto-show' is nil."
   ["-" "\\" "|" "/"]
   "Spinner animation frames (ascii display style).")
 
-(defun efrit-agent--spinner-frame ()
-  "Return the current spinner frame for the active display style."
-  (let ((frames (if (eq efrit-agent-display-style 'unicode)
-                    efrit-agent--spinner-frames-unicode
-                  efrit-agent--spinner-frames-ascii)))
-    (aref frames (mod efrit-agent--spinner-index (length frames)))))
+(declare-function efrit-agent-spinner-frame "efrit-agent-spinner")
+(declare-function efrit-agent--refresh-thinking-line "efrit-agent-render")
+
+(defun efrit-agent--spinner-frame (&optional text-only)
+  "Return the current spinner frame: an SVG arc, or a text glyph.
+TEXT-ONLY forces the glyph (for places that cannot show an image)."
+  (or (and (not text-only)
+           (require 'efrit-agent-spinner nil t)
+           (efrit-agent-spinner-frame))
+      (let ((frames (if (eq efrit-agent-display-style 'unicode)
+                        efrit-agent--spinner-frames-unicode
+                      efrit-agent--spinner-frames-ascii)))
+        (aref frames (mod efrit-agent--spinner-index (length frames))))))
 
 (defun efrit-agent--spinner-tick (buffer)
   "Advance the spinner in BUFFER and refresh its header-line."
@@ -452,6 +455,8 @@ Does nothing in batch mode or when `efrit-agent-auto-show' is nil."
       (if efrit-agent--thinking-label
           (progn
             (setq efrit-agent--spinner-index (1+ efrit-agent--spinner-index))
+            (when (fboundp 'efrit-agent--refresh-thinking-line)
+              (efrit-agent--refresh-thinking-line))
             (force-mode-line-update))
         ;; Stale tick after the label was cleared — stop the timer
         (when efrit-agent--spinner-timer
@@ -493,7 +498,6 @@ Inserts a visible delimiter between sessions."
   (setq efrit-agent--activities nil)
   (setq efrit-agent--pending-question nil)
   (setq efrit-agent--pending-tools (make-hash-table :test 'equal))
-  (setq efrit-agent--failed-tools nil)
   (setq efrit-agent--streaming-message nil)
   (setq efrit-agent--thinking-indicator nil)
   (setq efrit-agent--todos-region nil)

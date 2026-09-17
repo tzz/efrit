@@ -234,6 +234,30 @@ when that list is empty (first output) every window is."
 ;; Shows when Claude is processing but no tool is running.
 ;; Disappears when content starts arriving.
 
+(defun efrit-agent--thinking-line (text)
+  "The in-buffer activity line: spinner, then TEXT (or a default)."
+  (propertize (concat "  " (efrit-agent--spinner-frame) " "
+                      (propertize (or text "thinking…") 'face 'efrit-agent-thinking)
+                      "\n")
+              'efrit-type 'thinking-indicator))
+
+(defun efrit-agent--refresh-thinking-line ()
+  "Redraw the thinking line's spinner glyph in place, if it is showing."
+  (when-let* ((ind efrit-agent--thinking-indicator)
+              (start (marker-position (car ind)))
+              (end (marker-position (cdr ind))))
+    (let ((inhibit-read-only t)
+          (label (save-excursion
+                   (goto-char start)
+                   (let ((s (buffer-substring-no-properties start (line-end-position))))
+                     ;; "  <spinner> label"
+                     (string-trim (if (> (length s) 4) (substring s 4) ""))))))
+      (save-excursion
+        (goto-char start)
+        (delete-region start end)
+        (insert (propertize (efrit-agent--thinking-line label) 'read-only t))
+        (set-marker (cdr ind) (point))))))
+
 (defun efrit-agent--show-thinking (&optional text)
   "Show the thinking indicator with optional TEXT description.
 If TEXT is nil, shows just '[thinking...]'.
@@ -247,12 +271,7 @@ The indicator is removed when content arrives or explicitly hidden."
         (goto-char (marker-position efrit-agent--conversation-end))
         (setq start-marker (point-marker))
         ;; Insert the thinking indicator
-        (insert (propertize (format "[%s%s] %s\n"
-                                    (efrit-agent--char 'status-waiting)
-                                    "thinking..."
-                                    (or text ""))
-                            'face 'efrit-agent-thinking
-                            'efrit-type 'thinking-indicator))
+        (insert (efrit-agent--thinking-line text))
         (setq end-marker (point-marker))
         ;; Set marker insertion types
         (set-marker-insertion-type start-marker nil)
@@ -298,13 +317,7 @@ This provides smooth updates for changing thinking status."
           (save-excursion
             (goto-char start-marker)
             (delete-region start-marker end-marker)
-            (insert (propertize (format "[%s%s] %s\n"
-                                        (efrit-agent--char 'status-waiting)
-                                        "thinking..."
-                                        (or text ""))
-                                'face 'efrit-agent-thinking
-                                'efrit-type 'thinking-indicator
-                                'read-only t))
+            (insert (propertize (efrit-agent--thinking-line text) 'read-only t))
             (set-marker end-marker (point)))))
     ;; No indicator yet, show one
     (efrit-agent--show-thinking text)))
