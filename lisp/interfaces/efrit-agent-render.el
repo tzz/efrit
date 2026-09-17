@@ -178,12 +178,50 @@ Call this when Claude's message is complete."
       ;; Clear streaming state
       (setq efrit-agent--streaming-message nil))))
 
+(defcustom efrit-agent-follow-threshold 2
+  "Windows whose point is within this many lines of the end keep following output.
+A window scrolled further up is left alone so the user can read while
+the model streams (copilot-chat's following-windows rule)."
+  :type 'integer
+  :group 'efrit-agent)
+
+(defvar-local efrit-agent--follow-windows nil
+  "Windows that were following the output before the latest insert.")
+
+(defun efrit-agent--following-windows ()
+  "Return windows on this buffer, in any frame, whose point is near the end."
+  (let ((end (or (and efrit-agent--conversation-end
+                      (marker-position efrit-agent--conversation-end))
+                 (point-max))))
+    (cl-remove-if-not
+     (lambda (w)
+       (<= (count-lines (min (window-point w) end) end)
+           efrit-agent-follow-threshold))
+     (get-buffer-window-list (current-buffer) nil t))))
+
+(defun efrit-agent--note-followers ()
+  "Record which windows are following, before text is inserted.
+Called from `before-change-functions' for this buffer."
+  (setq efrit-agent--follow-windows (efrit-agent--following-windows)))
+
 (defun efrit-agent--scroll-to-bottom ()
-  "Scroll the agent buffer window to show the latest content."
-  (when-let* ((window (get-buffer-window (current-buffer))))
-    (with-selected-window window
-      (goto-char (point-max))
-      (recenter -3))))
+  "Scroll only the windows that were already following the output.
+Never moves buffer point, and never touches a window the user has
+scrolled up to read.  Windows that were at the end before the last
+insert (see `efrit-agent--note-followers') are moved to the end;
+when that list is empty (first output) every window is."
+  (let* ((followers (or efrit-agent--follow-windows
+                        (get-buffer-window-list (current-buffer) nil t)))
+         (target (point-max)))
+    (dolist (w followers)
+      (when (and (window-live-p w) (eq (window-buffer w) (current-buffer)))
+        (set-window-point w target)
+        ;; Show the tail without recentering the user's own point
+        (with-selected-window w
+          (save-excursion
+            (goto-char target)
+            (recenter -3)))))
+    (setq efrit-agent--follow-windows nil)))
 
 ;;; Thinking Indicator
 ;;

@@ -310,6 +310,10 @@ Status is shown in the header-line at top of window.
     (efrit-agent--load-history))
   ;; Enable input mode when point moves to input region
   (add-hook 'post-command-hook #'efrit-agent--maybe-enable-input-mode nil t)
+  ;; Remember which windows follow the output before each insert, so
+  ;; streaming only scrolls those (efrit-agent--scroll-to-bottom)
+  (add-hook 'before-change-functions
+            (lambda (&rest _) (efrit-agent--note-followers)) nil t)
   ;; Save session and clean up timer when buffer is killed
   (add-hook 'kill-buffer-hook #'efrit-agent--save-session-on-kill nil t)
   (add-hook 'kill-buffer-hook #'efrit-agent--cleanup-timer nil t))
