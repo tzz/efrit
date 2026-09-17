@@ -53,6 +53,7 @@
 (declare-function efrit-log "efrit-log")
 (condition-case nil
     (require 'efrit-log)
+(require 'efrit-sandbox-eval)
   (error 
    (defun efrit-log (level format-string &rest args)
      "Fallback logging function when efrit-log is not available."
@@ -227,11 +228,19 @@ non-nil."
   (let* ((timeout (and efrit-tools-eval-timeout
                        (> efrit-tools-eval-timeout 0)
                        efrit-tools-eval-timeout))
+         ;; The scope sandbox wraps the evaluation: static inspection,
+         ;; then file/process/network checks during the run
+         ;; (efrit-sandbox-eval).  The input-blocking wrapper is passed
+         ;; in as the evaluator so both apply.
+         (evaluator (lambda (form)
+                      (if efrit-tools-block-interactive-input
+                          (efrit-tools--call-with-input-blocked
+                           (lambda () (eval form t)))
+                        (eval form t))))
          (do-eval (lambda ()
-                    (if efrit-tools-block-interactive-input
-                        (efrit-tools--call-with-input-blocked
-                         (lambda () (eval sexp t)))
-                      (eval sexp t))))
+                    (if (bound-and-true-p efrit-sandbox-enabled)
+                        (efrit-sandbox-eval-form sexp evaluator)
+                      (funcall evaluator sexp))))
          (result (if timeout
                      (with-timeout (timeout
                                     (signal 'efrit-eval-timeout
@@ -310,6 +319,9 @@ Handles parsing, evaluation, error handling, and result formatting."
   (let ((result-data (condition-case err
                          (efrit-tools--eval-with-context
                           (efrit-tools--parse-sexp-string sexp-string))
+                       ;; A sandbox denial is not an eval error: let it
+                       ;; reach the dispatcher, which ends the turn
+                       (efrit-sandbox-denied (signal (car err) (cdr err)))
                        (error (efrit-tools--handle-eval-error err sexp-string)))))
 
     ;; Return formatted result

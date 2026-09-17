@@ -3,6 +3,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'efrit-test-sandbox-helpers)
 (require 'efrit-agent)
 
 (ert-deftest test-agent-scroll-only-following-windows-move ()

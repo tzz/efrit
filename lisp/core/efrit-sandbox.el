@@ -301,11 +301,14 @@ With `efrit-sandbox-enabled' nil this is a no-op that returns t."
       ('net "access the network")
       (_ (format "%s %s" cap target)))))
 
+(defconst efrit-sandbox-denied-prefix "Error sandbox denied: "
+  "Prefix of a denied tool result.  `efrit-loop' matches it to end the turn.")
+
 (defun efrit-sandbox-denied-tool-result (req)
-  "The tool_result text the model receives for a denied REQ.
+  "The tool_result text (after `efrit-sandbox-denied-prefix') for a denied REQ.
 Says what was refused and that the turn is over, so the model asks
 instead of retrying."
-  (format "Error sandbox denied: %s%s. The user declined to widen the sandbox; the turn ends here. Do not retry or route around it. If the task needs this, explain to the user exactly what access is required and why, and wait."
+  (format "%s%s. The user declined to widen the sandbox; the turn ends here. Do not retry or route around it. If the task needs this, explain to the user exactly what access is required and why, and wait."
           (efrit-sandbox-describe-request req)
           (if (efrit-sandbox-request-detail req)
               (format " (%s)" (efrit-sandbox-request-detail req))

@@ -153,7 +153,7 @@ ARGS is an alist with:
 Returns a standard tool response with repository status."
   (efrit-tool-execute vcs_status args
     (let* ((path-input (alist-get 'path args))
-           (path-info (efrit-resolve-path path-input)))
+           (path-info (efrit-resolve-path path-input 'read "vcs_status")))
       ;; path-info used to bind default-directory in efrit-tool-execute macro
       (ignore path-info)
 

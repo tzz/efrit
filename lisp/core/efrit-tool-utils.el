@@ -33,6 +33,8 @@
 (require 'cl-lib)
 (require 'url-parse)
 (require 'efrit-config)
+(declare-function efrit-sandbox-check "efrit-sandbox")
+(defvar efrit-sandbox-enabled)
 
 ;;; Customization
 
@@ -107,9 +109,13 @@ Returns the expanded absolute path."
     ;; Fallback to default-directory
     (t default-directory))))
 
+;;;###autoload
 (defun efrit-set-project-root (path)
-  "Set `efrit-project-root' to PATH.
+  "Set `efrit-project-root' to PATH (interactively: read a directory).
+The sandbox is keyed on this root: reads inside it are allowed by
+default, and per-project grants live in its .efrit/sandbox.json.
 Returns the normalized path, or nil if PATH is invalid."
+  (interactive "DProject root for efrit: ")
   (let ((expanded (expand-file-name path)))
     (if (file-directory-p expanded)
         (progn
@@ -154,15 +160,24 @@ a local path can never satisfy a remote root or vice versa, and
                (string-match-p pattern path-str))
              efrit-sensitive-file-patterns)))
 
-(defun efrit-resolve-path (path &optional allow-outside)
+(defun efrit-resolve-path (path &optional access tool)
   "Resolve PATH relative to project root with sandbox enforcement.
 
 If PATH is absolute, use as-is (with sandbox check).
 If PATH is relative, resolve against project root.
 If PATH is nil or empty, return project root.
 
-When `efrit-project-sandbox' is non-nil and ALLOW-OUTSIDE is nil,
-signals an error if the resolved path is outside project root.
+ACCESS is `read' (default) or `write': the capability the caller
+needs on the resolved path.  TOOL names the caller for the prompt.
+The scope sandbox (`efrit-sandbox-check') decides: inside the project
+root, reads are allowed by default and writes ask; outside it, both
+ask.  A refusal signals `efrit-sandbox-denied'.  For compatibility,
+ACCESS may also be the legacy ALLOW-OUTSIDE flag t, meaning `read'
+with the old prefix check skipped.
+
+When `efrit-sandbox-enabled' is nil the legacy behaviour applies:
+`efrit-project-sandbox' non-nil signals `efrit-sandbox-violation'
+for paths outside the root.
 
 Symlinks are resolved via `file-truename' for sandbox enforcement,
 preventing escape via symlinks pointing outside the project.
@@ -216,13 +231,18 @@ Returns a plist with:
                           (file-relative-name resolved
                                               (file-truename project-root)))))
 
-    ;; Sandbox enforcement
-    (when (and efrit-project-sandbox
-               (not allow-outside)
-               (not in-project))
-      (signal 'efrit-sandbox-violation
-              (list (format "Path '%s' is outside project root '%s'"
-                           path project-root))))
+    ;; Sandbox enforcement.  The scope sandbox subsumes the old
+    ;; prefix check when enabled; otherwise the prefix check stands.
+    (let ((cap (if (eq access 'write) 'write 'read))
+          (legacy-allow-outside (eq access t)))
+      (if (bound-and-true-p efrit-sandbox-enabled)
+          (efrit-sandbox-check cap resolved tool)
+        (when (and efrit-project-sandbox
+                   (not legacy-allow-outside)
+                   (not in-project))
+          (signal 'efrit-sandbox-violation
+                  (list (format "Path '%s' is outside project root '%s'"
+                               path project-root))))))
 
     (list :path resolved
           :path-relative relative-path
@@ -234,10 +254,10 @@ Returns a plist with:
 ;; Define the error type
 (define-error 'efrit-sandbox-violation "Sandbox violation")
 
-(defun efrit-resolve-path-simple (path &optional allow-outside)
+(defun efrit-resolve-path-simple (path &optional access tool)
   "Simplified path resolution - returns just the absolute path string.
-See `efrit-resolve-path' for full details."
-  (plist-get (efrit-resolve-path path allow-outside) :path))
+See `efrit-resolve-path' for ACCESS and TOOL."
+  (plist-get (efrit-resolve-path path access tool) :path))
 
 ;;; Response Building
 
@@ -709,6 +729,11 @@ Returns the result of BODY, which should be a tool response."
         (efrit-tool-error 'sandbox_violation
                           (cadr err)
                           `((tool . ,(symbol-name ',tool-name)))))
+       (efrit-sandbox-denied
+        (efrit-tool-audit ',tool-name ,inputs :blocked)
+        ;; Re-signal: the dispatcher turns this into the turn-ending
+        ;; tool result so the model stops instead of retrying
+        (signal (car err) (cdr err)))
        (error
         (efrit-tool-audit ',tool-name ,inputs :error
                           (float-time (time-subtract (current-time) start-time)))

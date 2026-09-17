@@ -46,6 +46,7 @@
 (require 'efrit-api)
 (require 'efrit-chat-response)
 (require 'efrit-permissions)   ; efrit-permission-denied-result
+(require 'efrit-sandbox)       ; efrit-sandbox-denied-prefix
 (require 'efrit-events)
 
 (declare-function efrit-do--execute-tool "efrit-do-dispatch")
@@ -410,7 +411,8 @@ continues the loop."
                 ;; A C-g mid-tool, or a permission denial, both hand
                 ;; control back to the user: no further tools this turn.
                 (when (or (string= tool-result efrit-loop--interrupt-result)
-                          (string= tool-result efrit-permission-denied-result))
+                          (string= tool-result efrit-permission-denied-result)
+                          (string-prefix-p efrit-sandbox-denied-prefix tool-result))
                   (setq user-interrupted t))
                 (when is-waiting
                   (setq waiting-for-user t)))))))))

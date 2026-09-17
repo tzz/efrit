@@ -18,6 +18,7 @@
 (require 'efrit-log)
 (require 'efrit-do-circuit-breaker)
 (require 'efrit-permissions)
+(require 'efrit-sandbox)
 
 (defvar efrit-repl-loop--tool-session)
 (declare-function efrit-repl-session-id "efrit-repl-session")
@@ -253,7 +254,16 @@ Applies circuit breaker limits to prevent infinite loops."
 
           ;; If there's a warning message, prepend it to the result
           (let* ((warning (cdr breaker-check))
-                 (result (efrit-do--dispatch-tool tool-name tool-input input-str))
+                 (result (condition-case err
+                             (efrit-do--dispatch-tool tool-name tool-input input-str)
+                           ;; The scope sandbox refused and the user
+                           ;; declined to widen it: a distinguished
+                           ;; result the loop engine recognises to end
+                           ;; the turn (like a permission denial)
+                           (efrit-sandbox-denied
+                            (efrit-log 'info "Sandbox denied %s" tool-name)
+                            (concat efrit-sandbox-denied-prefix
+                                    (efrit-sandbox-denied-tool-result (cadr err))))))
                  ;; Check result for error loops and inject warnings if needed
                  (loop-check (efrit-do--error-loop-check-result result))
                  (final-result (cdr loop-check))

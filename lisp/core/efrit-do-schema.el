@@ -649,21 +649,9 @@ Returns: Symbol type, docstring, signature (for functions), source location, rel
                                       ("related" . (("type" . "boolean")
                                                     ("description" . "Include related symbols (default: false)")))))
                       ("required" . ["symbol"]))))
-   (("name" . "set_project_root")
-    ("description" . "Set the project root directory explicitly. CALL THIS FIRST if you need to work with files but the project context is unclear or default-directory is wrong (e.g., in daemon mode).
-
-EXAMPLES:
-- Set project: set_project_root path=\"~/src/myproject\"
-- Clear and auto-detect: set_project_root path=\"\"
-
-This affects all file operations (project_files, search_content, read_file, etc.) which resolve relative paths against the project root.
-
-Returns: The normalized project root path, or error if path doesn't exist.")
-    ("input_schema" . (("type" . "object")
-                      ("properties" . (("path" . (("type" . "string")
-                                                  ("description" . "Absolute path to project root, or empty string to clear and auto-detect")))))
-                      ("required" . ["path"]))))
-   (("name" . "get_diagnostics")
+   ;; set_project_root removed from the model-facing schema: it let the
+    ;; model move its own sandbox.  M-x efrit-set-project-root remains.
+    (("name" . "get_diagnostics")
     ("description" . "Get compiler/linter errors from IDE diagnostic systems. CRITICAL for the edit-compile-fix loop.
 
 Collects diagnostics from:

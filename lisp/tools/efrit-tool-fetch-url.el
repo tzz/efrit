@@ -23,6 +23,7 @@
 ;;; Code:
 
 (require 'efrit-tool-utils)
+(require 'efrit-sandbox)
 (require 'url)
 (require 'url-http)
 (require 'shr)
@@ -274,6 +275,7 @@ Returns standard tool response with:
   truncated - whether content was truncated
   fetch_time - how long it took"
   (efrit-tool-execute fetch_url args
+    (efrit-sandbox-check 'net t "fetch_url")
     (let* ((url (alist-get 'url args))
            (selector (alist-get 'selector args))
            (format-type (or (alist-get 'format args) "markdown"))
