@@ -36,6 +36,7 @@
 (require 'efrit-agent-core)
 (require 'efrit-agent-render)
 (require 'efrit-agent-svg-header)
+(declare-function efrit-api-stream-cancel "efrit-api-stream")
 (require 'efrit-agent-tools)
 (require 'efrit-agent-input)
 (require 'efrit-agent-integration)
@@ -330,6 +331,10 @@ Status is shown in the header-line at top of window.
   (interactive)
   (if (memq efrit-agent--status '(working paused waiting))
       (progn
+        ;; Abort any in-flight streaming request first so the model
+        ;; actually stops, not just the UI
+        (when (fboundp 'efrit-api-stream-cancel)
+          (efrit-api-stream-cancel))
         (efrit-executor-cancel)
         (efrit-agent-set-status 'failed)
         ;; Update status in place: a full render here erased the

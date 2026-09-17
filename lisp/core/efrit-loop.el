@@ -57,7 +57,12 @@
 (declare-function efrit-agent-stream-end "efrit-agent")
 (declare-function efrit-agent-show-tool-start "efrit-agent")
 (declare-function efrit-agent-show-tool-result "efrit-agent")
+(declare-function efrit-api-stream-request "efrit-api-stream")
+(defvar efrit-api-streaming)
 (defvar efrit-default-model)
+
+(defvar efrit-loop--streamed-text nil
+  "Dynamically non-nil while handling a response whose text was already streamed.")
 
 ;;; Adapter
 
@@ -217,16 +222,37 @@ current tools schema."
     ;; callback with a plain string, which misreported every API
     ;; failure (ef-2qx in the do-async loop, ef-ywc in the REPL loop).
     ;; The loop owns the session lifecycle.
-    (efrit-api-request-async
-     request-data
-     (lambda (response)
-       (if (and response (efrit-response-error response))
-           (funcall callback nil (efrit-error-message
-                                  (efrit-response-error response)))
-         (funcall callback response nil)))
-     (lambda (error-msg)
-       (efrit-log 'error "API request failed: %s" error-msg)
-       (funcall callback nil error-msg)))))
+    (if (and (bound-and-true-p efrit-api-streaming)
+             (require 'efrit-api-stream nil t))
+        ;; Streaming transport: text deltas go straight to the agent
+        ;; buffer; the assembled response then takes the normal path.
+        ;; efrit-loop--streamed-text remembers what was already shown
+        ;; so efrit-loop-handle-response doesn't render it twice.
+        (let ((shown nil))
+          (efrit-api-stream-request
+           request-data
+           (lambda (response error)
+             (when (and response (efrit-response-error response))
+               (setq error (efrit-error-message (efrit-response-error response))
+                     response nil))
+             (when error (efrit-log 'error "API request failed: %s" error))
+             (let ((efrit-loop--streamed-text shown))
+               (funcall callback response error)))
+           (lambda (text)
+             (setq shown t)
+             (when (fboundp 'efrit-agent-hide-thinking) (efrit-agent-hide-thinking))
+             (when (fboundp 'efrit-agent-stream-content)
+               (efrit-agent-stream-content text)))))
+      (efrit-api-request-async
+       request-data
+       (lambda (response)
+         (if (and response (efrit-response-error response))
+             (funcall callback nil (efrit-error-message
+                                    (efrit-response-error response)))
+           (funcall callback response nil)))
+       (lambda (error-msg)
+         (efrit-log 'error "API request failed: %s" error-msg)
+         (funcall callback nil error-msg))))))
 
 (defun efrit-loop-handle-response (session adapter response)
   "Handle API RESPONSE for SESSION using ADAPTER.
@@ -256,13 +282,15 @@ response's stop_reason."
         (efrit-loop--event adapter session-id 'message
                            `((:text . ,(format "%S" content))
                              (:role . "assistant")))
-        ;; Stream text content to agent buffer
-        (dotimes (i (length content))
-          (let ((item (aref content i)))
-            (when (and (hash-table-p item)
-                       (string= (gethash "type" item) "text"))
-              (when (fboundp 'efrit-agent-stream-content)
-                (efrit-agent-stream-content (gethash "text" item))))))
+        ;; Render text content in the agent buffer -- unless the
+        ;; streaming transport already did, delta by delta
+        (unless efrit-loop--streamed-text
+          (dotimes (i (length content))
+            (let ((item (aref content i)))
+              (when (and (hash-table-p item)
+                         (string= (gethash "type" item) "text"))
+                (when (fboundp 'efrit-agent-stream-content)
+                  (efrit-agent-stream-content (gethash "text" item)))))))
         (when (fboundp 'efrit-agent-stream-end)
           (efrit-agent-stream-end)))
       (pcase stop-reason

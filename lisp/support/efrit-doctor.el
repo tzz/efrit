@@ -17,6 +17,7 @@
 ;;   2. Variables      obsolete names still set, type mismatches
 ;;   3. Credentials    key resolves, format matches the auth scheme
 ;;   4. Endpoint       URL shape, TCP/TLS reachability
+;;   4b. Transport     streaming on/off, curl present and new enough
 ;;   5. Model          a real one-token request round-trips (opt-in)
 ;;   6. Caching        cache_control accepted by the endpoint (with 5)
 ;;   7. Sandbox        project root, remote host, data directory
@@ -66,6 +67,8 @@
 (defvar efrit-context-sources)
 (defvar efrit-agent-header-style)
 (defvar efrit-system-prompt-functions)
+(defvar efrit-api-streaming)
+(defvar efrit-api-stream-curl-program)
 
 (defgroup efrit-doctor nil
   "Configuration verifier."
@@ -463,6 +466,29 @@ carries a cache_control block, which is the caching probe."
 
 ;;; 11. UI
 
+(defun efrit-doctor--check-transport ()
+  (efrit-doctor--layer "Transport"
+    (require 'efrit-api-stream)
+    (if (not (bound-and-true-p efrit-api-streaming))
+        (efrit-doctor--info "Streaming transport off; using url-retrieve"
+                            "Responses render only when complete and cannot be cancelled mid-flight.  Set efrit-api-streaming to t (needs curl).")
+      (let ((curl (executable-find (symbol-value 'efrit-api-stream-curl-program))))
+        (if (not curl)
+            (efrit-doctor--fail (format "efrit-api-streaming is on but %s is not found"
+                                        (symbol-value 'efrit-api-stream-curl-program))
+                                "Install curl or set efrit-api-streaming to nil."
+                                "Disable streaming" (lambda () (setq efrit-api-streaming nil)))
+          (let ((ver (with-temp-buffer
+                       (call-process curl nil t nil "--version")
+                       (buffer-substring (point-min) (line-end-position)))))
+            (efrit-doctor--ok (format "Streaming via %s" ver))
+            ;; --fail-with-body needs curl 7.76+
+            (when (and (string-match "curl \\([0-9]+\\)\\.\\([0-9]+\\)" ver)
+                       (version< (format "%s.%s" (match-string 1 ver) (match-string 2 ver)) "7.76"))
+              (efrit-doctor--fail "curl too old for --fail-with-body (needs 7.76+)"
+                                  "Upgrade curl or disable streaming."
+                                  "Disable streaming" (lambda () (setq efrit-api-streaming nil))))))))))
+
 (defun efrit-doctor--check-ui ()
   (efrit-doctor--layer "UI"
     (if (fboundp 'efrit-agent-mode)
@@ -535,6 +561,7 @@ endpoint, model and prompt-caching setting work end to end."
     (if (cl-some (lambda (f) (eq (car f) 'fail)) efrit-doctor--findings)
         (efrit-doctor--info "Live request skipped: fix the failures above first")
       (efrit-doctor--check-live)))
+  (efrit-doctor--check-transport)
   (efrit-doctor--check-sandbox)
   (efrit-doctor--check-tramp)
   (efrit-doctor--check-permissions)

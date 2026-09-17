@@ -197,11 +197,18 @@ CALLBACK is (lambda (response error) ...) called when complete."
         (setf (efrit-repl-session-buffer session) nil)))))
 
 (defun efrit-repl-loop--on-api-error (session error)
-  "Handle API ERROR for REPL SESSION."
-  (efrit-log 'error "REPL session %s: API error: %s"
-             (efrit-repl-session-id session) error)
-  (efrit-repl-loop--display-error session (efrit-repl-loop--explain-api-error error))
-  (efrit-repl-loop--end-turn session "api-error"))
+  "Handle API ERROR for REPL SESSION.
+A cancelled streaming request arrives here as \"interrupted\" and is
+a user action, not a failure."
+  (if (equal error "interrupted")
+      (progn
+        (efrit-log 'info "REPL session %s: request cancelled by user"
+                   (efrit-repl-session-id session))
+        (efrit-repl-loop--end-turn session "interrupted"))
+    (efrit-log 'error "REPL session %s: API error: %s"
+               (efrit-repl-session-id session) error)
+    (efrit-repl-loop--display-error session (efrit-repl-loop--explain-api-error error))
+    (efrit-repl-loop--end-turn session "api-error")))
 
 (defun efrit-repl-loop--explain-api-error (error)
   "Return ERROR as a string, with a next step appended when we know one."
@@ -259,6 +266,7 @@ Unlike efrit-do-async--stop-loop, this transitions to idle, not complete."
        (cond
         ((equal stop-reason "waiting-for-user") 'waiting)
         ((member stop-reason '("end_turn" "session-complete" "unknown")) 'idle)
+        ((equal stop-reason "interrupted") 'interrupted)
         (t 'failed))))
 
     ;; Remove from active loops
