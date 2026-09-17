@@ -649,6 +649,30 @@ Returns: Symbol type, docstring, signature (for functions), source location, rel
                                       ("related" . (("type" . "boolean")
                                                     ("description" . "Include related symbols (default: false)")))))
                       ("required" . ["symbol"]))))
+   (("name" . "emacs_apropos")
+    ("description" . "Find the Emacs command, function or variable for a job when you do not know its name. Searches THIS Emacs (built-ins plus whatever the user has installed: magit, consult, org, tramp...), ranked like M-x apropos, and returns the first docstring line, the source feature, and current values of matching variables. Read-only; needs no grant.
+
+Use it BEFORE reaching for shell_exec or writing Lisp from memory. Then call the command with eval_sexp.
+
+EXAMPLES:
+- emacs_apropos query=\"recent files\"            -> recentf-open-files, recentf-list (with its value)
+- emacs_apropos query=\"revert buffer\"           -> revert-buffer-quick, revert-buffer
+- emacs_apropos query=\"vc diff\"                 -> vc-diff, vc-diff-mergebase, vc-ediff
+- emacs_apropos query=\"dired mark\" kind=\"all\"
+- emacs_apropos query=\"^tramp-.*method\" kind=\"variable\"   (regexp)")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("query" . (("type" . "string")
+                                                   ("description" . "Words describing the job (two or more words match symbols containing at least two), or a regexp")))
+                                      ("kind" . (("type" . "string")
+                                                 ("enum" . ["command" "function" "variable" "all"])
+                                                 ("description" . "What to search (default: command, i.e. things a user can M-x)")))
+                                      ("include_values" . (("type" . "boolean")
+                                                           ("description" . "Report current values of matching variables (default: true)")))
+                                      ("include_internal" . (("type" . "boolean")
+                                                             ("description" . "Include private symbols with -- in the name (default: false)")))
+                                      ("max" . (("type" . "integer")
+                                                ("description" . "Most results to return (default: 25)")))))
+                      ("required" . ["query"]))))
    ;; set_project_root removed from the model-facing schema: it let the
     ;; model move its own sandbox.  M-x efrit-set-project-root remains.
     (("name" . "get_diagnostics")

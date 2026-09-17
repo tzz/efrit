@@ -873,6 +873,13 @@ call it, so answer clearly instead of silently obeying."
               (efrit-format-error "set_project_root"
                                   (format "Path does not exist: %s" path)))))))))
 
+(efrit-define-simple-tool-handler efrit-do--handle-emacs-apropos "emacs_apropos"
+  :require efrit-tool-emacs-apropos
+  :required ("query")
+  :fields ("query" "kind" "include_values" "include_internal" "max")
+  :fn efrit-tool-emacs-apropos
+  :label "Emacs Apropos Result")
+
 (efrit-define-simple-tool-handler efrit-do--handle-elisp-docs "elisp_docs"
   :require efrit-tool-elisp-docs
   :required ("symbol")
