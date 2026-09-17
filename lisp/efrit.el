@@ -266,7 +266,10 @@ Executes all ERT tests and displays results in a buffer."
       (message "Running tests...")
       (ert-run-tests-interactively t))))
 
-;;;###autoload (autoload 'efrit-doctor "efrit-doctor" "Verify the efrit configuration." t)
+;; efrit-doctor lives in lisp/support/, which package.el does not scan
+;; for cookies; this cookie makes it reachable from efrit-autoloads,
+;; and the plain autoload covers a bare (require 'efrit).
+;;;###autoload
 (autoload 'efrit-doctor "efrit-doctor"
   "Verify every layer of the efrit configuration and suggest fixes." t)
 
