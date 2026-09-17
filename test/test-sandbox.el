@@ -240,3 +240,53 @@
 
 (provide 'test-sandbox)
 ;;; test-sandbox.el ends here
+
+;;; UI
+
+(require 'efrit-sandbox-ui)
+
+(ert-deftest test-sb-ui-prompt-maps-keys-to-scopes ()
+  (test-sb--in-project
+    (cl-letf (((symbol-function 'efrit-sandbox-ui--note) #'ignore))
+      (dolist (case '((?o . once) (?s . session) (?p . project) (?n . nil)))
+        (cl-letf (((symbol-function 'read-char-choice) (lambda (&rest _) (car case))))
+          (should (eq (efrit-sandbox-ui-prompt
+                       (efrit-sandbox-request-create :cap 'write :target root :tool "edit_file"))
+                      (cdr case))))))))
+
+(ert-deftest test-sb-ui-prompt-end-to-end-grants-and-persists ()
+  "Through the real prompt: p grants for the project and writes the JSON."
+  (test-sb--in-project
+    (let ((efrit-sandbox-request-function #'efrit-sandbox-ui-prompt))
+      (cl-letf (((symbol-function 'efrit-sandbox-ui--note) #'ignore)
+                ((symbol-function 'read-char-choice) (lambda (&rest _) ?p)))
+        (should (efrit-sandbox-check 'write (expand-file-name "x" root) "edit_file"))
+        (should (file-exists-p (efrit-sandbox-store-file root)))
+        ;; and it is remembered: no prompt this time
+        (cl-letf (((symbol-function 'read-char-choice) (lambda (&rest _) (error "must not prompt"))))
+          (should (efrit-sandbox-check 'write (expand-file-name "y" root) "edit_file")))))))
+
+(ert-deftest test-sb-ui-list-shows-and-revokes ()
+  (test-sb--in-project
+    (efrit-sandbox-grant 'write root 'project)
+    (efrit-sandbox-grant 'shell t 'session)
+    (cl-letf (((symbol-function 'pop-to-buffer) #'ignore))
+      (efrit-sandbox root)
+      (with-current-buffer "*efrit-sandbox*"
+        (should (derived-mode-p 'efrit-sandbox-list-mode))
+        (should (= 3 (length tabulated-list-entries)))   ; default read + 2
+        ;; revoke the shell grant (last row)
+        (goto-char (point-max)) (forward-line -1)
+        (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
+          (efrit-sandbox-list-revoke))
+        (should (= 2 (length tabulated-list-entries)))
+        (should-not (efrit-sandbox-allowed-p 'shell t))
+        (should (efrit-sandbox-allowed-p 'write (expand-file-name "f" root)))))))
+
+(ert-deftest test-sb-permission-prompt-defers-to-sandbox ()
+  "With the sandbox on, the per-call permission prompt asks nothing."
+  (require 'efrit-permissions)
+  (let ((efrit-sandbox-enabled t) (efrit-permission-policy '(write exec)))
+    (should-not (efrit-permission-needed-p "eval_sexp")))
+  (let ((efrit-sandbox-enabled nil) (efrit-permission-policy '(write exec)))
+    (should (efrit-permission-needed-p "eval_sexp"))))

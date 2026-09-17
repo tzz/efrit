@@ -54,6 +54,7 @@
 (require 'efrit-log)
 (require 'efrit-events)
 (require 'efrit-ui-helpers)
+(defvar efrit-sandbox-enabled)
 
 (declare-function efrit-tool-audit "efrit-tool-utils")
 (declare-function efrit-tool--get-project-root "efrit-tool-utils")
@@ -170,8 +171,13 @@ Examples:
   (or (cdr (assoc tool efrit-permission-tool-classes)) 'read))
 
 (defun efrit-permission-needed-p (tool)
-  "Non-nil if TOOL's class is in `efrit-permission-policy'."
-  (memq (efrit-permission-tool-class tool) efrit-permission-policy))
+  "Non-nil if TOOL's class is in `efrit-permission-policy'.
+When the scope sandbox is enabled it owns consent for reads, writes,
+eval, shell and network -- per project, with remembered grants -- so
+this per-call prompt would only double-ask; it then applies to nothing.
+Set `efrit-sandbox-enabled' to nil to get the per-call prompt back."
+  (and (not (bound-and-true-p efrit-sandbox-enabled))
+       (memq (efrit-permission-tool-class tool) efrit-permission-policy)))
 
 (defun efrit-permission--input-get (input key)
   (cond ((hash-table-p input) (gethash key input))

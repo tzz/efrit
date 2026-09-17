@@ -48,6 +48,7 @@
 (require 'efrit-do-prompt)
 (require 'efrit-permissions)
 (require 'efrit-tool-utils)
+(require 'efrit-sandbox)
 
 (declare-function efrit-api-request-async "efrit-api")
 (declare-function efrit-api-build-headers "efrit-api")
@@ -59,6 +60,9 @@
 (declare-function efrit-permission-tool-class "efrit-permissions")
 (declare-function efrit-permission-summarize "efrit-permissions")
 (declare-function efrit-config--ensure-directories "efrit-config")
+(declare-function efrit-sandbox-ui-prompt "efrit-sandbox-ui")
+(declare-function efrit-sandbox-store-file "efrit-sandbox-store")
+(declare-function efrit-sandbox-store-ensure-loaded "efrit-sandbox-store")
 
 (defvar efrit-api-auth-scheme)
 (defvar efrit-api-base-url)
@@ -415,9 +419,55 @@ carries a cache_control block, which is the caching probe."
 
 ;;; 9. Permissions
 
+(defun efrit-doctor--check-sandbox-scope ()
+  (efrit-doctor--layer "Sandbox scope"
+    (require 'efrit-sandbox-store)
+    (if (not efrit-sandbox-enabled)
+        (efrit-doctor--fail "Scope sandbox is OFF"
+                            "Every tool -- eval_sexp, shell_exec, file writes anywhere -- runs unchecked.  Only the legacy per-call permission prompt stands between the model and your disk."
+                            "Enable sandbox" (lambda () (setq efrit-sandbox-enabled t)))
+      (let* ((root (efrit-sandbox-project-root))
+             (file (efrit-sandbox-store-file root))
+             (grants (progn (efrit-sandbox-store-ensure-loaded root) (efrit-sandbox-grants root)))
+             (project (cl-remove-if-not (lambda (g) (eq (plist-get g :scope) 'project)) grants))
+             (session (cl-remove-if-not (lambda (g) (eq (plist-get g :scope) 'session)) grants)))
+        (efrit-doctor--ok (format "Sandbox on: read inside %s by default" (abbreviate-file-name root)))
+        (efrit-doctor--info (format "%d project grant(s) in %s, %d session grant(s)"
+                                    (length project)
+                                    (if (file-exists-p file) (abbreviate-file-name file) "(no file yet)")
+                                    (length session))
+                            (if grants
+                                (mapconcat (lambda (g) (format "%s %s %s" (plist-get g :scope) (plist-get g :cap)
+                                                               (let ((tg (plist-get g :target))) (if (eq tg t) "" (abbreviate-file-name tg)))))
+                                           grants "\n")
+                              "M-x efrit-sandbox to review or add grants."))
+        (when (and (file-exists-p file) (/= (logand (file-modes file) #o077) 0))
+          (efrit-doctor--warn (format "%s is group/world readable" (abbreviate-file-name file))
+                              "It lists what the model may touch; keep it private." "chmod 600"
+                              (lambda () (set-file-modes file #o600))))
+        (dolist (g project)
+          (when (and (memq (plist-get g :cap) '(read write))
+                     (stringp (plist-get g :target))
+                     (member (plist-get g :target)
+                             (list "/" (efrit-sandbox-canonical "~"))))
+            (efrit-doctor--warn (format "Project grant: %s under %s" (plist-get g :cap) (plist-get g :target))
+                                "That is the whole filesystem / home directory.  Narrow it in M-x efrit-sandbox.")))
+        (unless (or (null efrit-sandbox-request-function)
+                    (functionp efrit-sandbox-request-function))
+          (efrit-doctor--fail "efrit-sandbox-request-function is not a function"
+                              "Requests would all be denied."))
+        (when (null efrit-sandbox-request-function)
+          (efrit-doctor--warn "No sandbox prompt installed"
+                              "Anything outside the default scope is silently denied.  (require 'efrit-sandbox-ui) installs the prompt."
+                              "Install prompt"
+                              (lambda () (require 'efrit-sandbox-ui)
+                                (setq efrit-sandbox-request-function #'efrit-sandbox-ui-prompt))))))))
+
 (defun efrit-doctor--check-permissions ()
   (efrit-doctor--layer "Permissions"
     (cond
+     ((bound-and-true-p efrit-sandbox-enabled)
+      (efrit-doctor--info "Per-call permission prompt inactive: the scope sandbox owns consent"))
      ((null efrit-permission-policy)
       (efrit-doctor--warn "Permission policy is nil"
                           "Every tool, including eval_sexp and shell_exec, runs without asking."
@@ -579,6 +629,7 @@ endpoint, model and prompt-caching setting work end to end."
       (efrit-doctor--check-live)))
   (efrit-doctor--check-transport)
   (efrit-doctor--check-sandbox)
+  (efrit-doctor--check-sandbox-scope)
   (efrit-doctor--check-tramp)
   (efrit-doctor--check-permissions)
   (efrit-doctor--check-context)

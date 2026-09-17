@@ -36,6 +36,7 @@
 (require 'efrit-agent-core)
 (require 'efrit-agent-render)
 (require 'efrit-agent-svg-header)
+(require 'efrit-sandbox-ui)
 (declare-function efrit-api-stream-cancel "efrit-api-stream")
 (autoload 'efrit-menu "efrit-menu" nil t)
 (require 'efrit-agent-tools)
