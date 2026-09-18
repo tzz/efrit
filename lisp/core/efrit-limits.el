@@ -42,6 +42,7 @@
 (require 'efrit-tool-utils)   ; efrit-tool--get-project-root
 
 (defvar transient-post-exit-hook)
+(declare-function efrit-show-preview "efrit-ui-helpers")
 
 (defgroup efrit-limits nil
   "Loop limits and how they are raised."
@@ -261,7 +262,14 @@ DEFAULT is the customization value the caller would otherwise use."
      (propertize (efrit-limits--why name) 'face 'efrit-limits-dim)
      (when var
        (concat "  " (propertize (format "(%s)" var) 'face 'efrit-limits-dim)))
+     (when efrit-limits--details-shown
+       (concat "\n\n"
+               (mapconcat (lambda (l) (concat "  " l))
+                          (split-string (efrit-limits--details-text) "\n") "\n")))
      "\n")))
+
+(defvar efrit-limits--details-shown nil
+  "Non-nil while the menu shows the limits table; toggled by ?.")
 
 (defun efrit-limits--label-continue ()
   (format "continue for %s more %s, then ask again"
@@ -283,28 +291,45 @@ DEFAULT is the customization value the caller would otherwise use."
   (let ((new (max 10 (+ (efrit-limits--step) delta))))
     (setq efrit-limits--context (plist-put efrit-limits--context :step new))))
 
-(defun efrit-limits--show-details ()
-  "Popup: limits in force for this project and where they come from."
-  (require 'efrit-ui-helpers)
+(defun efrit-limits--details-text ()
+  "The limits in force for this project and where they come from, as text."
   (let* ((root (plist-get efrit-limits--context :root))
          (file (efrit-limits-file root)))
-    (efrit-show-preview
-     "*efrit-limits*"
-     (concat
-      (format "Project:  %s\nSettings: %s%s\n\n" (abbreviate-file-name root)
-              (abbreviate-file-name file)
-              (if (file-exists-p file) "" "  (not written yet)"))
-      (mapconcat
-       (lambda (name)
-         (let ((var (efrit-limits--variable name)))
-           (format "%-16s default %-5s session %-5s project %-5s once %s"
-                   name
-                   (if (and var (boundp var)) (symbol-value var) "-")
-                   (or (alist-get name (gethash root efrit-limits--session)) "-")
-                   (or (alist-get name (gethash root efrit-limits--project)) "-")
-                   (or (gethash (cons root name) efrit-limits--once) "-"))))
-       efrit-limits-known "\n")
-      "\n\nA raise never lowers a limit; M-x efrit-limits-reset-session forgets session raises."))))
+    (concat
+     (format "Project:  %s\nSettings: %s%s\n\n" (abbreviate-file-name root)
+             (abbreviate-file-name file)
+             (if (file-exists-p file) "" "  (not written yet)"))
+     (mapconcat
+      (lambda (name)
+        (let ((var (efrit-limits--variable name)))
+          (format "%-16s default %-5s session %-5s project %-5s once %s"
+                  name
+                  (if (and var (boundp var)) (symbol-value var) "-")
+                  (or (alist-get name (gethash root efrit-limits--session)) "-")
+                  (or (alist-get name (gethash root efrit-limits--project)) "-")
+                  (or (gethash (cons root name) efrit-limits--once) "-"))))
+      efrit-limits-known "\n")
+     "\n\nA raise never lowers a limit; M-x efrit-limits-reset-session forgets session raises.")))
+
+(defun efrit-limits--toggle-label ()
+  (if efrit-limits--details-shown "hide limits in force" "show limits in force"))
+
+(defun efrit-limits-toggle-details ()
+  "Show the limits table in the menu, or hide it again."
+  (interactive)
+  (setq efrit-limits--details-shown (not efrit-limits--details-shown)))
+
+(defun efrit-limits-yank-details ()
+  "Copy the limits table to the kill ring."
+  (interactive)
+  (kill-new (efrit-limits--details-text))
+  (message "Limits copied to the kill ring"))
+
+(defun efrit-limits--show-details ()
+  "Open the limits table in a popup buffer (`q' closes it)."
+  (interactive)
+  (require 'efrit-ui-helpers)
+  (efrit-show-preview "*efrit-limits*" (efrit-limits--details-text)))
 
 (defun efrit-limits--define-menu ()
   (when (require 'transient nil t)
@@ -328,7 +353,9 @@ DEFAULT is the customization value the caller would otherwise use."
              :description efrit-limits--label-step :transient t)
             ("-" "smaller step" (lambda () (interactive) (efrit-limits--adjust-step -50))
              :transient t)
-            ("?" "limits in force" efrit-limits--show-details :transient t)]])
+            ("?" efrit-limits-toggle-details :description efrit-limits--toggle-label :transient t)
+            ("y" "yank limits to the kill ring" efrit-limits-yank-details :transient t)
+            ("b" "open limits in a buffer" efrit-limits--show-details :transient t)]])
        t))
     (fboundp 'efrit-limits-menu)))
 
@@ -338,7 +365,8 @@ DEFAULT is the customization value the caller would otherwise use."
     (ignore-errors (quit-window nil win))))
 
 (defun efrit-limits--ask-with-menu ()
-  (setq efrit-limits--answer 'pending)
+  (setq efrit-limits--answer 'pending
+        efrit-limits--details-shown nil)
   (let ((efrit-limits--depth (1+ (recursion-depth))))
     (unwind-protect
         (progn

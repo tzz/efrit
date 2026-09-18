@@ -163,5 +163,18 @@
         (should efrit-do--circuit-breaker-tripped))
       (efrit-do--circuit-breaker-reset))))
 
+(ert-deftest test-limits-menu-details-toggle-and-yank ()
+  (test-limits--in-project
+    (let ((efrit-limits--context (list :name 'max-tool-calls :current 30 :step 50 :root root))
+          (efrit-limits--details-shown nil)
+          (kill-ring nil))
+      (should (equal (efrit-limits--toggle-label) "show limits in force"))
+      (should-not (string-match-p "max-iterations" (efrit-limits--menu-description)))
+      (efrit-limits-toggle-details)
+      (should (equal (efrit-limits--toggle-label) "hide limits in force"))
+      (should (string-match-p "max-iterations .*default" (efrit-limits--menu-description)))
+      (efrit-limits-yank-details)
+      (should (string-match-p "Settings: " (car kill-ring))))))
+
 (provide 'test-limits)
 ;;; test-limits.el ends here

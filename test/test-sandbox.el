@@ -515,3 +515,49 @@ made the granted read time out the instant it was allowed."
             (should (string-match-p "read .*deep/f.txt" (efrit-sandbox-request-detail test-sb--req))))
         (delete-directory outside t)))))
 
+(ert-deftest test-sb-ui-details-toggle-yank-and-buffer ()
+  "? toggles the full request inline (label show/hide), y yanks it, b opens a buffer."
+  (require 'efrit-sandbox-ui)
+  (test-sb--in-project
+    (let* ((long (mapconcat (lambda (i) (format "(line-%d)" i)) (number-sequence 1 20) "\n"))
+           (req (efrit-sandbox-request-create :cap 'elisp :target t :tool "eval_sexp" :detail long))
+           (efrit-sandbox-ui--request req)
+           (efrit-sandbox-ui--details-shown nil)
+           (efrit-sandbox-ui-detail-lines 5)
+           (kill-ring nil))
+      ;; short block: 5 lines and a note; the label offers to show
+      (let ((h (substring-no-properties (efrit-sandbox-ui--menu-description))))
+        (should (string-match-p "(line-5)" h))
+        (should-not (string-match-p "(line-6)" h))
+        (should (string-match-p "15 more lines" h)))
+      (should (equal (efrit-sandbox-ui--toggle-label) "show details"))
+      ;; toggle: everything, including the grants section; label flips
+      (efrit-sandbox-ui-toggle-details)
+      (let ((h (substring-no-properties (efrit-sandbox-ui--menu-description))))
+        (should (string-match-p "(line-20)" h))
+        (should (string-match-p "Grants in force" h)))
+      (should (equal (efrit-sandbox-ui--toggle-label) "hide details"))
+      ;; toggle back
+      (efrit-sandbox-ui-toggle-details)
+      (should-not (string-match-p "(line-20)" (efrit-sandbox-ui--menu-description)))
+      ;; yank
+      (efrit-sandbox-ui-yank-details)
+      (should (string-match-p "Form to evaluate:\n(line-1)" (car kill-ring)))
+      (should (string-match-p "Grants in force" (car kill-ring)))
+      ;; buffer
+      (cl-letf (((symbol-function 'display-buffer) (lambda (&rest _) nil)))
+        (efrit-sandbox-ui-open-details))
+      (with-current-buffer efrit-sandbox-ui--details-buffer
+        (should (string-match-p "(line-20)" (buffer-string)))
+        (should (eq (key-binding "q") 'quit-window))))))
+
+(ert-deftest test-sb-ui-details-toggle-resets-per-request ()
+  (require 'efrit-sandbox-ui)
+  (test-sb--in-project
+    (let ((req (efrit-sandbox-request-create :cap 'shell :target t :tool "shell_exec" :detail "ls"))
+          (efrit-sandbox-ui--details-shown t))
+      (cl-letf (((symbol-function 'run-at-time) (lambda (&rest _) nil))
+                ((symbol-function 'recursive-edit) (lambda () (efrit-sandbox-ui--choose 'once))))
+        (efrit-sandbox-ui--ask-with-menu req))
+      (should-not efrit-sandbox-ui--details-shown))))
+

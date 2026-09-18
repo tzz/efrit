@@ -21,7 +21,9 @@
 ;;       s  session   until this Emacs exits
 ;;       p  project   saved in <project>/.efrit/sandbox.json
 ;;       n  no        deny (C-g and q do the same)
-;;       ?  details   the full request and the grants in force
+;;       ?  details   show/hide the full request in the menu
+;;       y  yank      copy the full request to the kill ring
+;;       b  buffer    open the full request in a popup (q closes)
 ;;
 ;;   The menu runs inside a `recursive-edit' so the calling tool gets
 ;;   an answer synchronously; `transient-post-exit-hook' exits the
@@ -110,21 +112,34 @@
 (defvar efrit-sandbox-ui--depth nil
   "Recursion depth of the recursive edit waiting on the menu, or nil.")
 
+(defvar efrit-sandbox-ui--details-shown nil
+  "Non-nil while the menu shows the full request instead of the short block.
+Toggled by ? in the menu; reset for each new request.")
+
 (defun efrit-sandbox-ui--menu-description ()
-  "Header of the menu: tool, request, detail."
+  "Header of the menu: tool, request, and the detail (short, or full after ?)."
   (let* ((req efrit-sandbox-ui--request)
          (tool (or (efrit-sandbox-request-tool req) "a tool"))
          (detail (efrit-sandbox-request-detail req)))
     (concat
      (propertize (format "Efrit: %s wants to %s" tool (efrit-sandbox-ui--scope-word req))
                  'face 'efrit-sandbox-prompt-face)
-     (when (and detail (not (string-empty-p detail)))
-       (concat "\n" (efrit-sandbox-ui--detail-block detail)))
+     (cond
+      (efrit-sandbox-ui--details-shown
+       (concat "\n" (efrit-sandbox-ui--indent (efrit-sandbox-ui--details-text req t))))
+      ((and detail (not (string-empty-p detail)))
+       (concat "\n" (efrit-sandbox-ui--detail-block detail))))
      "\n")))
+
+(defun efrit-sandbox-ui--indent (text)
+  "TEXT with every line indented two spaces and chopped to the frame width."
+  (let ((width (- (frame-width) 6)))
+    (mapconcat (lambda (l) (concat "  " (truncate-string-to-width l width nil nil "…")))
+               (split-string text "\n") "\n")))
 
 (defcustom efrit-sandbox-ui-detail-lines 12
   "Most lines of the request detail (the form, the command) shown in the menu.
-The rest is in the ? popup."
+? shows the rest in the menu, b in a buffer."
   :type 'integer
   :group 'efrit-sandbox-ui)
 
@@ -142,7 +157,7 @@ each line is chopped to the frame width."
                                            'face 'efrit-sandbox-detail-face)))
                 shown "\n")
      (when (> (length lines) (length shown))
-       (propertize (format "\n  … %d more lines (? shows all)" (- (length lines) (length shown)))
+       (propertize (format "\n  … %d more lines (? shows them)" (- (length lines) (length shown)))
                    'face 'shadow)))))
 
 (defun efrit-sandbox-ui--project-label ()
@@ -174,9 +189,11 @@ each line is chopped to the frame width."
            ["Refuse"
             ("n" "no, the model continues without it"
              (lambda () (interactive) (efrit-sandbox-ui--choose nil)))]
-           ["More"
-            ("?" "show the full request" (lambda () (interactive) (efrit-sandbox-ui--show-details efrit-sandbox-ui--request))
-             :transient t)
+           ["Details"
+            ("?" efrit-sandbox-ui-toggle-details
+             :description efrit-sandbox-ui--toggle-label :transient t)
+            ("y" "yank details to the kill ring" efrit-sandbox-ui-yank-details :transient t)
+            ("b" "open details in a buffer" efrit-sandbox-ui-open-details :transient t)
             ("l" "grants in force" (lambda () (interactive) (efrit-sandbox (efrit-sandbox-project-root)))
              :transient t)]])
        t))
@@ -187,7 +204,8 @@ each line is chopped to the frame width."
 Returns once/session/project or nil.  Closing the menu any other way
 \(C-g, q, another command) is a denial."
   (setq efrit-sandbox-ui--request req
-        efrit-sandbox-ui--answer 'pending)
+        efrit-sandbox-ui--answer 'pending
+        efrit-sandbox-ui--details-shown nil)
   (let ((efrit-sandbox-ui--depth (1+ (recursion-depth))))
     (unwind-protect
         (progn
@@ -253,12 +271,9 @@ just been answered.  The buffer stays for `q'-less inspection later."
               (win (get-buffer-window buf t)))
     (ignore-errors (quit-window nil win))))
 
-(defun efrit-sandbox-ui--show-details (req)
-  "Pop up everything known about REQ.
-Shown next to the transient menu, not selected: the menu is still
-reading keys.  The popup is dedicated and `q' dismisses it once the
-menu is gone; answering the menu removes it too."
-  (require 'efrit-ui-helpers)
+(defun efrit-sandbox-ui--details-text (req &optional fontify)
+  "Everything known about REQ as plain text, for the menu, the kill ring, or a buffer.
+With FONTIFY, an elisp form is fontified as Emacs Lisp (for display)."
   (let* ((tool (efrit-sandbox-request-tool req))
          (cap (efrit-sandbox-request-cap req))
          (target (efrit-sandbox-request-target req))
@@ -269,39 +284,61 @@ menu is gone; answering the menu removes it too."
                  ('net "Request")
                  ('buffer "Buffer")
                  (_ "Detail")))
-         (header (format "%s wants to %s\nProject: %s%s%s"
-                         (or tool "a tool") (efrit-sandbox-ui--scope-word req)
-                         (abbreviate-file-name (efrit-sandbox-project-root))
-                         (if (and (stringp target) (not (eq cap 'elisp)))
-                             (format "\nGrant:   %s" (abbreviate-file-name target))
-                           "")
-                         (if detail (format "\n\n%s:\n" what) "")))
-         (footer (concat "\n\nGrants in force:\n" (efrit-sandbox-ui--grants-text))))
-    (efrit-show-preview
-     efrit-sandbox-ui--details-buffer
-     (concat header (or detail "") footer)
-     'efrit-preview-mode)
-    ;; the form reads best fontified as Lisp; only the detail span
-    (when (and detail (eq cap 'elisp))
-      (with-current-buffer efrit-sandbox-ui--details-buffer
-        (let ((inhibit-read-only t)
-              (start (+ (point-min) (length header)))
-              (end (- (point-max) (length footer))))
-          (when (< start end)
-            (let ((text (buffer-substring-no-properties start end)))
-              (with-temp-buffer
-                (insert text)
-                (delay-mode-hooks (emacs-lisp-mode))
-                ;; font-lock is off in batch and in fresh temp buffers
-                ;; until enabled; `font-lock-ensure' alone then does nothing
-                (font-lock-mode 1)
-                (font-lock-ensure)
-                (let ((fontified (buffer-string)))
-                  (with-current-buffer efrit-sandbox-ui--details-buffer
-                    (let ((inhibit-read-only t))
-                      (delete-region start end)
-                      (goto-char start)
-                      (insert fontified))))))))))))
+         (body (cond
+                ((null detail) "")
+                ((and fontify (eq cap 'elisp)) (efrit-sandbox-ui--fontify-lisp detail))
+                (t detail))))
+    (concat
+     (format "%s wants to %s\nProject: %s" (or tool "a tool") (efrit-sandbox-ui--scope-word req)
+             (abbreviate-file-name (efrit-sandbox-project-root)))
+     (if (and (stringp target) (not (eq cap 'elisp)))
+         (format "\nGrant:   %s" (abbreviate-file-name target))
+       "")
+     (if detail (format "\n\n%s:\n%s" what body) "")
+     "\n\nGrants in force:\n" (efrit-sandbox-ui--grants-text))))
+
+(defun efrit-sandbox-ui--fontify-lisp (text)
+  "TEXT with `emacs-lisp-mode' font-lock faces applied."
+  (with-temp-buffer
+    (insert text)
+    (delay-mode-hooks (emacs-lisp-mode))
+    ;; font-lock is off in batch and fresh temp buffers until enabled
+    (font-lock-mode 1)
+    (font-lock-ensure)
+    (buffer-string)))
+
+(defun efrit-sandbox-ui--toggle-label ()
+  (if efrit-sandbox-ui--details-shown "hide details" "show details"))
+
+(defun efrit-sandbox-ui-toggle-details ()
+  "Show the full request in the menu, or the short block again."
+  (interactive)
+  ;; The heading is a function of this flag; transient re-renders the
+  ;; menu after every :transient t suffix, so flipping it is enough
+  (setq efrit-sandbox-ui--details-shown (not efrit-sandbox-ui--details-shown)))
+
+(defun efrit-sandbox-ui-yank-details ()
+  "Copy the full request text to the kill ring."
+  (interactive)
+  (when efrit-sandbox-ui--request
+    (kill-new (efrit-sandbox-ui--details-text efrit-sandbox-ui--request))
+    (message "Sandbox request copied to the kill ring")))
+
+(defun efrit-sandbox-ui-open-details ()
+  "Open the full request in a popup buffer (`q' closes it)."
+  (interactive)
+  (when efrit-sandbox-ui--request
+    (efrit-sandbox-ui--show-details efrit-sandbox-ui--request)))
+
+(defun efrit-sandbox-ui--show-details (req)
+  "Pop up everything known about REQ.
+Shown next to the transient menu, not selected: the menu is still
+reading keys.  The popup is dedicated and `q' dismisses it once the
+menu is gone; answering the menu removes it too."
+  (require 'efrit-ui-helpers)
+  (efrit-show-preview efrit-sandbox-ui--details-buffer
+                      (efrit-sandbox-ui--details-text req t)
+                      'efrit-preview-mode))
 
 (defun efrit-sandbox-ui--grants-text ()
   (let ((gs (efrit-sandbox-grants)))
