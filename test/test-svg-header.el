@@ -21,7 +21,9 @@
       (should (equal (alist-get :name m) "efrit"))
       (should (stringp (alist-get :model m)))
       (should (string-match-p "Working" (alist-get :status m)))
-      (should (string-match-p "waiting for Claude" (alist-get :spinner m)))
+      ;; while a request is in flight the arc replaces the status
+      ;; glyph and the label is the status word, not the thinking text
+      (should (equal (alist-get :spinner m) "Working"))
       (should (numberp (alist-get :width m)))
       (should (numberp (alist-get :font-size m))))))
 
@@ -42,7 +44,10 @@
         (should-not (string-match-p "fill=\"\\(?:[A-Za-mo-z]\\|n[^o]\\)" xml)))
       ;; the spinner arc is drawn while a request is in flight
       (should (string-match-p "<path" xml))
-      (should (string-match-p "waiting for Claude" xml))
+      ;; the arc marker precedes the status word, and the word is pushed
+      ;; past the arc box (font-size + 6) so they never overlap
+      (should (string-match-p "efrit-spinner=\"([^\"]*Working)\"></tspan><tspan[^>]*dx=\"14\">Working" xml))
+      (should-not (string-match-p "waiting for Claude" xml))
       ;; canvas never exceeds the window width (in batch the frame is
       ;; 80 "pixels" wide, so shrinking cannot be observed; on a real
       ;; display the canvas ends just past the last glyph)

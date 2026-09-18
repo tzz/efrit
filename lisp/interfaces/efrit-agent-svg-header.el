@@ -165,6 +165,14 @@ fraction of the char height when the font object has no size."
          (efrit-repl-session-id efrit-agent--repl-session))
         ((boundp 'efrit-agent--session-id) efrit-agent--session-id)))
 
+(defun efrit-agent-svg--status-word (status)
+  "STATUS without its leading glyph: the word after the first space.
+The glyph is one token, then whitespace, in both display styles."
+  (let ((s (substring-no-properties status)))
+    (if (string-match "\\`[^[:space:]]+[[:space:]]+" s)
+        (substring s (match-end 0))
+      s)))
+
 (defun efrit-agent-svg--model ()
   "Collect everything the header shows into one alist (also the cache key)."
   (let* ((tools (and (boundp 'efrit-agent--activities)
@@ -181,9 +189,12 @@ fraction of the char height when the font object has no size."
       (:directory . ,(and root (abbreviate-file-name root)))
       (:status . ,(substring-no-properties status))
       (:status-face . ,(or (get-text-property 0 'face status) 'default))
-      ;; The header is one SVG, so the spinner is drawn into it: the
-      ;; label text here, the arc's angle index as a separate key.
-      (:spinner . ,(and efrit-agent--thinking-label efrit-agent--thinking-label))
+      ;; The header is one SVG, so the spinner is drawn into it.  While
+      ;; a request is in flight the arc replaces the status glyph and
+      ;; the label is the status word itself ("Working"), so the slot
+      ;; keeps its text and width instead of swapping to "thinking...".
+      (:spinner . ,(and efrit-agent--thinking-label
+                        (efrit-agent-svg--status-word status)))
       (:spinner-index . ,(and efrit-agent--thinking-label
                               (mod efrit-agent--spinner-index efrit-agent-spinner-steps)))
       (:spinner-color . ,(and efrit-agent--thinking-label
@@ -222,15 +233,17 @@ drawn afterwards by `efrit-agent-svg--place-spinners' and shows LABEL."
                                                (dx . "8"))
                                              "➤")))
           (when spin
-            ;; An empty tspan carrying the arc's parameters; its dx is
-            ;; the arc's width, so following text moves right of it.
+            ;; An empty tspan marking where the arc goes; the arc is a
+            ;; font-size square whose LEFT edge is this tspan's x
+            ;; (see `efrit-agent-svg--place-spinners'), so the label
+            ;; must move past the whole square plus a gap.
             (dom-append-child node (dom-node 'tspan
                                              `((dx . ,(if first "0" "8"))
                                                (efrit-spinner . ,spin))
                                              "")))
           (dom-append-child node (dom-node 'tspan
                                            `((fill . ,(efrit-agent-svg--hex (cdr seg)))
-                                             (dx . ,(if spin (format "%d" (+ 4 font-size)) "8")))
+                                             (dx . ,(if spin (format "%d" (+ 6 font-size)) "8")))
                                            label))
           (setq first nil))))
     node))
@@ -249,8 +262,12 @@ of everything before it on its row) and the row's baseline."
             (let* ((size font-size)
                    (frame (efrit-agent-spinner--svg size (nth 1 spin) (nth 2 spin)
                                                     (efrit-agent-svg--hex 'default :background)))
+                   ;; the frame is a SIZE square drawn from (0,0); put
+                   ;; its left edge at x and centre it on the cap height
+                   ;; (baseline minus ~0.35em is the visual middle of
+                   ;; the letters beside it)
                    (g (dom-node 'g `((transform . ,(format "translate(%.1f,%.1f)"
-                                                           x (- y (* 0.8 size))))))))
+                                                           x (- y (* 0.35 size) (/ size 2.0))))))))
               (dolist (n (dom-children frame)) (dom-append-child g n))
               (svg--append svg g)))
           (setq x (+ x (string-pixel-width (or (car (dom-children child)) "")))))))))
