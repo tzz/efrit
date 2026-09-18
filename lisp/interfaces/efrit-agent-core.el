@@ -415,16 +415,20 @@ Deletes from input-start marker to end of buffer."
 
 (defcustom efrit-agent-display-buffer-action
   '((display-buffer-reuse-window
-     display-buffer-in-previous-window
      display-buffer-at-bottom)
     (window-height . 0.4)
     (reusable-frames . visible)
-    (inhibit-same-window . nil))
+    (dedicated . t))
   "How the agent buffer is shown (a `display-buffer' action).
-The default reuses a window already showing it (in any visible
-frame), then the window it was last shown in, and only then splits
-off a bottom window.  Earlier versions always split, so each
-`M-x efrit' stacked another window."
+The default reuses a window already showing it (in any visible frame),
+otherwise splits off a bottom window -- the eshell model: the window
+is created for the buffer and `quit-window' deletes it again.
+
+`display-buffer-in-previous-window' is deliberately absent.  It
+reuses whatever window the buffer was last in, and a reused window
+carries no record that it was made for this buffer, so quitting
+swapped buffers and left the split behind.  The window is dedicated
+for the same reason: nothing else moves in, so quit means close."
   :type 'sexp
   :group 'efrit-agent)
 
@@ -432,9 +436,16 @@ off a bottom window.  Earlier versions always split, so each
   "Show the agent BUFFER (default the current one) per `efrit-agent-display-buffer-action'.
 With SELECT, select its window and put point in the input region.
 Returns the window.  Every path that shows the agent buffer goes
-through here so window behaviour is consistent."
+through here so window behaviour is consistent.
+
+Showing a buffer that is already visible leaves the window's
+`quit-restore' alone: `display-buffer' would otherwise downgrade it
+from delete-the-window to show-the-previous-buffer, and the next quit
+would leave the split behind."
   (let* ((buffer (or buffer (efrit-agent--get-buffer)))
-         (win (display-buffer buffer efrit-agent-display-buffer-action)))
+         (existing (get-buffer-window buffer 'visible))
+         (win (or existing
+                  (display-buffer buffer efrit-agent-display-buffer-action))))
     (when (and select (window-live-p win))
       (select-window win)
       (with-current-buffer buffer

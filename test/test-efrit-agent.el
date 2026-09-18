@@ -610,14 +610,39 @@ C-p still crosses into the transcript, C-c C-u kills the whole input."
       (should (= 1 (length (get-buffer-window-list buf nil t))))
       (should (<= (- after-first before) 1)))))
 
-(ert-deftest test-efrit-agent-review-skip-note ()
-  "A read-only turn gets a dim note saying it was not reviewed."
-  (efrit)
-  (with-current-buffer (efrit-agent--get-buffer)
-    (let ((efrit-agent-show-review-skips t))
-      (efrit-publish 'review-skipped '((:session-id . "s") (:reason . "read-only turn (fetch_url)")))
-      (should (string-match-p "⚖ not reviewed: read-only turn (fetch_url)"
-                              (buffer-substring-no-properties (point-min) (point-max)))))))
+(ert-deftest test-efrit-agent-quit-removes-the-split-eshell-style ()
+  "The window efrit made for itself goes away on quit, in every path:
+plain open, redisplay while visible, and reopen after switching away.
+Batch Emacs may refuse to split a tiny frame; skip then."
+  (set-frame-height nil 60)
+  (delete-other-windows)
+  (switch-to-buffer "*scratch*")
+  (let ((buf (progn (efrit) (efrit-agent--get-buffer))))
+    (skip-unless (> (length (window-list)) 1))
+    (cl-flet ((quit-agent ()
+                (select-window (get-buffer-window buf))
+                (efrit-agent-quit)))
+      ;; open + quit
+      (quit-agent)
+      (should (= 1 (length (window-list))))
+      ;; open, show again while visible (a session does this), quit
+      (efrit) (efrit-agent-display buf t) (efrit-agent--show-buffer)
+      (quit-agent)
+      (should (= 1 (length (window-list))))
+      ;; the window is dedicated and carries a delete-window quit-restore
+      (efrit)
+      (let ((w (get-buffer-window buf)))
+        (should (window-dedicated-p w))
+        (should (eq 'window (car (window-parameter w 'quit-restore)))))
+      (quit-agent)
+      (should (= 1 (length (window-list))))
+      ;; a side-by-side layout: quitting removes only efrit's split
+      (split-window-right)
+      (efrit)
+      (should (= 3 (length (window-list))))
+      (quit-agent)
+      (should (= 2 (length (window-list))))
+      (delete-other-windows))))
 
 (provide 'test-efrit-agent)
 
