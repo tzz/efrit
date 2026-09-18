@@ -47,6 +47,7 @@
 (require 'efrit-chat-response)
 (require 'efrit-permissions)
 (require 'efrit-sandbox)
+(require 'efrit-review)
 (require 'efrit-events)
 
 (declare-function efrit-do--execute-tool "efrit-do-dispatch")
@@ -296,8 +297,10 @@ response's stop_reason."
           (efrit-agent-stream-end)))
       (pcase stop-reason
         ("tool_use"
-         (funcall (efrit-loop-adapter-execute-tools-fn adapter)
-                  session content))
+         (if (efrit-review-applies-p content)
+             (efrit-loop--review-then-execute session adapter content)
+           (funcall (efrit-loop-adapter-execute-tools-fn adapter)
+                    session content)))
         ("end_turn"
          (efrit-log 'info "%s %s: Claude ended turn" name session-id)
          (when-let* ((fn (efrit-loop-adapter-on-end-turn-fn adapter)))
@@ -309,6 +312,60 @@ response's stop_reason."
          (efrit-loop--finish session adapter "unknown-stop-reason"
                              (format "API returned unrecognized stop reason: %S"
                                      stop-reason)))))))
+
+;;; Review before execution
+
+(defun efrit-loop--review-then-execute (session adapter content)
+  "Have the reviewer judge CONTENT's mutating tool calls, then act on the verdict.
+On approve, execute the tools as usual.  On reject, record the
+assistant turn and a rejection tool_result for every tool_use in it
+\(the API needs one per call), then continue the loop so the proposer
+can revise; after `efrit-review-max-rejections' consecutive rejections
+the turn is handed to the user instead."
+  (let* ((name (efrit-loop-adapter-name adapter))
+         (session-id (funcall (efrit-loop-adapter-id-fn adapter) session))
+         (messages (funcall (efrit-loop-adapter-messages-fn adapter) session)))
+    (when (and (efrit-loop-adapter-thinking-p adapter)
+               (fboundp 'efrit-agent-show-thinking))
+      (efrit-agent-show-thinking))
+    (efrit-review-turn
+     session-id messages content
+     (lambda (verdict)
+       (when (and (efrit-loop-adapter-thinking-p adapter)
+                  (fboundp 'efrit-agent-hide-thinking))
+         (efrit-agent-hide-thinking))
+       (let ((count (efrit-review-note-verdict session-id (car verdict))))
+         (pcase (car verdict)
+           ('approve
+            (funcall (efrit-loop-adapter-execute-tools-fn adapter) session content))
+           ('reject
+            (let ((reason (cdr verdict))
+                  (results nil))
+              (efrit-log 'info "%s %s: reviewer rejected turn (%d consecutive)"
+                         name session-id count)
+              (funcall (efrit-loop-adapter-add-assistant-fn adapter) session content)
+              (dotimes (i (length content))
+                (when-let* ((use (efrit-content-item-as-tool-use (aref content i))))
+                  (let ((text (if (efrit-review--reviewable-p (nth 1 use))
+                                  (efrit-review-rejected-tool-result reason)
+                                (concat efrit-review-rejected-prefix
+                                        "not run: another call in this batch was rejected."))))
+                    (efrit-loop--event adapter session-id 'tool_result
+                                       `((:tool . ,(nth 1 use)) (:result . ,text)
+                                         (:success . nil)))
+                    (when (fboundp 'efrit-agent-show-tool-start)
+                      (let ((row (efrit-agent-show-tool-start (nth 1 use) (nth 2 use))))
+                        (when (and row (fboundp 'efrit-agent-show-tool-result))
+                          (efrit-agent-show-tool-result row text nil 0))))
+                    (push (efrit-api-build-tool-result (nth 0 use) text t) results))))
+              (funcall (efrit-loop-adapter-add-tool-results-fn adapter)
+                       session (nreverse results))
+              (if (>= count efrit-review-max-rejections)
+                  (efrit-loop--finish
+                   session adapter "review-rejected"
+                   (format "The reviewer rejected %d turns in a row. Last reason: %s"
+                           count (or reason "none given")))
+                (funcall (efrit-loop-adapter-continue-fn adapter) session))))))))))
 
 ;;; Tool Execution
 

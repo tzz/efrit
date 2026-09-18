@@ -22,6 +22,7 @@
 ;;   6. Caching        cache_control accepted by the endpoint (with 5)
 ;;   7. Sandbox        project root, remote host, data directory
 ;;   8. Tramp          remote root has git/rg/sh on the remote PATH
+;;   8b. Review        second-model review on/off, model, failure policy
 ;;   9. Permissions    policy sane, responder callable
 ;;  10. Context        sources resolve, snapshot renders
 ;;  11. UI             agent buffer mode, SVG header support
@@ -49,6 +50,7 @@
 (require 'efrit-permissions)
 (require 'efrit-tool-utils)
 (require 'efrit-sandbox)
+(require 'efrit-review)
 
 (declare-function efrit-api-request-async "efrit-api")
 (declare-function efrit-api-build-headers "efrit-api")
@@ -438,7 +440,8 @@ carries a cache_control block, which is the caching probe."
                                     (length session))
                             (if grants
                                 (mapconcat (lambda (g) (format "%s %s %s" (plist-get g :scope) (plist-get g :cap)
-                                                               (let ((tg (plist-get g :target))) (if (eq tg t) "" (abbreviate-file-name tg)))))
+                                                               (let ((tg (plist-get g :target)))
+                                                                 (if (eq tg t) "" (efrit-sandbox--target-label tg)))))
                                            grants "\n")
                               "M-x efrit-sandbox to review or add grants."))
         (when (and (file-exists-p file) (/= (logand (file-modes file) #o077) 0))
@@ -462,6 +465,26 @@ carries a cache_control block, which is the caching probe."
                               "Install prompt"
                               (lambda () (require 'efrit-sandbox-ui)
                                 (setq efrit-sandbox-request-function #'efrit-sandbox-ui-prompt))))))))
+
+(defun efrit-doctor--check-review ()
+  (efrit-doctor--layer "Review"
+    (if (not efrit-review-enabled)
+        (efrit-doctor--info "Second-model review is off"
+                            "Set efrit-review-enabled to have a reviewer call judge each turn's write/exec tool calls against your request before they run.  Costs one small extra request per mutating turn.")
+      (let ((model (or efrit-review-model efrit-default-model)))
+        (efrit-doctor--ok (format "Review on: %s judges %s tool calls"
+                                  model
+                                  (mapconcat #'symbol-name efrit-review-classes "/")))
+        (when (equal model efrit-default-model)
+          (efrit-doctor--info "Reviewer is the same model as the proposer"
+                              "It catches slips and misread intent, not shared misjudgement.  Set efrit-review-model to a different model for a more independent second opinion."))
+        (when (eq efrit-review-on-failure 'approve)
+          (efrit-doctor--info "A failed review call approves the turn"
+                              "efrit-review-on-failure is `approve': a review outage lets work continue under the sandbox alone.  Set it to `reject' where a missed review is worse than a stalled turn."))
+        (when (< efrit-review-max-rejections 1)
+          (efrit-doctor--fail "efrit-review-max-rejections is below 1"
+                              "Every rejection would hand the turn to you at once; the proposer never gets to revise."
+                              "Set to 2" (lambda () (setq efrit-review-max-rejections 2))))))))
 
 (defun efrit-doctor--check-permissions ()
   (efrit-doctor--layer "Permissions"
@@ -630,6 +653,7 @@ endpoint, model and prompt-caching setting work end to end."
   (efrit-doctor--check-transport)
   (efrit-doctor--check-sandbox)
   (efrit-doctor--check-sandbox-scope)
+  (efrit-doctor--check-review)
   (efrit-doctor--check-tramp)
   (efrit-doctor--check-permissions)
   (efrit-doctor--check-context)

@@ -22,6 +22,7 @@
 (require 'efrit-agent-render)
 (require 'efrit-do-dispatch)
 (require 'efrit-sandbox)   ; efrit-sandbox-denied-prefix
+(require 'efrit-review)    ; efrit-review-rejected-prefix
 
 ;; Forward declarations
 
@@ -54,16 +55,24 @@ Follows precedence: explicit summary > annotations > truncated result."
       (efrit-agent--summary-from-annotations tv)
       (efrit-agent--default-summary tv)))
 
+(defun efrit-agent--rejected-result-p (result)
+  "Non-nil if RESULT is a reviewer rejection (efrit-review), not a tool failure."
+  (and (stringp result)
+       (string-prefix-p efrit-review-rejected-prefix result)))
+
 (defun efrit-agent--denied-result-p (result)
-  "Non-nil if RESULT is a sandbox or permission denial, not a tool failure."
+  "Non-nil if RESULT is a denial or rejection, not a tool failure.
+Covers sandbox and permission denials by the user and reviewer
+rejections: all are rows the tool never ran, rendered muted."
   (and (stringp result)
        (or (string-prefix-p efrit-sandbox-denied-prefix result)
-           (string-prefix-p "Error permission denied" result))))
+           (string-prefix-p "Error permission denied" result)
+           (efrit-agent--rejected-result-p result))))
 
 (defun efrit-agent--error-gist (result)
   "The first sentence of an error RESULT, without the leading `Error' noise."
   (let* ((s (replace-regexp-in-string "[\n\r]+" " " (format "%s" result)))
-         (s (replace-regexp-in-string "\\`Error:? *\\(sandbox denied: \\|permission denied: \\)?" "" s))
+         (s (replace-regexp-in-string "\\`Error:? *\\(sandbox denied: \\|permission denied: \\|review rejected: \\)?" "" s))
          (end (and (string-match "[.!?]\\( \\|\\'\\)" s) (match-beginning 0))))
     (string-trim (if end (substring s 0 end) s))))
 
@@ -72,6 +81,9 @@ Follows precedence: explicit summary > annotations > truncated result."
 SUCCESS-P indicates if the tool succeeded."
   (let ((result-str (format "%s" result)))
     (cond
+     ;; A reviewer rejection: the reason is the summary
+     ((efrit-agent--rejected-result-p result)
+      (concat "rejected · " (efrit-agent--error-gist result-str)))
      ;; A denial: say so, plus what was refused unless the row's
      ;; target (the command) already says it
      ((efrit-agent--denied-result-p result)
@@ -507,6 +519,12 @@ Diffs are syntax-highlighted if `efrit-agent-show-diff' is non-nil."
      ;; Result section (with render-type aware formatting)
      (when result
        (cond
+        ;; A reviewer rejection: the reviewer's reason, dim
+        ((efrit-agent--rejected-result-p result)
+         (concat indent "  "
+                 (propertize (concat "Reviewer: " (efrit-agent--error-gist result))
+                             'face 'efrit-agent-timestamp)
+                 "\n"))
         ;; A denial: one dim line for the human.  The rest of the
         ;; result text is instructions for the model, not for here.
         ((efrit-agent--denied-result-p result)
