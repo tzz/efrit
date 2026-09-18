@@ -73,12 +73,26 @@ opinion; the same model still catches slips and misread intent."
   :type '(choice (const :tag "Same as proposer" nil) string)
   :group 'efrit-review)
 
-(defcustom efrit-review-classes '(write exec)
+(defcustom efrit-review-classes '(write exec net)
   "Permission classes of tool calls that are reviewed.
 Drawn from `efrit-permission-tool-classes'.  Tools of other classes
-run without review."
-  :type '(set (const write) (const exec) (const read))
+\(reads, efrit's control tools) run without review; the transcript
+says so for each turn, so silence never means \"forgot\"."
+  :type '(set (const write) (const exec) (const net) (const read))
   :group 'efrit-review)
+
+(defun efrit-review-skip-reason (content)
+  "Why CONTENT is not reviewed: a short phrase, or nil when it is.
+Published as `review-skipped' by the loop so the transcript can show it."
+  (cond
+   ((not efrit-review-enabled) "review off")
+   ((null (efrit-review--tool-uses content)) nil) ; no tools: nothing to judge
+   ((not (efrit-review-applies-p content))
+    (format "read-only turn (%s)"
+            (mapconcat #'identity
+                       (delete-dups (mapcar (lambda (u) (nth 1 u)) (efrit-review--tool-uses content)))
+                       ", ")))
+   (t nil)))
 
 (defcustom efrit-review-max-rejections 2
   "Rejections of consecutive turns after which the turn is handed to the user.

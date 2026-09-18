@@ -77,6 +77,9 @@
     ("buffer_create" . write) ("edit_buffer" . write) ("create_buffer" . write)
     ("beads_create" . write) ("beads_update" . write) ("beads_close" . write)
     ("set_project_root" . write)
+    ;; net: data leaves the machine (the sandbox's `net' grant gates
+    ;; these; the class is for review and policy)
+    ("fetch_url" . net) ("web_search" . net)
     ;; control: efrit plumbing, never gated
     ("session_complete" . control) ("todo_write" . control)
     ("request_user_input" . control) ("confirm_action" . control)
@@ -84,12 +87,13 @@
     ("display_in_buffer" . control) ("format_file_list" . control)
     ("format_todo_list" . control))
   "Alist mapping tool names to permission classes.
-Classes are `read', `write', `exec', `control'.  Tools not listed are
-treated as `read'.  Network tools (web_search, fetch_url) already
-have their own consent inside the tool."
+Classes are `read', `write', `exec', `net', `control'.  Tools not
+listed are treated as `read'.  Network tools have their own consent
+through the sandbox's `net' grant; the class exists so review and
+policy can treat them as more than a read."
   :type '(alist :key-type string
                 :value-type (choice (const read) (const write)
-                                    (const exec) (const control)))
+                                    (const exec) (const net) (const control)))
   :group 'efrit-permissions)
 
 (defcustom efrit-permission-policy '(write exec)

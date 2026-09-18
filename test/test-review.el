@@ -79,6 +79,23 @@ received in `test-review--requests'.  A string starting with
                          (test-review--tool-use "1" "read_file" '(("path" . "a"))))))
     (should-not (efrit-review-applies-p
                  (vector (test-review--tool-use "1" "session_complete" nil)))))
+  ;; with the default classes, network calls are reviewed too: data
+  ;; leaves the machine
+  (let ((efrit-review-enabled t))
+    (should (memq 'net efrit-review-classes))
+    (should (efrit-review-applies-p
+             (vector (test-review--tool-use "1" "fetch_url" '(("url" . "https://x")))))))
+  ;; the skip reason names the read-only tools; nil when reviewed or no tools
+  (let ((efrit-review-enabled t))
+    (should (equal (efrit-review-skip-reason
+                    (vector (test-review--tool-use "1" "project_files" nil)
+                            (test-review--tool-use "2" "read_file" '(("path" . "a")))))
+                   "read-only turn (project_files, read_file)"))
+    (should-not (efrit-review-skip-reason (vector (test-review--tool-use "1" "edit_file" nil))))
+    (should-not (efrit-review-skip-reason (vector (test-review--text "just words")))))
+  (let ((efrit-review-enabled nil))
+    (should (equal (efrit-review-skip-reason (vector (test-review--tool-use "1" "edit_file" nil)))
+                   "review off")))
   (let ((efrit-review-enabled nil))
     (should-not (efrit-review-applies-p
                  (vector (test-review--tool-use "1" "edit_file" '(("path" . "a"))))))))

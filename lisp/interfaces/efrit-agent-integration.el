@@ -313,9 +313,30 @@ Uses incremental inline update instead of full re-render."
                                              (eq verdict 'approve) nil)
             (setq efrit-agent--review-row nil)))))))
 
-(with-eval-after-load 'efrit-events
-  (efrit-subscribe 'review-start #'efrit-agent--on-review-start)
-  (efrit-subscribe 'review-verdict #'efrit-agent--on-review-verdict))
+(defcustom efrit-agent-show-review-skips t
+  "When non-nil, a turn that needs no review gets a one-line dim note.
+Reads and efrit's own control tools are not reviewed; the note says
+so, for example: not reviewed: read-only turn (fetch_url)."
+  :type 'boolean
+  :group 'efrit-agent)
+
+(defun efrit-agent--on-review-skipped (event)
+  (when efrit-agent-show-review-skips
+    (let ((buffer (get-buffer efrit-agent-buffer-name)))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (efrit-agent--append-to-conversation
+           (concat (propertize (format "  ⚖ not reviewed: %s" (alist-get :reason event))
+                               'face 'efrit-agent-timestamp)
+                   "\n")
+           (list 'efrit-type 'review-note)))))))
+
+;; Subscribed at load, not in eval-after-load: efrit-events is already
+;; required above, and an eval-after-load body would run again on
+;; every efrit-reload.
+(efrit-subscribe 'review-start #'efrit-agent--on-review-start)
+(efrit-subscribe 'review-verdict #'efrit-agent--on-review-verdict)
+(efrit-subscribe 'review-skipped #'efrit-agent--on-review-skipped)
 
 (provide 'efrit-agent-integration)
 

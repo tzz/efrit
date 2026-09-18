@@ -314,6 +314,10 @@ response's stop_reason."
         ("tool_use"
          (if (efrit-review-applies-p content)
              (efrit-loop--review-then-execute session adapter content)
+           ;; Say why there is no review row, so a missing one is
+           ;; never mistaken for a missed review
+           (when-let* ((why (efrit-review-skip-reason content)))
+             (efrit-publish 'review-skipped `((:session-id . ,session-id) (:reason . ,why))))
            (funcall (efrit-loop-adapter-execute-tools-fn adapter)
                     session content)))
         ("end_turn"

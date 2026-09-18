@@ -610,6 +610,15 @@ C-p still crosses into the transcript, C-c C-u kills the whole input."
       (should (= 1 (length (get-buffer-window-list buf nil t))))
       (should (<= (- after-first before) 1)))))
 
+(ert-deftest test-efrit-agent-review-skip-note ()
+  "A read-only turn gets a dim note saying it was not reviewed."
+  (efrit)
+  (with-current-buffer (efrit-agent--get-buffer)
+    (let ((efrit-agent-show-review-skips t))
+      (efrit-publish 'review-skipped '((:session-id . "s") (:reason . "read-only turn (fetch_url)")))
+      (should (string-match-p "⚖ not reviewed: read-only turn (fetch_url)"
+                              (buffer-substring-no-properties (point-min) (point-max)))))))
+
 (provide 'test-efrit-agent)
 
 ;;; test-efrit-agent.el ends here
