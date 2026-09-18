@@ -82,17 +82,24 @@ says so for each turn, so silence never means \"forgot\"."
   :group 'efrit-review)
 
 (defun efrit-review-skip-reason (content)
-  "Why CONTENT is not reviewed: a short phrase, or nil when it is.
-Published as `review-skipped' by the loop so the transcript can show it."
-  (cond
-   ((not efrit-review-enabled) "review off")
-   ((null (efrit-review--tool-uses content)) nil) ; no tools: nothing to judge
-   ((not (efrit-review-applies-p content))
-    (format "read-only turn (%s)"
-            (mapconcat #'identity
-                       (delete-dups (mapcar (lambda (u) (nth 1 u)) (efrit-review--tool-uses content)))
-                       ", ")))
-   (t nil)))
+  "Why CONTENT is not reviewed: a short phrase, or nil when nothing needs saying.
+Published as `review-skipped' by the loop so the transcript can show it.
+Nil for a reviewed turn, a turn with no tools, and a turn of only
+efrit's control tools (session_complete, todo_write): those never
+carry an action worth judging, and a note there is noise."
+  (let* ((uses (efrit-review--tool-uses content))
+         (judgeable (cl-remove-if
+                     (lambda (u) (eq (efrit-permission-tool-class (nth 1 u)) 'control))
+                     uses)))
+    (cond
+     ((null judgeable) nil)
+     ((not efrit-review-enabled) "review off")
+     ((not (efrit-review-applies-p content))
+      (format "read-only turn (%s)"
+              (mapconcat #'identity
+                         (delete-dups (mapcar (lambda (u) (nth 1 u)) judgeable))
+                         ", ")))
+     (t nil))))
 
 (defcustom efrit-review-max-rejections 2
   "Rejections of consecutive turns after which the turn is handed to the user.

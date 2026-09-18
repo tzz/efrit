@@ -92,7 +92,15 @@ received in `test-review--requests'.  A string starting with
                             (test-review--tool-use "2" "read_file" '(("path" . "a")))))
                    "read-only turn (project_files, read_file)"))
     (should-not (efrit-review-skip-reason (vector (test-review--tool-use "1" "edit_file" nil))))
-    (should-not (efrit-review-skip-reason (vector (test-review--text "just words")))))
+    (should-not (efrit-review-skip-reason (vector (test-review--text "just words"))))
+    ;; control-only turns (the session_complete after a reviewed turn) say nothing
+    (should-not (efrit-review-skip-reason (vector (test-review--tool-use "1" "session_complete" nil))))
+    (should-not (efrit-review-skip-reason (vector (test-review--tool-use "1" "todo_write" nil)
+                                                  (test-review--tool-use "2" "session_complete" nil))))
+    ;; a read alongside a control tool is still a read-only turn, named without the control tool
+    (should (equal (efrit-review-skip-reason (vector (test-review--tool-use "1" "read_file" nil)
+                                                     (test-review--tool-use "2" "todo_write" nil)))
+                   "read-only turn (read_file)")))
   (let ((efrit-review-enabled nil))
     (should (equal (efrit-review-skip-reason (vector (test-review--tool-use "1" "edit_file" nil)))
                    "review off")))
