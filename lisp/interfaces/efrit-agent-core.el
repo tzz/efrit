@@ -464,7 +464,9 @@ TEXT-ONLY forces the glyph (for places that cannot show an image)."
             (setq efrit-agent--spinner-index (1+ efrit-agent--spinner-index))
             (when (fboundp 'efrit-agent--refresh-thinking-line)
               (efrit-agent--refresh-thinking-line))
-            (force-mode-line-update))
+            ;; every window: the global mode-line spinner lives in
+            ;; all of them (efrit-agent-spinner-mode-line-string)
+            (force-mode-line-update t))
         ;; Stale tick after the label was cleared — stop the timer
         (when efrit-agent--spinner-timer
           (cancel-timer efrit-agent--spinner-timer)
@@ -473,6 +475,10 @@ TEXT-ONLY forces the glyph (for places that cannot show an image)."
 (defun efrit-agent--spinner-start (&optional label)
   "Show LABEL with an animated spinner in the header-line.
 Call in the agent buffer when an API call starts."
+  ;; Load the SVG spinner (and its mode-line construct) even where
+  ;; it will fall back to text, so the mode line shows activity
+  ;; from the first request onward.
+  (require 'efrit-agent-spinner nil t)
   (setq efrit-agent--thinking-label (or label "thinking..."))
   (setq efrit-agent--spinner-index 0)
   (when efrit-agent--spinner-timer
@@ -488,7 +494,8 @@ Call in the agent buffer when an API call starts."
   (when efrit-agent--spinner-timer
     (cancel-timer efrit-agent--spinner-timer)
     (setq efrit-agent--spinner-timer nil))
-  (force-mode-line-update))
+  ;; all windows: the global mode-line spinner must disappear too
+  (force-mode-line-update t))
 
 (defun efrit-agent--attach-session (session-id command)
   "Attach this agent buffer to SESSION-ID for COMMAND.

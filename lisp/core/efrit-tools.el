@@ -134,7 +134,9 @@ immediately, telling the model to use the request_user_input tool."
   "Count of all tool calls in current session.")
 
 (defun efrit-tools--reset-rate-limits ()
-  "Reset rate limiting counters. Called at session start."
+  "Reset the per-turn tool counters.
+Called at the start of every REPL turn and every efrit-do session;
+without that the counters span the whole Emacs process."
   (setq efrit-tools--eval-count 0
         efrit-tools--total-call-count 0))
 
@@ -143,15 +145,13 @@ immediately, telling the model to use the request_user_input tool."
 Signals an error if rate limit would be exceeded."
   (when (> efrit-tools-max-total-calls-per-session 0)
     (when (>= efrit-tools--total-call-count efrit-tools-max-total-calls-per-session)
-      (error "Tool call rate limit exceeded: %d calls per session (limit: %d)"
-             efrit-tools--total-call-count
+      (error "Tool call limit for this turn reached (%d; efrit-max-tool-calls-per-session). Tell the user; do not retry."
              efrit-tools-max-total-calls-per-session)))
 
   (when (and (string= tool-name "eval_sexp")
              (> efrit-tools-max-eval-per-session 0))
     (when (>= efrit-tools--eval-count efrit-tools-max-eval-per-session)
-      (error "eval_sexp rate limit exceeded: %d calls per session (limit: %d)"
-             efrit-tools--eval-count
+      (error "eval_sexp limit for this turn reached (%d; efrit-max-eval-per-session). Tell the user; do not retry."
              efrit-tools-max-eval-per-session))))
 
 (defun efrit-tools--increment-rate-limit (tool-name)

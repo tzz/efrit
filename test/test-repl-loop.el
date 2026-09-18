@@ -181,6 +181,19 @@ follow-up response is delivered."
       (should (equal turn-reason "session-complete"))
       (should (eq (efrit-repl-session-status session) 'idle)))))
 
+(ert-deftest test-repl-loop-turn-resets-tool-counters ()
+  "Each turn starts with fresh tool counters; they used to span the Emacs process."
+  (require 'efrit-tools)
+  (let ((session (efrit-repl-session-create)))
+    (setq efrit-tools--eval-count 99 efrit-tools--total-call-count 99)
+    (test-repl-loop--with-mocks
+        (list (test-repl-loop--make-response
+               (vector (test-repl-loop--make-text "ok")) "end_turn"))
+        "unused"
+      (efrit-repl-continue session "hello" #'ignore)
+      (should (= efrit-tools--eval-count 0))
+      (should (= efrit-tools--total-call-count 0)))))
+
 (provide 'test-repl-loop)
 
 ;;; test-repl-loop.el ends here

@@ -33,6 +33,7 @@
 (require 'efrit-config)
 (require 'efrit-repl-session)
 (require 'efrit-loop)
+(require 'efrit-tools)   ; efrit-tools--reset-rate-limits
 (require 'efrit-context-sources)
 (require 'efrit-events)
 (require 'efrit-models)
@@ -144,7 +145,11 @@ Returns the session ID."
                      session-id (error-message-string err))
           nil)))
 
-      ;; Begin the turn
+      ;; Begin the turn.  The per-turn tool counters live in
+      ;; efrit-tools and were never reset, so after ~100 tool calls in
+      ;; an Emacs session every eval_sexp failed with "rate limit
+      ;; exceeded" -- the "tool limit reached" the model then reported.
+      (efrit-tools--reset-rate-limits)
       (efrit-repl-session-begin-turn session)
       (efrit-publish 'turn-start `((:session-id . ,session-id)
                                    (:input . ,user-input)))

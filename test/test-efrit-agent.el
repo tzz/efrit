@@ -493,6 +493,49 @@ C-p still crosses into the transcript, C-c C-u kills the whole input."
           (should (equal (car kill-ring) "xyz")))
       (efrit-agent--clear-input))))
 
+(ert-deftest test-efrit-agent-prompt-does-not-accumulate ()
+  "Resetting the prompt replaces it; it used to append one \"> \" per reset."
+  (require 'efrit-agent-input)
+  (efrit)
+  (with-current-buffer (efrit-agent--get-buffer)
+    (dotimes (_ 3) (efrit-agent--reset-input-prompt))
+    (efrit-agent--set-input-prompt "Answer: ")
+    (efrit-agent--reset-input-prompt)
+    (let ((line (buffer-substring-no-properties
+                 (let ((inhibit-field-text-motion t))
+                   (save-excursion (goto-char (point-max)) (line-beginning-position)))
+                 (point-max))))
+      (should (equal line "> ")))))
+
+(ert-deftest test-efrit-agent-arrows-history-at-edges-motion-inside ()
+  "Up on the first input line recalls history; inside a multi-line input it moves up."
+  (require 'efrit-agent-input)
+  (efrit)
+  (with-current-buffer (efrit-agent--get-buffer)
+    (unwind-protect
+        (let ((efrit-agent--input-history (list "second cmd" "first cmd"))
+              (efrit-agent--global-history nil)
+              (efrit-agent--history-index -1)
+              (efrit-agent--history-temp nil))
+          (goto-char (point-max)) (insert "draft")
+          ;; one-line input: up = previous history, saving the draft
+          (efrit-agent-input-up)
+          (should (equal (efrit-agent--get-input) "second cmd"))
+          (efrit-agent-input-up)
+          (should (equal (efrit-agent--get-input) "first cmd"))
+          ;; down twice: back through history, then the draft returns
+          (efrit-agent-input-down)
+          (should (equal (efrit-agent--get-input) "second cmd"))
+          (efrit-agent-input-down)
+          (should (equal (efrit-agent--get-input) "draft"))
+          ;; multi-line input: up from the second line is line motion
+          (efrit-agent--clear-input)
+          (goto-char (point-max)) (insert "line one\nline two")
+          (efrit-agent-input-up)
+          (should (equal (efrit-agent--get-input) "line one\nline two"))
+          (should (efrit-agent--input-first-line-p)))
+      (efrit-agent--clear-input))))
+
 (provide 'test-efrit-agent)
 
 ;;; test-efrit-agent.el ends here

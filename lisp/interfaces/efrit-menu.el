@@ -130,6 +130,7 @@
        ("D" "Doctor (static)" efrit-doctor)
        ("L" "Doctor with live API check" (lambda () (interactive) (efrit-doctor t)))
        ("l" "Show log" efrit-menu-show-log)
+       ("R" "Reload efrit from source" efrit-reload)
        ("u" "Usage / endpoint" (lambda () (interactive) (message "%s" (efrit-menu--desc-endpoint))))]
       ["View"
        ("TAB" "Toggle tool call at point" efrit-agent-toggle-expand)

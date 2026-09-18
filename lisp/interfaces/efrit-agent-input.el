@@ -202,7 +202,10 @@ have been sent back to Claude as part of the user's answer."
           (prompt-bol nil))
       (save-excursion
         (goto-char efrit-agent--input-start)
-        (setq prompt-bol (line-beginning-position))
+        ;; The prompt is a field: `line-beginning-position' would stop
+        ;; after it and the old prompt would survive, growing by one
+        ;; "> " per reset.  Ask for the true line start.
+        (setq prompt-bol (let ((inhibit-field-text-motion t)) (line-beginning-position)))
         (delete-region prompt-bol efrit-agent--input-start)
         (goto-char efrit-agent--input-start)
         ;; Read-only with rear-nonsticky: typing at the marker inserts
@@ -322,9 +325,12 @@ Returns nil if no options or N is out of range."
     (define-key map (kbd "<home>") #'efrit-agent-input-bol)
     (define-key map (kbd "C-c C-a") #'beginning-of-line)
     (define-key map (kbd "C-c C-u") #'efrit-agent-input-kill)
-    ;; History navigation
+    ;; History navigation: M-p/M-n always; the arrows step history at
+    ;; the edges of the input and move by line inside it, as a shell does
     (define-key map (kbd "M-p") #'efrit-agent-input-history-prev)
     (define-key map (kbd "M-n") #'efrit-agent-input-history-next)
+    (define-key map (kbd "<up>") #'efrit-agent-input-up)
+    (define-key map (kbd "<down>") #'efrit-agent-input-down)
     ;; Completion
     (define-key map (kbd "TAB") #'completion-at-point)
     ;; Quick option selection (1-4 when waiting for question response)
@@ -491,6 +497,31 @@ A second press goes to the real beginning of line."
     (if (and (> field-start true-bol) (/= (point) field-start))
         (goto-char field-start)
       (goto-char true-bol))))
+
+(defun efrit-agent--input-first-line-p ()
+  "Non-nil if point is on the first line of the input."
+  (<= (let ((inhibit-field-text-motion t)) (line-beginning-position))
+      efrit-agent--input-start))
+
+(defun efrit-agent--input-last-line-p ()
+  "Non-nil if point is on the last line of the input."
+  (= (line-end-position) (point-max)))
+
+(defun efrit-agent-input-up ()
+  "Previous history entry on the first input line; otherwise the previous line.
+The shell convention: an up arrow in a one-line input recalls history,
+in a multi-line input it moves up until it reaches the top."
+  (interactive)
+  (if (efrit-agent--input-first-line-p)
+      (efrit-agent-input-history-prev)
+    (let ((line-move-visual nil)) (previous-line))))
+
+(defun efrit-agent-input-down ()
+  "Next history entry on the last input line; otherwise the next line."
+  (interactive)
+  (if (efrit-agent--input-last-line-p)
+      (efrit-agent-input-history-next)
+    (let ((line-move-visual nil)) (next-line))))
 
 (defun efrit-agent-input-kill ()
   "Kill the whole current input (like `comint-kill-input'); it goes to the kill ring."

@@ -125,6 +125,73 @@ is unavailable so callers can fall back to text frames."
   "Drop cached frames (after a theme or font change)."
   (clrhash efrit-agent-spinner--cache))
 
+;;; Mode-line indicator
+;;
+;; A small construct for `global-mode-string': the spinner while any
+;; agent buffer has a request in flight, nothing otherwise.  It is
+;; visible from every window, so the user sees efrit is busy without
+;; the agent buffer on screen.  The agent buffer's own spinner timer
+;; already calls `force-mode-line-update' on each tick; this construct
+;; reads that buffer's frame index, so it animates with no timer of
+;; its own.
+
+(defvar efrit-agent-buffer-name)
+(defvar efrit-agent--thinking-label)
+(defvar efrit-agent--spinner-index)
+(defvar efrit-agent--spinner-frames-unicode)
+(defvar efrit-agent--spinner-frames-ascii)
+(defvar efrit-agent-display-style)
+
+(defcustom efrit-agent-spinner-mode-line t
+  "When non-nil, show a spinner in every mode line while efrit works."
+  :type 'boolean
+  :group 'efrit-agent-spinner)
+
+(defun efrit-agent-spinner--busy-buffer ()
+  "The agent buffer with a request in flight, or nil."
+  (when (boundp 'efrit-agent-buffer-name)
+    (let ((buf (get-buffer efrit-agent-buffer-name)))
+      (and buf (buffer-live-p buf)
+           (buffer-local-value 'efrit-agent--thinking-label buf)
+           buf))))
+
+(defun efrit-agent-spinner-mode-line-string ()
+  "The mode-line text: the spinner frame while efrit works, else nil.
+SVG on a graphic display, a text frame in a terminal.  Clicking it
+shows the agent buffer."
+  (when efrit-agent-spinner-mode-line
+    (when-let* ((buf (efrit-agent-spinner--busy-buffer)))
+      (let* ((index (buffer-local-value 'efrit-agent--spinner-index buf))
+             (frame (or (efrit-agent-spinner-frame index)
+                        (let ((frames (if (eq efrit-agent-display-style 'unicode)
+                                          efrit-agent--spinner-frames-unicode
+                                        efrit-agent--spinner-frames-ascii)))
+                          (aref frames (mod index (length frames)))))))
+        (propertize (concat " " frame " ")
+                    'help-echo "efrit is working — mouse-1: show the agent buffer"
+                    'mouse-face 'mode-line-highlight
+                    'local-map (let ((m (make-sparse-keymap)))
+                                 (define-key m [mode-line mouse-1]
+                                             (lambda () (interactive) (pop-to-buffer buf)))
+                                 m))))))
+
+(defconst efrit-agent-spinner--mode-line-construct
+  '(:eval (efrit-agent-spinner-mode-line-string)))
+
+(defun efrit-agent-spinner-mode-line-install ()
+  "Add the spinner construct to `global-mode-string' once."
+  (unless (member efrit-agent-spinner--mode-line-construct global-mode-string)
+    (setq global-mode-string
+          (append (or global-mode-string '(""))
+                  (list efrit-agent-spinner--mode-line-construct)))))
+
+(defun efrit-agent-spinner-mode-line-remove ()
+  "Remove the spinner construct from `global-mode-string'."
+  (setq global-mode-string
+        (delete efrit-agent-spinner--mode-line-construct global-mode-string)))
+
+(efrit-agent-spinner-mode-line-install)
+
 (provide 'efrit-agent-spinner)
 
 ;;; efrit-agent-spinner.el ends here
