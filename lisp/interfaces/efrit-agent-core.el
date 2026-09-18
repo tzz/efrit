@@ -432,6 +432,18 @@ for the same reason: nothing else moves in, so quit means close."
   :type 'sexp
   :group 'efrit-agent)
 
+(defun efrit-agent--dedicate-window (window)
+  "Dedicate WINDOW to its buffer unless it is the frame's only window.
+A dedicated window is deleted by `kill-buffer' as well as by
+`quit-window'.  `display-buffer' only honours the `dedicated' entry
+for a window it created, so a reused window (one made by older code,
+by `switch-to-buffer', or by an action list from before a reload)
+is brought under the contract here."
+  (when (and (window-live-p window)
+             (not (window-dedicated-p window))
+             (not (eq window (frame-root-window window))))
+    (set-window-dedicated-p window t)))
+
 (defun efrit-agent-display (&optional buffer select)
   "Show the agent BUFFER (default the current one) per `efrit-agent-display-buffer-action'.
 With SELECT, select its window and put point in the input region.
@@ -446,13 +458,7 @@ would leave the split behind."
          (existing (get-buffer-window buffer 'visible))
          (win (or existing
                   (display-buffer buffer efrit-agent-display-buffer-action))))
-    ;; A window we are reusing may predate this contract (made by
-    ;; older code, or by the user with switch-to-buffer): make it
-    ;; dedicated so `kill-buffer' deletes it too, not only `quit-window'.
-    (when (and existing (window-live-p existing)
-               (not (window-dedicated-p existing))
-               (not (eq existing (frame-root-window existing))))
-      (set-window-dedicated-p existing t))
+    (efrit-agent--dedicate-window win)
     (when (and select (window-live-p win))
       (select-window win)
       (with-current-buffer buffer

@@ -1,5 +1,10 @@
+;;; test-api.el --- request context in API failures -*- lexical-binding: t; -*-
 
-;;; Request context in failures
+;;; Code:
+
+(require 'ert)
+(require 'cl-lib)
+(require 'efrit-api)
 
 (ert-deftest test-api-describe-failure-names-endpoint-purpose-model ()
   (let ((efrit-api-request-purpose nil) (efrit-default-model "m-default"))
@@ -24,3 +29,6 @@
       (should (string-match-p "reviewing 2 proposed tool call" got))
       (should (string-match-p "model m-2" got))
       (should (string-match-p "No API key found" got)))))
+
+(provide 'test-api)
+;;; test-api.el ends here

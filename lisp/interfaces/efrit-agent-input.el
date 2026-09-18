@@ -515,14 +515,14 @@ in a multi-line input it moves up until it reaches the top."
   (interactive)
   (if (efrit-agent--input-first-line-p)
       (efrit-agent-input-history-prev)
-    (let ((line-move-visual nil)) (previous-line))))
+    (let ((line-move-visual nil)) (line-move -1 t))))
 
 (defun efrit-agent-input-down ()
   "Next history entry on the last input line; otherwise the next line."
   (interactive)
   (if (efrit-agent--input-last-line-p)
       (efrit-agent-input-history-next)
-    (let ((line-move-visual nil)) (next-line))))
+    (let ((line-move-visual nil)) (line-move 1 t))))
 
 (defun efrit-agent-input-kill ()
   "Kill the whole current input (like `comint-kill-input'); it goes to the kill ring."

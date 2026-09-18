@@ -101,5 +101,40 @@ and the buffer has no unsaved edits; a modified buffer is left alone."
       (setq features (cl-set-difference features '(efrit-reload-probe-a efrit-reload-probe-b)))
       (delete-directory dir t))))
 
+(ert-deftest test-reload-adopts-changed-defaults-unless-user-set ()
+  "A defcustom whose default changed in the source takes the new default
+after reload when the live value was still the old default; a value the
+user set is kept.  This is why an edited display action reached a live
+Emacs only after a restart."
+  (let* ((dir (file-name-as-directory (make-temp-file "efrit-reload-" t)))
+         (file (expand-file-name "efrit-reload-probe-opt.el" dir))
+         (write (lambda (v)
+                  (with-temp-file file
+                    (insert ";;; opt -*- lexical-binding: t -*-\n"
+                            (format "(defcustom efrit-reload-probe-untouched '%S \"\" :type 'sexp)\n" v)
+                            (format "(defcustom efrit-reload-probe-user-set '%S \"\" :type 'sexp)\n" v)
+                            "(provide 'efrit-reload-probe-opt)\n")))))
+    (unwind-protect
+        (let ((load-path (cons dir load-path)))
+          (funcall write '(a . 1))
+          (require 'efrit-reload-probe-opt)
+          (set 'efrit-reload-probe-user-set '(mine . 9))
+          (let ((before (efrit-reload-option-defaults)))
+            (should (equal (cdr (assq 'efrit-reload-probe-untouched before)) '(a . 1)))
+            (funcall write '(b . 2))
+            (load file nil t)
+            ;; plain load keeps both old values: the reason for this step
+            (should (equal (symbol-value 'efrit-reload-probe-untouched) '(a . 1)))
+            (should (equal (efrit-reload--refresh-changed-defaults before)
+                           '(efrit-reload-probe-untouched)))
+            (should (equal (symbol-value 'efrit-reload-probe-untouched) '(b . 2)))
+            (should (equal (symbol-value 'efrit-reload-probe-user-set) '(mine . 9)))
+            ;; nothing to do the second time round
+            (should-not (efrit-reload--refresh-changed-defaults (efrit-reload-option-defaults)))))
+      (makunbound 'efrit-reload-probe-untouched)
+      (makunbound 'efrit-reload-probe-user-set)
+      (setq features (delq 'efrit-reload-probe-opt features))
+      (delete-directory dir t))))
+
 (provide 'test-reload)
 ;;; test-reload.el ends here

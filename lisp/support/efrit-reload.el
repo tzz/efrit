@@ -89,6 +89,38 @@ Returns the symbols, for `efrit-reload--rebind-keymaps'."
     (dolist (sym syms) (makunbound sym))
     syms))
 
+(defun efrit-reload-option-defaults ()
+  "Alist of (SYMBOL . DEFAULT-VALUE) for every efrit user option.
+The default is the evaluated `standard-value'; an option whose
+default form signals is left out."
+  (let ((out nil))
+    (mapatoms (lambda (sym)
+                (when-let* (((string-prefix-p efrit-reload--feature-prefix (symbol-name sym)))
+                            (form (car (get sym 'standard-value))))
+                  (condition-case nil
+                      (push (cons sym (eval form t)) out)
+                    (error nil)))))
+    out))
+
+(defun efrit-reload--refresh-changed-defaults (before)
+  "Adopt a changed default for options the user never set.
+BEFORE is the `efrit-reload-option-defaults' snapshot from before the
+reload.  A `defcustom' whose default changed in the source is reset
+when its live value still equals the old default: the user did not
+`setq' it, and `custom-reevaluate-setting' prefers a saved
+customization anyway.  Returns the symbols that were reset."
+  (let ((reset nil))
+    (dolist (entry (efrit-reload-option-defaults))
+      (let* ((sym (car entry))
+             (old (assq sym before)))
+        (when (and old
+                   (not (equal (cdr old) (cdr entry)))
+                   (boundp sym)
+                   (equal (symbol-value sym) (cdr old)))
+          (custom-reevaluate-setting sym)
+          (push sym reset))))
+    reset))
+
 (defun efrit-reload--rebind-keymaps (syms)
   "After reloading, point live users of the old maps at the new ones.
 `minor-mode-map-alist' stores map objects, so a minor mode defined
@@ -172,32 +204,43 @@ re-run either)."
         (failed nil)
         (start (float-time)))
     ;; Let keymap defvars re-run (see Commentary)
-    (let ((maps (efrit-reload--unbind-keymaps)))
+    (let ((maps (efrit-reload--unbind-keymaps))
+          (defaults (efrit-reload-option-defaults))
+          (reset nil))
       (unwind-protect
           (dolist (feature (efrit-reload-features))
-      (let ((file (efrit-reload--library-file feature)))
-        (if (null file)
-            (push (cons feature "no file found") failed)
-          (condition-case err
-              (progn
-                (load file nil (not verbose))
-                (cl-incf loaded))
-            (error
-             (push (cons feature (error-message-string err)) failed))))))
-        (efrit-reload--rebind-keymaps maps)))
-    (let* ((reverted (efrit-reload--revert-visiting-buffers))
-           (summary (format "efrit: reloaded %d librar%s in %.1fs%s%s"
-                            loaded (if (= loaded 1) "y" "ies")
-                            (- (float-time) start)
-                            (if (> reverted 0) (format ", reverted %d buffer%s" reverted (if (= reverted 1) "" "s")) "")
-                            (if failed
-                                (format "; %d failed: %s" (length failed)
-                                        (mapconcat (lambda (f) (format "%s (%s)" (car f) (cdr f)))
-                                                   (nreverse failed) ", "))
-                              ""))))
-      (when (fboundp 'efrit-log) (funcall 'efrit-log 'info "%s" summary))
-      (message "%s" summary)
-      loaded)))
+            (let ((file (efrit-reload--library-file feature)))
+              (if (null file)
+                  (push (cons feature "no file found") failed)
+                (condition-case err
+                    (progn
+                      (load file nil (not verbose))
+                      (cl-incf loaded))
+                  (error
+                   (push (cons feature (error-message-string err)) failed))))))
+        (efrit-reload--rebind-keymaps maps)
+        (setq reset (efrit-reload--refresh-changed-defaults defaults)))
+      (efrit-reload--report loaded failed reset start))))
+
+(defun efrit-reload--report (loaded failed reset start)
+  "Revert visiting buffers, then message and log the reload summary.
+LOADED is the library count, FAILED an alist of (FEATURE . ERROR),
+RESET the options whose changed default was adopted, START the
+`float-time' the reload began.  Returns LOADED."
+  (let* ((reverted (efrit-reload--revert-visiting-buffers))
+         (summary (format "efrit: reloaded %d librar%s in %.1fs%s%s%s"
+                          loaded (if (= loaded 1) "y" "ies")
+                          (- (float-time) start)
+                          (if (> reverted 0) (format ", reverted %d buffer%s" reverted (if (= reverted 1) "" "s")) "")
+                          (if reset (format ", new default for %s" (mapconcat #'symbol-name reset ", ")) "")
+                          (if failed
+                              (format "; %d failed: %s" (length failed)
+                                      (mapconcat (lambda (f) (format "%s (%s)" (car f) (cdr f)))
+                                                 (nreverse failed) ", "))
+                            ""))))
+    (when (fboundp 'efrit-log) (funcall 'efrit-log 'info "%s" summary))
+    (message "%s" summary)
+    loaded))
 
 (provide 'efrit-reload)
 
