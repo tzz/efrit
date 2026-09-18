@@ -446,6 +446,13 @@ would leave the split behind."
          (existing (get-buffer-window buffer 'visible))
          (win (or existing
                   (display-buffer buffer efrit-agent-display-buffer-action))))
+    ;; A window we are reusing may predate this contract (made by
+    ;; older code, or by the user with switch-to-buffer): make it
+    ;; dedicated so `kill-buffer' deletes it too, not only `quit-window'.
+    (when (and existing (window-live-p existing)
+               (not (window-dedicated-p existing))
+               (not (eq existing (frame-root-window existing))))
+      (set-window-dedicated-p existing t))
     (when (and select (window-live-p win))
       (select-window win)
       (with-current-buffer buffer

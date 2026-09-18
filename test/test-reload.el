@@ -67,5 +67,39 @@ the new code: the new definition reloads efrit-reload before the rest."
             (should (eq (key-binding [up]) 'efrit-agent-input-up))))
       (fset 'efrit-reload real))))
 
+(ert-deftest test-reload-reverts-unmodified-visiting-buffers ()
+  "A buffer visiting a reloaded library is reverted if the file changed on disk
+and the buffer has no unsaved edits; a modified buffer is left alone."
+  (let* ((dir (file-name-as-directory (make-temp-file "efrit-reload-" t)))
+         (file-a (expand-file-name "efrit-reload-probe-a.el" dir))
+         (file-b (expand-file-name "efrit-reload-probe-b.el" dir))
+         (clean nil) (dirty nil))
+    (unwind-protect
+        (let ((load-path (cons dir load-path)))
+          (with-temp-file file-a (insert ";;; a -*- lexical-binding: t -*-\n(provide 'efrit-reload-probe-a)\n"))
+          (with-temp-file file-b (insert ";;; b -*- lexical-binding: t -*-\n(provide 'efrit-reload-probe-b)\n"))
+          (require 'efrit-reload-probe-a)
+          (require 'efrit-reload-probe-b)
+          (setq clean (find-file-noselect file-a)
+                dirty (find-file-noselect file-b))
+          (with-current-buffer dirty (goto-char (point-max)) (insert ";; local edit\n"))
+          ;; both files change on disk (as an editor or git would)
+          (sleep-for 1.1)
+          (with-temp-file file-a (insert ";;; a v2 -*- lexical-binding: t -*-\n(provide 'efrit-reload-probe-a)\n"))
+          (with-temp-file file-b (insert ";;; b v2 -*- lexical-binding: t -*-\n(provide 'efrit-reload-probe-b)\n"))
+          (let ((efrit-reload-revert-buffers t))
+            (should (= 1 (efrit-reload--revert-visiting-buffers))))
+          (with-current-buffer clean
+            (should (string-match-p "a v2" (buffer-string)))
+            (should-not (buffer-modified-p)))
+          (with-current-buffer dirty
+            (should (buffer-modified-p))
+            (should (string-match-p "local edit" (buffer-string)))
+            (should-not (string-match-p "b v2" (buffer-string)))))
+      (dolist (b (list dirty clean))
+        (when (buffer-live-p b) (with-current-buffer b (set-buffer-modified-p nil)) (kill-buffer b)))
+      (setq features (cl-set-difference features '(efrit-reload-probe-a efrit-reload-probe-b)))
+      (delete-directory dir t))))
+
 (provide 'test-reload)
 ;;; test-reload.el ends here

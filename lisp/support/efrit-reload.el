@@ -127,6 +127,44 @@ that fail to load are reported at the end; the rest still load."
         (funcall 'efrit-reload verbose))
     (efrit-reload--run verbose)))
 
+(defcustom efrit-reload-revert-buffers t
+  "When non-nil, `efrit-reload' also reverts buffers visiting the reloaded files.
+Only unmodified buffers whose file changed on disk are reverted; a
+buffer with unsaved edits is left alone and named in the summary."
+  :type 'boolean
+  :group 'efrit)
+
+(defun efrit-reload--revert-visiting-buffers ()
+  "Revert unmodified buffers visiting an efrit source file that changed on disk.
+Returns how many were reverted.  Point and window starts are kept
+by `revert-buffer' itself (`preserve-modes' is t, so the mode is not
+re-run either)."
+  (if (not efrit-reload-revert-buffers)
+      0
+    ;; the .el sources of every reloaded feature, by true name, so a
+    ;; symlinked checkout or a .elc-first locate-library still matches
+    (let ((sources (delete-dups
+                    (delq nil (mapcar (lambda (f)
+                                        (when-let* ((base (efrit-reload--library-file f))
+                                                    (el (concat base ".el"))
+                                                    ((file-exists-p el)))
+                                          (file-truename el)))
+                                      (efrit-reload-features)))))
+          (count 0) (skipped nil))
+      (dolist (buf (buffer-list))
+        (with-current-buffer buf
+          (when (and buffer-file-name
+                     (member (file-truename buffer-file-name) sources)
+                     (not (verify-visited-file-modtime buf)))
+            (if (buffer-modified-p)
+                (push (buffer-name) skipped)
+              (revert-buffer t t t)
+              (cl-incf count)))))
+      (when skipped
+        (message "efrit-reload: not reverting modified buffer%s %s"
+                 (if (cdr skipped) "s" "") (mapconcat #'identity skipped ", ")))
+      count)))
+
 (defun efrit-reload--run (verbose)
   "The body of `efrit-reload', run from its freshly loaded definition."
   (let ((load-prefer-newer t)
@@ -147,14 +185,16 @@ that fail to load are reported at the end; the rest still load."
             (error
              (push (cons feature (error-message-string err)) failed))))))
         (efrit-reload--rebind-keymaps maps)))
-    (let ((summary (format "efrit: reloaded %d librar%s in %.1fs%s"
-                           loaded (if (= loaded 1) "y" "ies")
-                           (- (float-time) start)
-                           (if failed
-                               (format "; %d failed: %s" (length failed)
-                                       (mapconcat (lambda (f) (format "%s (%s)" (car f) (cdr f)))
-                                                  (nreverse failed) ", "))
-                             ""))))
+    (let* ((reverted (efrit-reload--revert-visiting-buffers))
+           (summary (format "efrit: reloaded %d librar%s in %.1fs%s%s"
+                            loaded (if (= loaded 1) "y" "ies")
+                            (- (float-time) start)
+                            (if (> reverted 0) (format ", reverted %d buffer%s" reverted (if (= reverted 1) "" "s")) "")
+                            (if failed
+                                (format "; %d failed: %s" (length failed)
+                                        (mapconcat (lambda (f) (format "%s (%s)" (car f) (cdr f)))
+                                                   (nreverse failed) ", "))
+                              ""))))
       (when (fboundp 'efrit-log) (funcall 'efrit-log 'info "%s" summary))
       (message "%s" summary)
       loaded)))

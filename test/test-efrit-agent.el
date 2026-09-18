@@ -642,7 +642,22 @@ Batch Emacs may refuse to split a tiny frame; skip then."
       (should (= 3 (length (window-list))))
       (quit-agent)
       (should (= 2 (length (window-list))))
-      (delete-other-windows))))
+      (delete-other-windows)
+      ;; killing the buffer (not quit-window) also removes the split
+      (efrit)
+      (should (= 2 (length (window-list))))
+      (select-window (get-buffer-window buf))
+      (kill-current-buffer)
+      (should (= 1 (length (window-list))))
+      ;; a window made by older code (plain split, not dedicated) is
+      ;; upgraded when M-x efrit finds the buffer already in it
+      (let* ((buf2 (progn (efrit) (efrit-agent--get-buffer)))
+             (w (get-buffer-window buf2)))
+        (set-window-dedicated-p w nil)
+        (efrit)
+        (should (window-dedicated-p w))
+        (select-window w) (kill-current-buffer)
+        (should (= 1 (length (window-list))))))))
 
 (provide 'test-efrit-agent)
 
