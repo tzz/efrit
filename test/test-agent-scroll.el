@@ -169,5 +169,38 @@ the expansion."
               (should-not (string-match-p "Failed\\|Error: $\\|\\[Retry\\]" text)))))
       (when (get-buffer efrit-agent-buffer-name) (kill-buffer efrit-agent-buffer-name)))))
 
+(ert-deftest test-agent-completion-message-shown-only-without-streamed-answer ()
+  "session_complete's message is the answer only when nothing was streamed this turn.
+After streamed text it is the end-of-turn signal: only the rule is drawn."
+  (let ((efrit-agent-buffer-name "*efrit-agent-test-dedupe*"))
+    (unwind-protect
+        (progn
+          (efrit-agent-open)
+          (with-current-buffer efrit-agent-buffer-name
+            ;; turn 1: text streamed, then a completion that says something
+            ;; different -- still not shown; the text is the answer
+            (efrit-agent--add-user-message "run git status in /")
+            (efrit-agent-stream-content "`/` is not a git repository.")
+            (efrit-agent-stream-end)
+            (let ((id (efrit-agent-show-tool-start "session_complete" nil)))
+              (efrit-agent-show-tool-result id "[SESSION-COMPLETE: Some other wording entirely.]" t 0.0))
+            (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+              (should (string-match-p "is not a git repository" text))
+              (should-not (string-match-p "Some other wording" text))
+              (should (string-match-p "^···$" text)))
+            ;; turn 2: tool rows but no text, then completion -- it IS the answer
+            (efrit-agent--add-user-message "what is 6 times 7?")
+            (let ((id (efrit-agent-show-tool-start "eval_sexp" nil)))
+              (efrit-agent-show-tool-result id "42" t 0.0))
+            (let ((id (efrit-agent-show-tool-start "session_complete" nil)))
+              (efrit-agent-show-tool-result id "[SESSION-COMPLETE: 6 times 7 is 42.]" t 0.0))
+            (should (string-match-p "6 times 7 is 42" (buffer-string)))
+            ;; turn 3: text from a PREVIOUS turn must not suppress this turn's message
+            (efrit-agent--add-user-message "and 7 times 8?")
+            (let ((id (efrit-agent-show-tool-start "session_complete" nil)))
+              (efrit-agent-show-tool-result id "[SESSION-COMPLETE: 56.]" t 0.0))
+            (should (string-match-p "^56\\.$" (buffer-string)))))
+      (when (get-buffer efrit-agent-buffer-name) (kill-buffer efrit-agent-buffer-name)))))
+
 (provide 'test-agent-scroll)
 ;;; test-agent-scroll.el ends here

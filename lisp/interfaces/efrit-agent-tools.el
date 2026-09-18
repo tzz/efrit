@@ -204,6 +204,22 @@ Returns nil if no annotations or unknown kind."
     (when (string-match "\\[SESSION-COMPLETE: \\(\\(?:.\\|\n\\)*\\)\\]" s)
       (string-trim (match-string 1 s)))))
 
+(defun efrit-agent--turn-has-streamed-text-p ()
+  "Non-nil if the assistant streamed prose in this turn, before point.
+Walks back over tool rows and blank lines to the start of the turn (the
+user's message); any `claude-message' on the way means the answer is
+already on screen."
+  (save-excursion
+    (let ((found nil) (done nil))
+      (while (and (not found) (not done) (> (point) (point-min)))
+        (let ((type (get-text-property (1- (point)) 'efrit-type)))
+          (cond
+           ((eq type 'claude-message) (setq found t))
+           ((eq type 'user-message) (setq done t))
+           (t (goto-char (or (previous-single-property-change (point) 'efrit-type)
+                             (point-min)))))))
+      found)))
+
 (defun efrit-agent--render-tool-call (tv)
   "Render tool call described by TV (efrit-agent-tool-view) at point.
 Inserts both header line and (if expanded) body content.
@@ -218,7 +234,14 @@ marking the end of the turn."
              (msg (or (efrit-agent--session-complete-message
                        (efrit-agent-tool-view-result tv))
                       (efrit-agent--format-tool-input (efrit-agent-tool-view-input tv)))))
-        (when (and msg (not (string-empty-p msg)))
+        ;; In the REPL, session_complete is the end-of-turn signal; the
+        ;; answer is the text the model streamed before it.  The prompt
+        ;; makes the model repeat the answer in the message (efrit-do,
+        ;; with no transcript, shows nothing else), so rendering both
+        ;; gave the same paragraph twice.  Show the message only when
+        ;; no text was streamed this turn and it IS the answer.
+        (when (and msg (not (string-empty-p msg))
+                   (not (efrit-agent--turn-has-streamed-text-p)))
           (insert (propertize msg 'face 'efrit-agent-claude-message) "\n"))
         (insert (propertize (concat (make-string 3 ?·) "\n") 'face 'efrit-agent-timestamp))
         (add-text-properties start (point)
