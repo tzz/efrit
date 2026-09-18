@@ -485,3 +485,33 @@ Each test opts into a target buffer by binding the functions itself."
     (should-not (string-match-p "l4" block))
     (should (string-match-p "2 more lines" block))))
 
+(ert-deftest test-sb-prompt-time-does-not-count-against-tool-timeout ()
+  "A tool's with-timeout is paused while the sandbox prompt is up.
+The prompt used to run inside the tool's clock, so a 30 s deliberation
+made the granted read time out the instant it was allowed."
+  (test-sb--in-project
+    (let* ((outside (make-temp-file "efrit-sb-out-" t))
+           (path (expand-file-name "f" outside))
+           ;; a prompt that takes longer than the timeout, then grants
+           (efrit-sandbox-request-function
+            (lambda (_req) (sleep-for 0.3) 'once)))
+      (unwind-protect
+          (let ((result (with-timeout (0.15 'timed-out)
+                          (efrit-sandbox-check 'read path "read_file")
+                          'ran)))
+            (should (eq result 'ran)))
+        (delete-directory outside t)))))
+
+(ert-deftest test-sb-resolve-path-detail-names-the-path ()
+  "The prompt for a file read carries the exact path as its detail."
+  (test-sb--in-project
+    (defvar test-sb--req nil)
+    (let ((efrit-sandbox-request-function (lambda (req) (setq test-sb--req req) nil))
+          (outside (make-temp-file "efrit-sb-out-" t)))
+      (unwind-protect
+          (progn
+            (ignore-errors (efrit-resolve-path (expand-file-name "deep/f.txt" outside) 'read "read_file"))
+            (should test-sb--req)
+            (should (string-match-p "read .*deep/f.txt" (efrit-sandbox-request-detail test-sb--req))))
+        (delete-directory outside t)))))
+

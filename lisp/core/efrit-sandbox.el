@@ -314,6 +314,23 @@ persisted via `efrit-sandbox-store-save'."
 
 ;;; The check
 
+(defun efrit-sandbox--ask-without-clock (req)
+  "Call `efrit-sandbox-request-function' on REQ with tool timeouts paused.
+The check runs inside the tool's `with-timeout'; the time the user
+spends reading the prompt must not count against the tool, or an
+out-of-project read that waits 30 s for an answer times out the
+moment it is granted.  `with-timeout-suspend' is what the debugger
+uses for the same reason.  Returns the chosen scope or nil."
+  (let ((suspended (with-timeout-suspend)))
+    (unwind-protect
+        (condition-case err
+            (funcall efrit-sandbox-request-function req)
+          (quit nil)
+          (error
+           (efrit-log 'warn "sandbox request function: %s" (error-message-string err))
+           nil))
+      (with-timeout-unsuspend suspended))))
+
 (defun efrit-sandbox-check (cap target &optional tool detail)
   "Ensure CAP on TARGET is allowed, asking to widen the scope if not.
 TOOL and DETAIL describe the caller for the prompt.  Returns t when
@@ -341,13 +358,7 @@ With `efrit-sandbox-enabled' nil this is a no-op that returns t."
                      :target (efrit-sandbox--suggest-target cap ctarget root)
                      :tool tool :detail detail))
                (scope (and efrit-sandbox-request-function
-                           (condition-case err
-                               (funcall efrit-sandbox-request-function req)
-                             (quit nil)
-                             (error
-                              (efrit-log 'warn "sandbox request function: %s"
-                                         (error-message-string err))
-                              nil)))))
+                           (efrit-sandbox--ask-without-clock req))))
           (if (memq scope '(once session project))
               (progn
                 (efrit-sandbox-grant cap (efrit-sandbox-request-target req) scope root)

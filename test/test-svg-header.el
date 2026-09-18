@@ -44,12 +44,25 @@
         (should-not (string-match-p "fill=\"\\(?:[A-Za-mo-z]\\|n[^o]\\)" xml)))
       ;; the spinner arc is drawn while a request is in flight
       (should (string-match-p "<path" xml))
-      ;; the arc marker precedes the status word, and the word is pushed
-      ;; past the arc box (font-size + 6) so they never overlap
-      (should (string-match-p "efrit-spinner=\"([^\"]*Working)\"></tspan><tspan[^>]*dx=\"14\"[^>]*>Working" xml))
-      ;; every text run is pinned to the width Emacs measured, so the
-      ;; arc's computed x matches where librsvg puts the words
-      (should (string-match-p "textLength=\"[0-9]+\"[^>]*>Working" xml))
+      ;; Every run has an absolute x.  The arc marker's x is the arc's
+      ;; left edge; the status word must start at or beyond x + font-size,
+      ;; so the two never overlap whatever the renderer's font metrics.
+      (let* ((row (seq-find (lambda (n) (seq-some (lambda (c) (and (consp c) (dom-attr c 'efrit-spinner)))
+                                                   (dom-children n)))
+                            (dom-by-tag svg 'text)))
+             (fs (string-to-number (format "%s" (dom-attr row 'font-size))))
+             (marker (seq-find (lambda (c) (and (consp c) (dom-attr c 'efrit-spinner))) (dom-children row)))
+             (label (seq-find (lambda (c) (and (consp c) (equal (car (dom-children c)) "Working")))
+                              (dom-children row)))
+             (arc (car (dom-by-tag svg 'g))))
+        (should marker) (should label) (should arc)
+        (let ((mx (string-to-number (dom-attr marker 'x)))
+              (lx (string-to-number (dom-attr label 'x))))
+          (should (>= lx (+ mx fs)))
+          ;; the arc group is translated to the marker's x
+          (should (string-match-p (format "translate(%.1f," mx) (dom-attr arc 'transform))))
+        ;; runs are pinned to Emacs's measured width
+        (should (dom-attr label 'textLength)))
       (should-not (string-match-p "waiting for Claude" xml))
       ;; canvas never exceeds the window width (in batch the frame is
       ;; 80 "pixels" wide, so shrinking cannot be observed; on a real

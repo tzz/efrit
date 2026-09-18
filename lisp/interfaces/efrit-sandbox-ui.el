@@ -262,27 +262,27 @@ menu is gone; answering the menu removes it too."
   (let* ((tool (efrit-sandbox-request-tool req))
          (cap (efrit-sandbox-request-cap req))
          (target (efrit-sandbox-request-target req))
-         (detail (or (efrit-sandbox-request-detail req) "(none)"))
+         (detail (efrit-sandbox-request-detail req))
          (what (pcase cap
                  ('elisp "Form to evaluate")
                  ('shell "Command")
                  ('net "Request")
                  ('buffer "Buffer")
                  (_ "Detail")))
-         (header (format "%s wants to %s\nProject: %s%s\n\n%s:\n"
+         (header (format "%s wants to %s\nProject: %s%s%s"
                          (or tool "a tool") (efrit-sandbox-ui--scope-word req)
                          (abbreviate-file-name (efrit-sandbox-project-root))
                          (if (and (stringp target) (not (eq cap 'elisp)))
-                             (format "\nTarget:  %s" (abbreviate-file-name target))
+                             (format "\nGrant:   %s" (abbreviate-file-name target))
                            "")
-                         what))
+                         (if detail (format "\n\n%s:\n" what) "")))
          (footer (concat "\n\nGrants in force:\n" (efrit-sandbox-ui--grants-text))))
     (efrit-show-preview
      efrit-sandbox-ui--details-buffer
-     (concat header detail footer)
+     (concat header (or detail "") footer)
      'efrit-preview-mode)
     ;; the form reads best fontified as Lisp; only the detail span
-    (when (eq cap 'elisp)
+    (when (and detail (eq cap 'elisp))
       (with-current-buffer efrit-sandbox-ui--details-buffer
         (let ((inhibit-read-only t)
               (start (+ (point-min) (length header)))

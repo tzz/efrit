@@ -134,22 +134,19 @@ fraction of the char height when the font object has no size."
                   (* 0.8 (frame-char-height)))))
     (max 8 (round (* size efrit-agent-header-text-scale)))))
 
-(defun efrit-agent-svg--text-width (node)
-  "Pixel width of text NODE: each tspan's text plus its dx gap."
-  (seq-reduce (lambda (total child)
-                (if (and (consp child) (eq (dom-tag child) 'tspan))
-                    (+ total
-                       (string-to-number (format "%s" (or (dom-attr child 'dx) 0)))
-                       (string-pixel-width (or (car (dom-children child)) "")))
-                  total))
-              (dom-children node) 0))
-
 (defun efrit-agent-svg--content-width (svg)
-  "Rightmost pixel any text row in SVG reaches."
-  (seq-reduce (lambda (w node)
-                (max w (+ (string-to-number (format "%s" (dom-attr node 'x)))
-                          (efrit-agent-svg--text-width node))))
-              (dom-by-tag svg 'text) 0))
+  "Rightmost pixel any text run in SVG reaches (absolute x plus its width)."
+  (let ((w 0))
+    (dolist (node (dom-by-tag svg 'text))
+      ;; a text node with a direct string child (the icon glyph)
+      (when (stringp (car (dom-children node)))
+        (setq w (max w (+ (string-to-number (format "%s" (dom-attr node 'x)))
+                          (string-pixel-width (car (dom-children node)))))))
+      (dolist (child (dom-children node))
+        (when (and (consp child) (eq (dom-tag child) 'tspan))
+          (setq w (max w (+ (string-to-number (format "%s" (or (dom-attr child 'x) 0)))
+                            (string-to-number (format "%s" (or (dom-attr child 'textLength) 0)))))))))
+    w))
 
 (defun efrit-agent-svg--window-width ()
   "Widest window showing this buffer, else the frame, in pixels."
@@ -213,75 +210,71 @@ The glyph is one token, then whitespace, in both display styles."
 
 ;;; Rendering
 
-(defun efrit-agent-svg--tspan (text fill dx &optional extra)
-  "A tspan for TEXT in FILL after a DX gap, with EXTRA attributes.
-`textLength' pins the run to the width Emacs measured with
-`string-pixel-width', so librsvg's layout agrees with the width walk
-in `efrit-agent-svg--place-spinners' whatever font it substitutes.
-Without it the arc landed under the following word on displays where
-the two disagreed."
-  (dom-node 'tspan
-            `((fill . ,fill)
-              (dx . ,(format "%s" dx))
-              (textLength . ,(format "%d" (max 1 (string-pixel-width text))))
-              (lengthAdjust . "spacingAndGlyphs")
-              ,@extra)
-            text))
-
 (defun efrit-agent-svg--row (x y font-size family segments)
   "Build a text NODE at X,Y from SEGMENTS, a list of (TEXT . FACE).
 Segments are separated by ➤ in the default foreground.  A segment
-whose TEXT is (:spinner INDEX COLOR LABEL) reserves room for an arc
-drawn afterwards by `efrit-agent-svg--place-spinners' and shows LABEL."
+whose TEXT is (:spinner INDEX COLOR LABEL) reserves an arc slot drawn
+afterwards by `efrit-agent-svg--place-spinners' and shows LABEL.
+
+Every tspan gets an ABSOLUTE x, computed here from the widths Emacs
+measures with `string-pixel-width'.  Relative `dx' positioning was
+wrong twice over: the renderer's advance for the previous run differs
+from Emacs's measurement, and with `textLength' some renderers do not
+advance at all, piling every run at the row start.  With absolute x
+the text, the separators and the arc are placed by one calculation,
+and `textLength' merely keeps each run inside its cell."
   (let ((node (dom-node 'text `((x . ,x) (y . ,y)
                                 (font-size . ,font-size)
                                 (font-family . ,family))))
+        (cursor x)
+        (gap 8)
         (first t))
-    (dolist (seg segments)
-      (let* ((text (car seg))
-             (spin (and (consp text) (eq (car text) :spinner) text))
-             (label (if spin (nth 3 spin) text)))
-        (when (and label (not (string-empty-p label)))
-          (unless first
-            (dom-append-child node (efrit-agent-svg--tspan "➤" (efrit-agent-svg--hex 'default) 8)))
-          (when spin
-            ;; An empty tspan marking where the arc goes; the arc is a
-            ;; font-size square whose LEFT edge is this tspan's x
-            ;; (see `efrit-agent-svg--place-spinners'), so the label
-            ;; must move past the whole square plus a gap.
-            (dom-append-child node (dom-node 'tspan
-                                             `((dx . ,(if first "0" "8"))
-                                               (efrit-spinner . ,spin))
-                                             "")))
-          (dom-append-child node (efrit-agent-svg--tspan
-                                  label (efrit-agent-svg--hex (cdr seg))
-                                  (if spin (+ 6 font-size) 8)))
-          (setq first nil))))
+    (cl-flet ((put-run (text fill &optional extra)
+                (let ((w (max 1 (string-pixel-width text))))
+                  (dom-append-child node (dom-node 'tspan
+                                                   `((x . ,(format "%d" cursor))
+                                                     (fill . ,fill)
+                                                     (textLength . ,(format "%d" w))
+                                                     (lengthAdjust . "spacingAndGlyphs")
+                                                     ,@extra)
+                                                   text))
+                  (setq cursor (+ cursor w gap)))))
+      (dolist (seg segments)
+        (let* ((text (car seg))
+               (spin (and (consp text) (eq (car text) :spinner) text))
+               (label (if spin (nth 3 spin) text)))
+          (when (and label (not (string-empty-p label)))
+            (unless first
+              (put-run "➤" (efrit-agent-svg--hex 'default)))
+            (when spin
+              ;; An empty run marking the arc's left edge; the arc is a
+              ;; font-size square, so advance by that plus the gap
+              (dom-append-child node (dom-node 'tspan
+                                               `((x . ,(format "%d" cursor))
+                                                 (efrit-spinner . ,spin))
+                                               ""))
+              (setq cursor (+ cursor font-size gap)))
+            (put-run label (efrit-agent-svg--hex (cdr seg)))
+            (setq first nil)))))
     node))
 
 (defun efrit-agent-svg--place-spinners (svg font-size)
   "Draw the arc for every tspan in SVG that carries `efrit-spinner'.
-The arc is centred on the tspan's x position (computed from the widths
-of everything before it on its row) and the row's baseline."
+The tspan's absolute x is the arc's left edge; the arc is a FONT-SIZE
+square centred on the letters beside it (baseline minus ~0.35em)."
   (dolist (row (dom-by-tag svg 'text))
-    (let ((x (string-to-number (format "%s" (dom-attr row 'x))))
-          (y (string-to-number (format "%s" (dom-attr row 'y)))))
+    (let ((y (string-to-number (format "%s" (dom-attr row 'y)))))
       (dolist (child (dom-children row))
         (when (and (consp child) (eq (dom-tag child) 'tspan))
-          (setq x (+ x (string-to-number (format "%s" (or (dom-attr child 'dx) 0)))))
           (when-let* ((spin (dom-attr child 'efrit-spinner)))
-            (let* ((size font-size)
+            (let* ((x (string-to-number (format "%s" (dom-attr child 'x))))
+                   (size font-size)
                    (frame (efrit-agent-spinner--svg size (nth 1 spin) (nth 2 spin)
                                                     (efrit-agent-svg--hex 'default :background)))
-                   ;; the frame is a SIZE square drawn from (0,0); put
-                   ;; its left edge at x and centre it on the cap height
-                   ;; (baseline minus ~0.35em is the visual middle of
-                   ;; the letters beside it)
                    (g (dom-node 'g `((transform . ,(format "translate(%.1f,%.1f)"
                                                            x (- y (* 0.35 size) (/ size 2.0))))))))
               (dolist (n (dom-children frame)) (dom-append-child g n))
-              (svg--append svg g)))
-          (setq x (+ x (string-pixel-width (or (car (dom-children child)) "")))))))))
+              (svg--append svg g))))))))
 
 (defun efrit-agent-svg--build (model)
   "Build the SVG DOM for MODEL (pure; no image support needed)."

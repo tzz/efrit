@@ -370,7 +370,10 @@ Returns a short string describing what the tool is operating on."
                 (if-let* ((m (efrit-agent--input-field input "model")))
                     (format " · %s" m) "")))
        ((stringp path)
-        (let ((name (file-name-nondirectory (directory-file-name path))))
+        ;; the last path component; a bare "/" or "~" has none, so
+        ;; show the path itself rather than an empty target
+        (let* ((name (file-name-nondirectory (directory-file-name path)))
+               (name (if (string-empty-p name) (abbreviate-file-name path) name)))
           (if (> (length name) 30) (concat "..." (substring name -27)) name)))
        ((stringp pattern)
         (truncate-string-to-width (format "\"%s\"" pattern) 30 nil nil "…"))

@@ -236,7 +236,12 @@ Returns a plist with:
     (let ((cap (if (eq access 'write) 'write 'read))
           (legacy-allow-outside (eq access t)))
       (if (bound-and-true-p efrit-sandbox-enabled)
-          (efrit-sandbox-check cap resolved tool)
+          ;; The detail is the exact path the tool asked for; the
+          ;; request's target may be wider (its directory), and the
+          ;; prompt should show both
+          (efrit-sandbox-check cap resolved tool
+                               (format "%s %s" (if (eq cap 'write) "write" "read")
+                                       (abbreviate-file-name resolved)))
         (when (and efrit-project-sandbox
                    (not legacy-allow-outside)
                    (not in-project))
@@ -438,13 +443,29 @@ Use this when passing a path as an argument to a remote process."
 
 ;;; Git Utilities (for vcs tools)
 
+(defvar efrit-tool-git-directory nil
+  "Directory the git tools operate in for the current tool call, or nil.
+A VCS tool binds this to the path it resolved (and the sandbox
+checked); `efrit-tool-run-git' and `efrit-tool-git-available-p' use it
+instead of the project root.  Before this, the `path' argument was
+checked and then ignored, so `vcs_status' on / ran in the project.")
+
+(defun efrit-tool-git-directory ()
+  "The directory git commands run in: the bound override or the project root."
+  (or efrit-tool-git-directory (efrit-tool--get-project-root)))
+
 (defun efrit-tool-git-available-p ()
-  "Check if git is available (on the project host) and we're in a git repository."
-  (and (efrit-tool-executable-find "git" (efrit-tool--get-project-root))
-       (eq (efrit-tool-detect-project-type) 'git)))
+  "Non-nil if git exists on the target host and `efrit-tool-git-directory' is in a repository.
+Uses `git rev-parse', which is what the question means: the directory
+may be anywhere inside a work tree, not only its root."
+  (let ((default-directory (efrit-tool-git-directory)))
+    (and (efrit-tool-executable-find "git" default-directory)
+         (eq 0 (ignore-errors
+                 (efrit-tool-call-process "git" nil nil nil
+                                          "rev-parse" "--is-inside-work-tree"))))))
 
 (defun efrit-tool-run-git (args &optional timeout)
-  "Run git command with ARGS and return output.
+  "Run git command with ARGS in `efrit-tool-git-directory' and return output.
 ARGS should be a list of command-line arguments.
 TIMEOUT defaults to 30 seconds.
 
@@ -454,7 +475,7 @@ Returns a plist with:
   :error - stderr as string (if failed)
   :exit-code - the exit code"
   (let* ((timeout (or timeout 30))
-         (default-directory (efrit-tool--get-project-root))
+         (default-directory (efrit-tool-git-directory))
          (output-buffer (generate-new-buffer " *efrit-git-output*"))
          ;; Deliberately local even for a remote project: process-file
          ;; requires the stderr file to be on the local host, and
