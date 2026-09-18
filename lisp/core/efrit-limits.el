@@ -64,8 +64,10 @@ nil restores the old behaviour: the turn ends at the cap."
 (defconst efrit-limits--version 1)
 
 (defconst efrit-limits-known
-  '(max-iterations)
-  "Limit names this module manages.  A name maps to an integer.")
+  '(max-iterations max-tool-calls)
+  "Limit names this module manages.  A name maps to an integer.
+`max-iterations' is API calls per turn (the loop engine);
+`max-tool-calls' is tool calls per turn (the circuit breaker).")
 
 ;;; State
 ;;
@@ -195,15 +197,24 @@ DEFAULT is the customization value the caller would otherwise use."
   (when (and efrit-limits--depth (= (recursion-depth) efrit-limits--depth))
     (exit-recursive-edit)))
 
+(defun efrit-limits--unit (name)
+  "What limit NAME counts, for the prompt."
+  (pcase name
+    ('max-iterations "API calls")
+    ('max-tool-calls "tool calls")
+    (_ (symbol-name name))))
+
 (defun efrit-limits--menu-description ()
   (let ((c efrit-limits--context))
-    (format "This turn reached %d API calls, the limit for %s."
+    (format "This turn reached %d %s, the limit for %s."
             (plist-get c :current)
+            (efrit-limits--unit (plist-get c :name))
             (abbreviate-file-name (directory-file-name (plist-get c :root))))))
 
 (defun efrit-limits--label-continue ()
-  (format "continue: %d more calls, then ask again"
-          (plist-get efrit-limits--context :step)))
+  (format "continue: %d more %s, then ask again"
+          (plist-get efrit-limits--context :step)
+          (efrit-limits--unit (plist-get efrit-limits--context :name))))
 (defun efrit-limits--label-session ()
   (format "raise the limit to %d for this Emacs session"
           (efrit-limits--raised)))

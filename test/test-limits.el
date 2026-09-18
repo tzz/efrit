@@ -138,5 +138,30 @@
   (should (efrit-sandbox-eval-inspect '(efrit-limits-set 'max-iterations 9999 'session)))
   (should (efrit-sandbox-eval-inspect '(setq efrit-limits-ask nil))))
 
+(ert-deftest test-limits-circuit-breaker-cap-asks-and-raises ()
+  "At the tool-call cap the breaker asks; a raise lets the call through."
+  (require 'efrit-do-circuit-breaker)
+  (test-limits--in-project
+    (let ((efrit-do-max-tool-calls-per-session 3)
+          (efrit-do-circuit-breaker-enabled t)
+          (efrit-limits-ask t) (noninteractive nil)
+          (efrit-limits-continue-step 5)
+          (answers (list 'once nil)))
+      (efrit-do--circuit-breaker-reset)
+      (setq efrit-do--session-tool-count 3)
+      (cl-letf (((symbol-function 'efrit-limits--define-menu) (lambda () nil))
+                ((symbol-function 'efrit-limits--ask-in-echo-area) (lambda () (pop answers))))
+        ;; first: user says continue once -> allowed, cap now 8
+        (should (car (efrit-do--circuit-breaker-check-limits "read_file" nil)))
+        (should (= 8 (efrit-do--tool-call-cap)))
+        (should-not efrit-do--circuit-breaker-tripped)
+        ;; at the raised cap the user says no -> tripped, message names the variable
+        (setq efrit-do--session-tool-count 8)
+        (let ((r (efrit-do--circuit-breaker-check-limits "read_file" nil)))
+          (should-not (car r))
+          (should (string-match-p "efrit-do-max-tool-calls-per-session" (cdr r))))
+        (should efrit-do--circuit-breaker-tripped))
+      (efrit-do--circuit-breaker-reset))))
+
 (provide 'test-limits)
 ;;; test-limits.el ends here

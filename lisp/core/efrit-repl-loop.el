@@ -34,6 +34,7 @@
 (require 'efrit-repl-session)
 (require 'efrit-loop)
 (require 'efrit-tools)   ; efrit-tools--reset-rate-limits
+(require 'efrit-do-circuit-breaker)   ; efrit-do--circuit-breaker-reset
 (require 'efrit-context-sources)
 (require 'efrit-events)
 (require 'efrit-models)
@@ -150,6 +151,9 @@ Returns the session ID."
       ;; an Emacs session every eval_sexp failed with "rate limit
       ;; exceeded" -- the "tool limit reached" the model then reported.
       (efrit-tools--reset-rate-limits)
+      ;; Same for the circuit breaker's counters (30 tool calls per
+      ;; *turn*, not per Emacs session)
+      (efrit-do--circuit-breaker-reset)
       (efrit-repl-session-begin-turn session)
       (efrit-publish 'turn-start `((:session-id . ,session-id)
                                    (:input . ,user-input)))

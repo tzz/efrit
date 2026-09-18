@@ -194,6 +194,21 @@ follow-up response is delivered."
       (should (= efrit-tools--eval-count 0))
       (should (= efrit-tools--total-call-count 0)))))
 
+(ert-deftest test-repl-loop-turn-resets-circuit-breaker ()
+  "A tripped breaker from an earlier turn does not block the next one."
+  (require 'efrit-do-circuit-breaker)
+  (let ((session (efrit-repl-session-create)))
+    (setq efrit-do--session-tool-count 30
+          efrit-do--circuit-breaker-tripped "Session limit reached: 30/30")
+    (test-repl-loop--with-mocks
+        (list (test-repl-loop--make-response
+               (vector (test-repl-loop--make-text "ok")) "end_turn"))
+        "unused"
+      (efrit-repl-continue session "hello" #'ignore)
+      (should (= efrit-do--session-tool-count 0))
+      (should-not efrit-do--circuit-breaker-tripped)
+      (should (car (efrit-do--circuit-breaker-check-limits "read_file" nil))))))
+
 (provide 'test-repl-loop)
 
 ;;; test-repl-loop.el ends here

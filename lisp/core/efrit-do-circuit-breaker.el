@@ -17,6 +17,7 @@
 
 (require 'efrit-common)
 (require 'efrit-log)
+(require 'efrit-limits)
 (require 'cl-lib)
 (require 'seq)
 
@@ -258,7 +259,10 @@ was modified with an error loop warning."
 ;;; Circuit Breaker Implementation
 
 (defun efrit-do--circuit-breaker-reset ()
-  "Reset circuit breaker state for a new session."
+  "Reset circuit breaker state for a new session or REPL turn.
+Every counter here is process-global; without this call at the start
+of each REPL turn, 30 tool calls spread over any number of turns
+tripped the breaker for the rest of the Emacs session."
   (setq efrit-do--session-tool-count 0)
   (setq efrit-do--circuit-breaker-tripped nil)
   (setq efrit-do--last-tool-called nil)
@@ -293,6 +297,10 @@ Converts hash tables to sorted alists for order-independent comparison."
     (mapcar #'efrit-do--normalize-for-hash obj))
    (t obj)))
 
+(defun efrit-do--tool-call-cap ()
+  "The tool-call cap in force: `efrit-do-max-tool-calls-per-session' unless raised."
+  (efrit-limits-effective 'max-tool-calls efrit-do-max-tool-calls-per-session))
+
 (defun efrit-do--circuit-breaker-check-limits (tool-name &optional tool-input)
   "Check circuit breaker limits before executing TOOL-NAME with TOOL-INPUT.
 Returns (ALLOWED-P . MESSAGE) where ALLOWED-P is t if execution should proceed.
@@ -314,12 +322,18 @@ Uses efrit--safe-execute for error handling."
                  (cons nil (format "Circuit breaker active: %s"
                                    efrit-do--circuit-breaker-tripped)))
 
-                ;; Check session-wide limit
-                ((>= efrit-do--session-tool-count efrit-do-max-tool-calls-per-session)
+                ;; Check the per-turn tool-call cap.  At the cap, ask
+                ;; before tripping: a long task is not a loop.  A
+                ;; raise (once / session / project) lifts the effective
+                ;; cap and the call proceeds.
+                ((let ((cap (efrit-do--tool-call-cap)))
+                   (and (> cap 0)
+                        (>= efrit-do--session-tool-count cap)
+                        (not (efrit-limits-ask-to-raise 'max-tool-calls cap))))
                  (setq efrit-do--circuit-breaker-tripped
-                       (format "Session limit reached: %d/%d tool calls. Last tool: %s (consecutive: %d)"
+                       (format "Tool-call limit for this turn reached: %d/%d (efrit-do-max-tool-calls-per-session). Last tool: %s (consecutive: %d)"
                                efrit-do--session-tool-count
-                               efrit-do-max-tool-calls-per-session
+                               (efrit-do--tool-call-cap)
                                (or efrit-do--last-tool-called "none")
                                efrit-do--tool-call-count))
                  (cons nil efrit-do--circuit-breaker-tripped))
