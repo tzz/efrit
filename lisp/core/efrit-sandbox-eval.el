@@ -86,10 +86,10 @@
   "Symbols an eval_sexp form may not reference in any position.")
 
 (defconst efrit-sandbox-eval--forbidden-prefixes
-  '("efrit-sandbox" "efrit-permission" "efrit-review")
+  '("efrit-sandbox" "efrit-permission" "efrit-review" "efrit-limits")
   "Symbol-name prefixes refused wherever they appear.
-efrit-review is included so the proposer cannot switch off or
-reconfigure its own reviewer from eval_sexp.")
+efrit-review and efrit-limits are included so the model cannot switch
+off its own reviewer or raise its own iteration cap from eval_sexp.")
 
 (defun efrit-sandbox-eval--forbidden-p (sym)
   (and (symbolp sym) sym

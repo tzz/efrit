@@ -314,17 +314,24 @@ Should be called after `efrit-agent--init-regions' when the buffer is empty."
                         'face 'efrit-agent-timestamp
                         'efrit-agent-separator t
                         'read-only t
+                        'field 'output
                         'rear-nonsticky t))
-    ;; Insert input prompt (read-only)
-    (insert (propertize "> " 'efrit-agent-prompt t 'read-only t 'rear-nonsticky t))
+    ;; Insert input prompt.  The comint/eshell model: the prompt is
+    ;; read-only, front-sticky so a backspace at the start of the input
+    ;; cannot eat it, and in the `output' field so C-a, C-e, kill-line
+    ;; and line motion stop at the prompt instead of crossing it.
+    (insert (propertize "> " 'face 'efrit-agent-input-prompt
+                        'efrit-agent-prompt t 'read-only t
+                        'field 'output
+                        'front-sticky '(read-only field) 'rear-nonsticky t))
     ;; Mark start of user input (AFTER the prompt)
     (setq input-start-pos (point))
     ;; Set markers at the saved positions (after all inserts to avoid insertion-type issues)
     (set-marker efrit-agent--conversation-end conversation-end-pos)
     (set-marker efrit-agent--input-start input-start-pos)
-    ;; Make conversation region read-only (front-sticky prevents insertion at point-min)
+    ;; Make conversation region read-only and part of the output field
     (add-text-properties (point-min) efrit-agent--conversation-end
-                         '(read-only t front-sticky (read-only)))))
+                         '(read-only t field output front-sticky (read-only field)))))
 
 (defun efrit-agent--append-to-conversation (text &optional properties)
   "Append TEXT with optional PROPERTIES to the conversation region.
@@ -340,8 +347,8 @@ Does nothing if the conversation-end marker is not initialized."
           ;; Apply any additional properties
           (when properties
             (add-text-properties start (point) properties))
-          ;; Make the new text read-only
-          (add-text-properties start (point) '(read-only t)))))))
+          ;; Make the new text read-only and part of the output field
+          (add-text-properties start (point) '(read-only t field output)))))))
 
 (defun efrit-agent--get-input ()
   "Get the current user input from the input region.

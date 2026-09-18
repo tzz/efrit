@@ -98,9 +98,38 @@
                    (id (efrit-agent-show-tool-start "eval_sexp" h)))
               (efrit-agent-show-tool-result id "3" t 0.2))
             (let ((text (buffer-substring-no-properties (point-min) (point-max))))
-              (should (string-match-p "✓ eval_sexp · 3  0\\.2s" text))
+              ;; elapsed sits before the summary so the summary is the
+              ;; part chopped at the right edge
+              (should (string-match-p "✓ eval_sexp  0\\.2s · 3$" text))
               (should (string-match-p "^       λ  (\\+ 1 2)$" text))   ; bare expr, not #s(hash-table
               (should-not (string-match-p "hash-table" text)))))
+      (when (get-buffer efrit-agent-buffer-name) (kill-buffer efrit-agent-buffer-name)))))
+
+(ert-deftest test-agent-long-summary-is-chopped-not-wrapped ()
+  "A summary wider than the row is cut at the window width and marked at
+the right edge; the row stays one line and the full result lives in
+the expansion."
+  (let ((efrit-agent-buffer-name "*efrit-agent-test-chop*") (efrit-agent-display-mode 'compact))
+    (unwind-protect
+        (progn
+          (efrit-agent-open)
+          (with-current-buffer efrit-agent-buffer-name
+            (let* ((long (mapconcat (lambda (i) (format "word%d" i)) (number-sequence 1 80) " "))
+                   (id (efrit-agent-show-tool-start "shell_exec" nil)))
+              (efrit-agent-show-tool-result id long t 0.0)
+              (let* ((text (buffer-substring-no-properties (point-min) (point-max)))
+                     (row (seq-find (lambda (l) (string-match-p "shell_exec" l))
+                                    (split-string text "\n"))))
+                (should row)
+                ;; chopped: not the whole thing on the row, marker present
+                (should-not (string-match-p "word80" row))
+                (should (string-suffix-p efrit-agent--chop-marker row))
+                ;; the marker is pinned right via a display space
+                (goto-char (point-min))
+                (search-forward efrit-agent--chop-marker)
+                (should (get-text-property (- (point) 2) 'display))
+                ;; row width respects the buffer's row width
+                (should (<= (string-width row) (+ 2 (efrit-agent--row-width))))))))
       (when (get-buffer efrit-agent-buffer-name) (kill-buffer efrit-agent-buffer-name)))))
 
 (ert-deftest test-agent-denied-row-is-quiet ()
@@ -118,7 +147,7 @@
                id (concat efrit-sandbox-denied-prefix "run shell commands. The user declined. Continue without it.")
                nil 1.0))
             (let ((text (buffer-substring-no-properties (point-min) (point-max))))
-              (should (string-match-p "⊘ shell_exec: cat ~/x · denied  1\\.0s" text))
+              (should (string-match-p "⊘ shell_exec: cat ~/x  1\\.0s · denied$" text))
               (should (string-match-p "^       \\$  cat ~/x$" text))
               (should-not (string-match-p "Failed\\|Error:\\|\\[Retry\\]\\|\\[Skip\\]" text)))))
       (when (get-buffer efrit-agent-buffer-name) (kill-buffer efrit-agent-buffer-name)))))
@@ -135,7 +164,7 @@
                    (id (efrit-agent-show-tool-start "read_file" h)))
               (efrit-agent-show-tool-result id "Error: file not found: nope.el. Check the path." nil 0.1))
             (let ((text (buffer-substring-no-properties (point-min) (point-max))))
-              (should (string-match-p "✗ read_file: nope.el · file not found: nope.el  0\\.1s" text))
+              (should (string-match-p "✗ read_file: nope.el  0\\.1s · file not found: nope.el$" text))
               (should (string-match-p "file not found: nope.el. Check the path." text))
               (should-not (string-match-p "Failed\\|Error: $\\|\\[Retry\\]" text)))))
       (when (get-buffer efrit-agent-buffer-name) (kill-buffer efrit-agent-buffer-name)))))

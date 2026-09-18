@@ -129,7 +129,8 @@ SUCCESS-P indicates if the tool succeeded."
           (let ((lines (split-string result-str "\n" t)))
             (if (> (length lines) 1)
                 (format "%d lines output" (length lines))
-              (truncate-string-to-width (car lines) 40)))
+              ;; one line: show it; the row chops it to the window
+              (car lines)))
         "Failed"))
      ;; Fallback
      (t nil))))
@@ -141,12 +142,14 @@ SUCCESS-P indicates if the tool succeeded."
         (success-p (efrit-agent-tool-view-success-p tv)))
     (when result
       (or (efrit-agent--smart-result-summary tool-name result success-p)
+          ;; The row chops to the window width; these caps only bound
+          ;; how much of the result is offered as a summary at all
           (truncate-string-to-width
            (replace-regexp-in-string "[\n\r]+" " " (format "%s" result))
            (pcase efrit-agent-verbosity
-             ('minimal 20)
-             ('normal 40)
-             ('verbose 80)))))))
+             ('minimal 40)
+             ('normal 200)
+             ('verbose 400)))))))
 
 (defun efrit-agent--summary-from-annotations (tv)
   "Generate summary from TV's structured annotations.
@@ -276,14 +279,19 @@ marking the end of the turn."
                           'face 'efrit-agent-timestamp)))
      (result
       (let ((sum (string-trim (or summary "done"))))
+        ;; Elapsed time goes before the summary so the summary is the
+        ;; only variable-width part and can be chopped flush to the
+        ;; right edge.
+        (when (and elapsed (>= elapsed 0.05))
+          (insert (propertize (format "  %.1fs" elapsed) 'face 'efrit-agent-timestamp)))
         (unless (string-empty-p sum)
           (insert (propertize " · " 'face 'efrit-agent-timestamp))
-          (insert (propertize (truncate-string-to-width sum 90 nil nil "…")
-                              'face (cond (success-p 'efrit-agent-session-id)
-                                          (denied 'efrit-agent-timestamp)
-                                          (t 'efrit-agent-error))))))))
-    (when (and elapsed (>= elapsed 0.05))
-      (insert (propertize (format "  %.1fs" elapsed) 'face 'efrit-agent-timestamp)))
+          (insert (efrit-agent--chop-to-row
+                   (string-width (buffer-substring start (point)))
+                   sum
+                   (cond (success-p 'efrit-agent-session-id)
+                         (denied 'efrit-agent-timestamp)
+                         (t 'efrit-agent-error))))))))
     (insert "\n")
     ;; Insert expanded body if expanded
     (when (and expanded-p (or input result))
@@ -547,6 +555,41 @@ Diffs are syntax-highlighted if `efrit-agent-show-diff' is non-nil."
      (when (and annotations (listp annotations) (> (length annotations) 0))
        (efrit-agent--format-annotations annotations indent))
 )))
+
+(defconst efrit-agent--chop-marker "…"
+  "Glyph placed at the right edge of a row whose text was chopped.")
+
+(defface efrit-agent-chop-marker
+  '((t :inherit shadow :slant italic))
+  "Face of the right-margin marker on chopped rows."
+  :group 'efrit-agent)
+
+(defun efrit-agent--row-width ()
+  "Columns available on one row of the agent buffer.
+The widest window showing the buffer, else `fill-column'; minus the
+right-edge marker and a column of slack so the row never wraps."
+  (let* ((wins (get-buffer-window-list (current-buffer) nil t))
+         (w (if wins (apply #'max (mapcar #'window-body-width wins))
+              (max fill-column 80))))
+    (max 40 (- w 2))))
+
+(defun efrit-agent--chop-to-row (prefix-width text face)
+  "TEXT in FACE, cut so that PREFIX-WIDTH plus TEXT fits one row.
+Like `less -S': no wrapping, the surplus is chopped and a dim
+`efrit-agent--chop-marker' is pinned at the right window edge with a
+`display' space so it reads as a margin mark, not part of the text.
+The full text is in the row's expansion; nothing is lost.
+Returns a propertized string, possibly TEXT unchanged."
+  (let* ((text (replace-regexp-in-string "[\n\r\t]+" " " text))
+         (avail (- (efrit-agent--row-width) prefix-width)))
+    (if (<= (string-width text) avail)
+        (propertize text 'face face)
+      (concat (propertize (truncate-string-to-width text (max 8 (1- avail))) 'face face)
+              ;; a stretch space up to the marker's column, then the
+              ;; marker: it sits flush right however wide the text was
+              (propertize " " 'display `(space :align-to (- right ,(1+ (string-width efrit-agent--chop-marker)))))
+              (propertize efrit-agent--chop-marker 'face 'efrit-agent-chop-marker
+                          'help-echo "Row chopped to the window width; expand for the full text")))))
 
 (defun efrit-agent--format-wrapped-paragraph (text indent face)
   "TEXT filled to the window width, every line prefixed with INDENT, in FACE."

@@ -48,6 +48,7 @@
 (require 'efrit-permissions)
 (require 'efrit-sandbox)
 (require 'efrit-review)
+(require 'efrit-limits)
 (require 'efrit-events)
 
 (declare-function efrit-do--execute-tool "efrit-do-dispatch")
@@ -114,6 +115,8 @@ CALLBACK and does the remhash)."
 REASON is the engine's stop reason; the adapter translates it to its
 own conventions.  ERROR-MESSAGE and COMPLETION-MESSAGE are surfaced to
 the user where the session type supports it."
+  ;; A "continue once" raise of a limit lasts for this turn only
+  (efrit-limits-reset-once)
   (efrit-publish 'turn-complete
                  `((:session-id . ,(funcall (efrit-loop-adapter-id-fn adapter) session))
                    (:stop-reason . ,reason)
@@ -141,8 +144,16 @@ the next API request."
              (iteration-count (or (nth 2 loop-state) 0))
              (timeout (funcall (efrit-loop-adapter-timeout-fn adapter)))
              (elapsed (funcall (efrit-loop-adapter-elapsed-fn adapter) session))
-             (max-iterations (funcall (efrit-loop-adapter-max-iterations-fn
-                                       adapter))))
+             (max-iterations (efrit-limits-effective
+                              'max-iterations
+                              (funcall (efrit-loop-adapter-max-iterations-fn adapter)))))
+        ;; At the cap, ask before giving up: a long task is not a
+        ;; runaway loop.  A raise (once / session / project) changes
+        ;; the effective limit and the check below then passes.
+        (when (and (> max-iterations 0) (>= iteration-count max-iterations))
+          (when-let* ((raised (efrit-limits-ask-to-raise 'max-iterations max-iterations)))
+            (efrit-log 'info "%s %s: iteration limit raised to %d" name session-id raised)
+            (setq max-iterations raised)))
         (cond
          ;; Wall-clock timeout (ef-5o5).  Checked between iterations,
          ;; so an in-flight API call still completes before the stop.

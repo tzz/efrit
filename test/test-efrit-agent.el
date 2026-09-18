@@ -427,6 +427,72 @@
             (setq has-diff-face t)))
         (should-not has-diff-face)))))
 
+(ert-deftest test-efrit-agent-prompt-cannot-be-deleted ()
+  "Backspace at the start of the input, or a kill over the prompt, is refused.
+The prompt text is read-only with front-sticky read-only, both at
+buffer setup and after `efrit-agent--set-input-prompt' rewrites it."
+  (require 'efrit-agent-input)
+  (efrit)
+  (with-current-buffer (efrit-agent--get-buffer)
+    (unwind-protect
+        (progn
+          (goto-char (point-max))
+          (insert "abc")
+          (goto-char efrit-agent--input-start)
+          (should-error (delete-char -1) :type 'text-read-only)
+          ;; the field keeps line-beginning-position after the prompt,
+          ;; so a kill over "the line" no longer reaches it; a region
+          ;; that explicitly spans the prompt is still refused
+          (goto-char (point-max))
+          (should (= (line-beginning-position) efrit-agent--input-start))
+          (should-error (delete-region (let ((inhibit-field-text-motion t)) (line-beginning-position))
+                                       (point))
+                        :type 'text-read-only)
+          (should (equal (efrit-agent--get-input) "abc"))
+          ;; a question rewrites the prompt; still protected
+          (efrit-agent--set-input-prompt "Answer (or 1/2): ")
+          (goto-char efrit-agent--input-start)
+          (should-error (delete-char -1) :type 'text-read-only)
+          (should (get-text-property (1- efrit-agent--input-start) 'efrit-agent-prompt))
+          ;; typing at the marker still works and lands in the input
+          (goto-char (point-max))
+          (insert "d")
+          (should (equal (efrit-agent--get-input) "abcd")))
+      (efrit-agent--clear-input))))
+
+(ert-deftest test-efrit-agent-input-is-a-field-like-comint ()
+  "Transcript and prompt are the output field; C-a/kill-line stop at the prompt,
+C-p still crosses into the transcript, C-c C-u kills the whole input."
+  (require 'efrit-agent-input)
+  (efrit)
+  (with-current-buffer (efrit-agent--get-buffer)
+    (unwind-protect
+        (progn
+          (efrit-agent--append-to-conversation "earlier output\n" nil)
+          (should (eq (get-text-property (1- efrit-agent--input-start) 'field) 'output))
+          (should (eq (get-text-property (point-min) 'field) 'output))
+          (goto-char (point-max)) (insert "hello world")
+          ;; plain beginning-of-line honours the field
+          (beginning-of-line)
+          (should (= (point) efrit-agent--input-start))
+          ;; input-bol: after the prompt; again: the true line start
+          (goto-char (point-max)) (efrit-agent-input-bol)
+          (should (= (point) efrit-agent--input-start))
+          (efrit-agent-input-bol)
+          (should (= (point) (let ((inhibit-field-text-motion t)) (line-beginning-position))))
+          ;; kill-line from input start kills the input and nothing else
+          (goto-char efrit-agent--input-start) (kill-line)
+          (should (equal (efrit-agent--get-input) ""))
+          (should (get-text-property (1- efrit-agent--input-start) 'efrit-agent-prompt))
+          ;; line motion crosses fields (inhibit-line-move-field-capture)
+          (insert "xyz") (forward-line -1)
+          (should (eq (get-text-property (point) 'field) 'output))
+          ;; C-c C-u
+          (goto-char (point-max)) (efrit-agent-input-kill)
+          (should (equal (efrit-agent--get-input) ""))
+          (should (equal (car kill-ring) "xyz")))
+      (efrit-agent--clear-input))))
+
 (provide 'test-efrit-agent)
 
 ;;; test-efrit-agent.el ends here

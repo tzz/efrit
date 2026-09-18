@@ -298,6 +298,11 @@ Status is shown in the header-line at top of window.
   (setq-local truncate-lines nil)
   (setq-local word-wrap t)
   (setq-local line-spacing 0.1)
+  ;; The comint/eshell input model: the transcript and the prompt are
+  ;; the `output' field, the typed text is the input.  `beginning-of-line'
+  ;; then stops at the prompt and `kill-line' stops at the field edge.
+  ;; Line motion (C-n/C-p) must still cross fields, as in comint.
+  (setq-local inhibit-line-move-field-capture t)
   ;; Don't let cursor jump around during updates
   (setq-local cursor-in-non-selected-windows nil)
   ;; Initialize state
