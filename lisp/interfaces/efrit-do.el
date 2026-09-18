@@ -63,7 +63,6 @@
 (declare-function efrit-tool--get-project-root "efrit-tool-utils")
 (declare-function efrit-set-project-root "efrit-tool-utils")
 (declare-function efrit-clear-project-root "efrit-tool-utils")
-(declare-function efrit-tool--format-agent-instructions-for-prompt "efrit-tool-utils")
 (defvar efrit-project-root)
 
 ;; Declare external functions from efrit-agent
@@ -1003,15 +1002,18 @@ Keeps the last `efrit-do-keep-results' command results in the buffer."
         (goto-char (point-min))
         (special-mode)))
     
-    ;; Display buffer with optional shrink-to-fit
+    ;; Display as a dedicated popup so `q' (special-mode) removes the
+    ;; window rather than leaving it showing some other buffer
     (let ((window (display-buffer buffer
                                  (if efrit-do-auto-shrink-todo-buffers
                                      '((display-buffer-reuse-window
                                         display-buffer-below-selected)
                                        (window-height . fit-window-to-buffer)
+                                       (dedicated . t)
                                        (window-parameters . ((no-delete-other-windows . t))))
-                                   '(display-buffer-reuse-window
-                                     display-buffer-below-selected)))))
+                                   '((display-buffer-reuse-window
+                                      display-buffer-below-selected)
+                                     (dedicated . t))))))
       (when (and window efrit-do-auto-shrink-todo-buffers)
         (fit-window-to-buffer window nil nil 15 nil)))))
 

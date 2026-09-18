@@ -51,6 +51,7 @@
 (require 'efrit-tool-utils)
 (require 'efrit-sandbox)
 (require 'efrit-review)
+(require 'efrit-instructions)
 
 (declare-function efrit-api-request-async "efrit-api")
 (declare-function efrit-api-build-headers "efrit-api")
@@ -469,8 +470,9 @@ carries a cache_control block, which is the caching probe."
 (defun efrit-doctor--check-review ()
   (efrit-doctor--layer "Review"
     (if (not efrit-review-enabled)
-        (efrit-doctor--info "Second-model review is off"
-                            "Set efrit-review-enabled to have a reviewer call judge each turn's write/exec tool calls against your request before they run.  Costs one small extra request per mutating turn.")
+        (efrit-doctor--warn "Second-model review is off"
+                            "Write/exec tool calls run without a reviewer call judging them against your request first.  On by default; you turned it off."
+                            "Enable review" (lambda () (setq efrit-review-enabled t)))
       (let ((model (or efrit-review-model efrit-default-model)))
         (efrit-doctor--ok (format "Review on: %s judges %s tool calls"
                                   model
@@ -539,7 +541,26 @@ carries a cache_control block, which is the caching probe."
               (efrit-doctor--warn (format "Prompt hook %S returned %s" fn (type-of r)) "Must return a string or nil.")))
         (error (efrit-doctor--warn (format "Prompt hook %S signalled" fn) (error-message-string err)))))
     (when efrit-system-prompt-functions
-      (efrit-doctor--ok (format "%d system-prompt hook(s) callable" (length efrit-system-prompt-functions))))))
+      (efrit-doctor--ok (format "%d system-prompt hook(s) callable" (length efrit-system-prompt-functions))))
+    ;; Instruction files (AGENTS.md / CLAUDE.md), layered like Claude Code
+    (let* ((located (efrit-instructions-locate))
+           (text (and located (efrit-instructions-text))))
+      (cond
+       ((null located)
+        (efrit-doctor--info "No AGENTS.md / CLAUDE.md applies"
+                            (format "Looked in the user files, each directory above the project, and the project root for %s."
+                                    (mapconcat #'identity efrit-instructions-files ", "))))
+       (t
+        (efrit-doctor--ok (format "%d instruction file(s), %d chars in the prompt"
+                                  (length located) (length (or text "")))
+                          (mapconcat (lambda (e) (format "%-9s %s" (cdr e) (abbreviate-file-name (car e))))
+                                     located "\n"))
+        (when (and text (string-match-p "\\[omitted:" text))
+          (efrit-doctor--warn "Instruction files exceed efrit-instructions-max-total-size"
+                              "Less specific files were replaced by a stub.  Raise the limit or shorten the files."))
+        (when (and text (string-match-p "\\[import not found:" text))
+          (efrit-doctor--warn "An @import in an instruction file points at a missing file"
+                              "M-x efrit-instructions-show lists the imports as the model sees them.")))))))
 
 ;;; 11. UI
 

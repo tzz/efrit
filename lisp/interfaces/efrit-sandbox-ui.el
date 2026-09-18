@@ -172,6 +172,7 @@ Returns once/session/project or nil.  Closing the menu any other way
               (recursive-edit)
             (quit nil)))
       (remove-hook 'transient-post-exit-hook #'efrit-sandbox-ui--exit-recursive-edit)
+      (efrit-sandbox-ui--hide-details)
       (setq efrit-sandbox-ui--request nil)))
   (if (eq efrit-sandbox-ui--answer 'pending) nil efrit-sandbox-ui--answer))
 
@@ -181,14 +182,16 @@ Returns once/session/project or nil.  Closing the menu any other way
          (header (format "Efrit (%s) wants to %s\n" tool (efrit-sandbox-ui--scope-word req)))
          (legend (format "[o]nce  [s]ession  [p]roject %s  [n]o  [?]details "
                          (abbreviate-file-name (efrit-sandbox-project-root)))))
-    (catch 'decided
-      (while t
-        (pcase (read-char-choice (concat header legend) '(?o ?s ?p ?n ??))
-          (?o (throw 'decided 'once))
-          (?s (throw 'decided 'session))
-          (?p (throw 'decided 'project))
-          (?n (throw 'decided nil))
-          (?? (efrit-sandbox-ui--show-details req)))))))
+    (unwind-protect
+        (catch 'decided
+          (while t
+            (pcase (read-char-choice (concat header legend) '(?o ?s ?p ?n ??))
+              (?o (throw 'decided 'once))
+              (?s (throw 'decided 'session))
+              (?p (throw 'decided 'project))
+              (?n (throw 'decided nil))
+              (?? (efrit-sandbox-ui--show-details req)))))
+      (efrit-sandbox-ui--hide-details))))
 
 (defun efrit-sandbox-ui-use-menu-p ()
   "Non-nil when the transient menu can be used for the prompt."
@@ -212,11 +215,25 @@ Returns once/session/project or nil.  Closing the menu any other way
        (if answer 'efrit-sandbox-grant-face 'efrit-sandbox-deny-face))
       answer)))
 
+(defconst efrit-sandbox-ui--details-buffer "*efrit-sandbox-request*"
+  "Popup showing the full sandbox request while the menu is up.")
+
+(defun efrit-sandbox-ui--hide-details ()
+  "Remove the details popup, if shown.
+Called when the menu closes: the popup describes a request that has
+just been answered.  The buffer stays for `q'-less inspection later."
+  (when-let* ((buf (get-buffer efrit-sandbox-ui--details-buffer))
+              (win (get-buffer-window buf t)))
+    (ignore-errors (quit-window nil win))))
+
 (defun efrit-sandbox-ui--show-details (req)
-  "Pop up everything known about REQ."
+  "Pop up everything known about REQ.
+Shown next to the transient menu, not selected: the menu is still
+reading keys.  The popup is dedicated and `q' dismisses it once the
+menu is gone; answering the menu removes it too."
   (require 'efrit-ui-helpers)
   (efrit-show-preview
-   "*efrit-sandbox-request*"
+   efrit-sandbox-ui--details-buffer
    (format "Tool:       %s\nCapability: %s\nTarget:     %s\nProject:    %s\nDetail:\n%s\n\nGrants in force:\n%s"
            (efrit-sandbox-request-tool req)
            (efrit-sandbox-request-cap req)
@@ -307,10 +324,15 @@ d revokes the grant at point, s adds one, g refreshes."
     (with-current-buffer (get-buffer-create "*efrit-sandbox*")
       (efrit-sandbox-list-mode)
       (setq efrit-sandbox-list--root root)
-      (setq header-line-format (format " Sandbox for %s   (d revoke, s add, g refresh)"
+      (setq header-line-format (format " Sandbox for %s   (d revoke, s add, g refresh, q close)"
                                        (abbreviate-file-name root)))
       (efrit-sandbox-list-refresh)
-      (pop-to-buffer (current-buffer)))))
+      ;; A popup at the bottom, not a takeover of the user's window:
+      ;; `q' (quit-window, from tabulated-list-mode) then removes it.
+      (pop-to-buffer (current-buffer)
+                     '((display-buffer-reuse-window display-buffer-at-bottom)
+                       (window-height . fit-window-to-buffer)
+                       (dedicated . t))))))
 
 (provide 'efrit-sandbox-ui)
 

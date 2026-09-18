@@ -49,7 +49,13 @@ RESPONSES is a form evaluating to a list of mock responses, returned
 in order by the stubbed API call (synchronously).  TOOL-RESULT is the
 string every stubbed tool dispatch returns."
   (declare (indent 2) (debug t))
-  `(let ((test-responses ,responses))
+  `(let ((test-responses ,responses)
+         ;; These tests exercise the loop, not the reviewer (on by
+         ;; default); test-review covers the review path with its own
+         ;; stub.  Left on, the reviewer's unstubbed API call would
+         ;; fail and be approved by policy -- passing, for the wrong
+         ;; reason.
+         (efrit-review-enabled nil))
      (cl-letf (((symbol-function 'efrit-repl-loop--api-call)
                 (lambda (_session _messages callback)
                   (let ((response (pop test-responses)))

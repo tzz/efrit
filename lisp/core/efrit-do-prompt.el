@@ -16,13 +16,13 @@
 
 (require 'cl-lib)
 (require 'efrit-log)
+(require 'efrit-instructions)
 
 ;; Forward declarations for functions used from efrit-do.el
 (declare-function efrit-do--get-context-items "efrit-do")
 (declare-function efrit-do--build-error-context "efrit-do")
 (declare-function efrit-do--format-todos-for-prompt "efrit-do")
 (declare-function efrit-tool--get-project-root "efrit-tools")
-(declare-function efrit-tool--format-agent-instructions-for-prompt "efrit-tools")
 (declare-function efrit-context-item-command "efrit-context")
 (declare-function efrit-context-item-result "efrit-context")
 
@@ -528,8 +528,8 @@ If SESSION-ID is provided, include session continuation protocol with WORK-LOG."
           
           session-info
           
-          ;; Include project-specific agent instructions (AGENTS.md/CLAUDE.md)
-          (efrit-tool--format-agent-instructions-for-prompt)
+          ;; Layered AGENTS.md/CLAUDE.md: user, ancestors, project, local
+          (efrit-instructions-for-prompt)
 
           ;; User/site extension point
           (efrit-do--run-system-prompt-functions session-id)

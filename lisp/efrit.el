@@ -277,6 +277,9 @@ Executes all ERT tests and displays results in a buffer."
 ;;;###autoload
 (autoload 'efrit-sandbox "efrit-sandbox-ui" "Show and edit sandbox grants for the project." t)
 ;;;###autoload
+(autoload 'efrit-instructions-show "efrit-instructions"
+  "Show which AGENTS.md / CLAUDE.md files apply and what the model receives." t)
+;;;###autoload
 (autoload 'efrit-select-model "efrit-models"
   "Choose efrit-default-model from what the endpoint offers." t)
 

@@ -58,10 +58,11 @@
   :group 'efrit
   :prefix "efrit-review-")
 
-(defcustom efrit-review-enabled nil
+(defcustom efrit-review-enabled t
   "When non-nil, mutating tool calls are reviewed by a second model call
-before they run.  Off by default: it adds a round trip per mutating
-turn.  Turn it on for work where a wrong edit is expensive."
+before they run.  On by default: the cost is one small request per
+mutating turn, and it catches edits that drift from what was asked.
+Set to nil for throwaway work where speed matters more."
   :type 'boolean
   :group 'efrit-review)
 
