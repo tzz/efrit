@@ -41,6 +41,13 @@
   :group 'efrit
   :prefix "efrit-agent-")
 
+(defface efrit-agent-separator
+  '((((background dark)) :overline "#4c566a" :height 0.4)
+    (t :overline "#c0c6d0" :height 0.4))
+  "The hairline between the transcript and the input.
+Drawn as an overline on a short empty line, so it spans the window."
+  :group 'efrit-agent)
+
 (defcustom efrit-agent-buffer-name "*efrit-agent*"
   "Name of the agent session buffer."
   :type 'string
@@ -309,9 +316,11 @@ Should be called after `efrit-agent--init-regions' when the buffer is empty."
     (insert "\n")
     ;; Remember where conversation ends (before separator)
     (setq conversation-end-pos (point))
-    ;; Insert separator between conversation and input
-    (insert (propertize (concat (make-string 60 ?─) "\n")
-                        'face 'efrit-agent-timestamp
+    ;; Separator between conversation and input: one full-width hairline
+    ;; drawn as a display-space overline, not a row of box characters
+    (insert (propertize " \n"
+                        'display '(space :align-to right)
+                        'face 'efrit-agent-separator
                         'efrit-agent-separator t
                         'read-only t
                         'field 'output

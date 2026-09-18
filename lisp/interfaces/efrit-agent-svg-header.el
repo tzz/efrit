@@ -91,6 +91,12 @@ propertized string; `none' hides the header."
   "Face for the project directory in the graphical header."
   :group 'efrit-agent-header)
 
+(defface efrit-agent-header-border
+  '((((background dark)) :foreground "#4c566a")
+    (t :foreground "#c0c6d0"))
+  "Colour (foreground) of the rule drawn along the bottom of the header."
+  :group 'efrit-agent-header)
+
 (defface efrit-agent-header-icon
   '((((background dark)) :background "#3b4252" :foreground "#eceff4")
     (t :background "#d8dee9" :foreground "#2e3440"))
@@ -115,13 +121,18 @@ out of proportion on your display."
   :group 'efrit-agent-header)
 
 (defun efrit-agent-svg--font-size ()
-  "Font size for the header SVG, in the units images are drawn in.
-Derived from `frame-char-height' only.  The font's own :size is not
-used: on HiDPI displays (macOS Retina) it reports physical pixels
-while char height and image placement are in logical points, which
-rendered the header at about 1.6x the body text.  A font's nominal
-size is close to 0.8 of its line height."
-  (max 8 (round (* 0.8 (frame-char-height) efrit-agent-header-text-scale))))
+  "Font size for the header SVG so its text matches the buffer text.
+The SVG is drawn at :scale 1 in the same units as `frame-char-height',
+so the font's own pixel size is the right value; fall back to a
+fraction of the char height when the font object has no size."
+  (let ((size (or (when-let* (((display-graphic-p))
+                              (font (face-attribute 'default :font))
+                              ((fontp font))
+                              (px (font-get font :size))
+                              ((and (numberp px) (> px 0))))
+                    px)
+                  (* 0.8 (frame-char-height)))))
+    (max 8 (round (* size efrit-agent-header-text-scale)))))
 
 (defun efrit-agent-svg--text-width (node)
   "Pixel width of text NODE: each tspan's text plus its dx gap."
@@ -253,10 +264,16 @@ of everything before it on its row) and the row's baseline."
          (icon (* 2 ch))
          (icon-x 6)
          (text-x (+ icon-x icon 10))
-         (total-h (+ icon pad pad))
+         (border 1)
+         (total-h (+ icon pad pad border))
          (y1 (+ pad ch (/ (- ch fs) 2) (- (/ ch 4))))
          (y2 (+ y1 ch))
-         (svg (svg-create (alist-get :width model) total-h)))
+         (width (alist-get :width model))
+         (svg (svg-create width total-h)))
+    ;; Bottom border: the header's edge is part of the graphic, not a
+    ;; row of characters in the buffer
+    (svg-rectangle svg 0 (- total-h border) width border
+                   :fill (efrit-agent-svg--hex 'efrit-agent-header-border))
     ;; Icon tile
     (svg-rectangle svg icon-x pad icon icon :rx 6
                    :fill (efrit-agent-svg--hex 'efrit-agent-header-icon :background))
@@ -296,9 +313,14 @@ of everything before it on its row) and the row's baseline."
     svg))
 
 (defun efrit-agent-svg--render (model)
-  "Rasterise MODEL into a propertized string carrying the SVG image."
+  "Rasterise MODEL into a propertized string carrying the SVG image.
+The SVG is laid out in the frame's character units, so it must be
+shown at `:scale 1': `svg-insert-image' leaves the scale to
+`image-scaling-factor', which is 2 on HiDPI displays and drew the
+whole header at twice the body text.  (The spinner already did this.)"
   (let ((svg (efrit-agent-svg--build model)))
-    (propertize (concat " " (with-temp-buffer (svg-insert-image svg) (buffer-string)))
+    (propertize (concat " "
+                        (propertize " " 'display (svg-image svg :ascent 'center :scale 1)))
                 'help-echo "efrit agent")))
 
 ;;; Cache and entry point
