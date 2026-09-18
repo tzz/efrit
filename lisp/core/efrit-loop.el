@@ -220,7 +220,11 @@ Builds the request from the shared command system prompt and the
 current tools schema."
   (efrit-log 'debug "API call sending %d messages" (length messages))
   (require 'efrit-do)
-  (let* ((system-prompt (efrit-do--command-system-prompt nil nil nil
+  (let* ((efrit-api-request-purpose
+          (format "the model's next turn (session %s, %d messages)"
+                  (truncate-string-to-width (format "%s" session-id) 12 nil nil "…")
+                  (length messages)))
+         (system-prompt (efrit-do--command-system-prompt nil nil nil
                                                          session-id nil))
          (request-data
           `(("model" . ,efrit-default-model)

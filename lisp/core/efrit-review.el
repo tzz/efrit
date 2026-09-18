@@ -286,8 +286,11 @@ request).  CALLBACK is called with (VERDICT . REASON), VERDICT being
     (efrit-publish 'review-start `((:session-id . ,session-id)
                                    (:calls . ,(length (split-string batch "\n" t)))))
     (condition-case err
-        (efrit-api-request-async
-         request
+        (let ((efrit-api-request-purpose
+               (format "reviewing %d proposed tool call(s) before they run"
+                       (length (split-string batch "\n" t)))))
+          (efrit-api-request-async
+           request
          (lambda (response)
            (funcall finish
                     (cond
@@ -298,7 +301,7 @@ request).  CALLBACK is called with (VERDICT . REASON), VERDICT being
                      (t (or (efrit-review-parse-verdict (efrit-review--response-text response))
                             (efrit-review--failure-verdict "malformed verdict"))))))
          (lambda (error-msg)
-           (funcall finish (efrit-review--failure-verdict error-msg))))
+           (funcall finish (efrit-review--failure-verdict error-msg)))))
       (error
        (funcall finish (efrit-review--failure-verdict (error-message-string err)))))))
 

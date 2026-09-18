@@ -29,6 +29,7 @@
 (require 'shr)
 (require 'dom)
 (require 'cl-lib)
+(require 'efrit-api)   ; efrit-api-display-url
 
 ;; Declare url-http-target-url which is set during URL fetching
 (defvar url-http-target-url nil
@@ -109,7 +110,10 @@ May prompt user depending on security level."
           '(("User-Agent" . "Mozilla/5.0 (compatible; Emacs Efrit)")))
          (buffer (url-retrieve-synchronously url t nil efrit-fetch-url-timeout)))
     (if (not buffer)
-        (list :success nil :error "Failed to fetch URL" :fetch-time 0)
+        (list :success nil
+              :error (format "No response from %s within %ds (timeout, DNS failure, or connection refused)"
+                             (efrit-api-display-url url) efrit-fetch-url-timeout)
+              :fetch-time 0)
       (unwind-protect
           (with-current-buffer buffer
             (goto-char (point-min))
@@ -120,7 +124,7 @@ May prompt user depending on security level."
               (let ((status (string-to-number (match-string 1))))
                 (if (not (and (>= status 200) (< status 300)))
                     (list :success nil
-                          :error (format "HTTP error: %d" status)
+                          :error (format "HTTP %d from %s" status (efrit-api-display-url url))
                           :fetch-time (- (float-time) start-time))
                   ;; Extract content-type
                   (let ((content-type "text/html")

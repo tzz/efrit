@@ -185,10 +185,26 @@ DEFAULT is the customization value the caller would otherwise use."
 
 ;;; Asking
 
+(defface efrit-limits-heading
+  '((t :inherit warning :weight bold))
+  "Face of the limit prompt's first line."
+  :group 'efrit-limits)
+
+(defface efrit-limits-number
+  '((t :inherit font-lock-constant-face :weight bold))
+  "Face of the numbers in the limit prompt."
+  :group 'efrit-limits)
+
+(defface efrit-limits-dim
+  '((t :inherit shadow))
+  "Face of explanatory text in the limit prompt."
+  :group 'efrit-limits)
+
 (defvar efrit-limits--answer 'pending)
 (defvar efrit-limits--depth nil)
 (defvar efrit-limits--context nil
-  "Plist (:name :current :step :root) for the open prompt.")
+  "Plist (:name :current :step :root) for the open prompt.
+:step is adjustable from the menu with + and -.")
 
 (defun efrit-limits--choose (answer)
   (setq efrit-limits--answer answer))
@@ -204,36 +220,98 @@ DEFAULT is the customization value the caller would otherwise use."
     ('max-tool-calls "tool calls")
     (_ (symbol-name name))))
 
-(defun efrit-limits--menu-description ()
-  (let ((c efrit-limits--context))
-    (format "This turn reached %d %s, the limit for %s."
-            (plist-get c :current)
-            (efrit-limits--unit (plist-get c :name))
-            (abbreviate-file-name (directory-file-name (plist-get c :root))))))
+(defun efrit-limits--variable (name)
+  "The customization variable behind limit NAME, for the prompt."
+  (pcase name
+    ('max-iterations 'efrit-repl-loop-max-iterations)
+    ('max-tool-calls 'efrit-do-max-tool-calls-per-session)
+    (_ nil)))
 
-(defun efrit-limits--label-continue ()
-  (format "continue: %d more %s, then ask again"
-          (plist-get efrit-limits--context :step)
-          (efrit-limits--unit (plist-get efrit-limits--context :name))))
-(defun efrit-limits--label-session ()
-  (format "raise the limit to %d for this Emacs session"
-          (efrit-limits--raised)))
-(defun efrit-limits--label-project ()
-  (format "raise it to %d for this project (saved)"
-          (efrit-limits--raised)))
+(defun efrit-limits--why (name)
+  "One sentence on what limit NAME protects against."
+  (pcase name
+    ('max-iterations "It stops a turn that keeps calling the model without finishing.")
+    ('max-tool-calls "It stops a turn that keeps running tools without finishing.")
+    (_ "It stops a runaway turn.")))
+
+(defun efrit-limits--num (n)
+  (propertize (format "%d" n) 'face 'efrit-limits-number))
+
+(defun efrit-limits--step () (plist-get efrit-limits--context :step))
+(defun efrit-limits--current () (plist-get efrit-limits--context :current))
+(defun efrit-limits--name () (plist-get efrit-limits--context :name))
 
 (defun efrit-limits--raised ()
-  "The new limit a session/project raise sets: current plus the step, rounded up."
-  (let* ((c efrit-limits--context)
-         (n (+ (plist-get c :current) (plist-get c :step))))
+  "The new limit a session/project raise sets: current plus the step, rounded up to 50."
+  (let ((n (+ (efrit-limits--current) (efrit-limits--step))))
     (* 50 (ceiling n 50.0))))
+
+(defun efrit-limits--menu-description ()
+  "Heading: what happened, why the limit exists, where it is set."
+  (let* ((c efrit-limits--context)
+         (name (plist-get c :name))
+         (var (efrit-limits--variable name))
+         (root (abbreviate-file-name (directory-file-name (plist-get c :root)))))
+    (concat
+     (propertize (format "Efrit reached %s %s this turn — the limit for %s"
+                         (efrit-limits--num (plist-get c :current))
+                         (efrit-limits--unit name) root)
+                 'face 'efrit-limits-heading)
+     "\n  "
+     (propertize (efrit-limits--why name) 'face 'efrit-limits-dim)
+     (when var
+       (concat "  " (propertize (format "(%s)" var) 'face 'efrit-limits-dim)))
+     "\n")))
+
+(defun efrit-limits--label-continue ()
+  (format "continue for %s more %s, then ask again"
+          (efrit-limits--num (efrit-limits--step)) (efrit-limits--unit (efrit-limits--name))))
+(defun efrit-limits--label-session ()
+  (format "raise to %s until Emacs exits" (efrit-limits--num (efrit-limits--raised))))
+(defun efrit-limits--label-project ()
+  (format "raise to %s for this project %s"
+          (efrit-limits--num (efrit-limits--raised))
+          (propertize (format "(saved in %s)"
+                              (abbreviate-file-name
+                               (efrit-limits-file (plist-get efrit-limits--context :root))))
+                      'face 'efrit-limits-dim)))
+(defun efrit-limits--label-step ()
+  (format "step: %s" (efrit-limits--num (efrit-limits--step))))
+
+(defun efrit-limits--adjust-step (delta)
+  "Change the step by DELTA (a count) inside the open menu."
+  (let ((new (max 10 (+ (efrit-limits--step) delta))))
+    (setq efrit-limits--context (plist-put efrit-limits--context :step new))))
+
+(defun efrit-limits--show-details ()
+  "Popup: limits in force for this project and where they come from."
+  (require 'efrit-ui-helpers)
+  (let* ((root (plist-get efrit-limits--context :root))
+         (file (efrit-limits-file root)))
+    (efrit-show-preview
+     "*efrit-limits*"
+     (concat
+      (format "Project:  %s\nSettings: %s%s\n\n" (abbreviate-file-name root)
+              (abbreviate-file-name file)
+              (if (file-exists-p file) "" "  (not written yet)"))
+      (mapconcat
+       (lambda (name)
+         (let ((var (efrit-limits--variable name)))
+           (format "%-16s default %-5s session %-5s project %-5s once %s"
+                   name
+                   (if (and var (boundp var)) (symbol-value var) "-")
+                   (or (alist-get name (gethash root efrit-limits--session)) "-")
+                   (or (alist-get name (gethash root efrit-limits--project)) "-")
+                   (or (gethash (cons root name) efrit-limits--once) "-"))))
+       efrit-limits-known "\n")
+      "\n\nA raise never lowers a limit; M-x efrit-limits-reset-session forgets session raises."))))
 
 (defun efrit-limits--define-menu ()
   (when (require 'transient nil t)
     (unless (fboundp 'efrit-limits-menu)
       (eval
        '(transient-define-prefix efrit-limits-menu ()
-          "Continue past the iteration limit?"
+          "Continue past a per-turn limit?"
           [:description efrit-limits--menu-description
            ["Continue"
             ("c" (lambda () (interactive) (efrit-limits--choose 'once))
@@ -243,10 +321,21 @@ DEFAULT is the customization value the caller would otherwise use."
             ("p" (lambda () (interactive) (efrit-limits--choose 'project))
              :description efrit-limits--label-project)]
            ["Stop"
-            ("n" "stop here; the conversation stays open"
-             (lambda () (interactive) (efrit-limits--choose nil)))]])
+            ("n" "stop here; the conversation stays open, nothing is lost"
+             (lambda () (interactive) (efrit-limits--choose nil)))]
+           ["Adjust"
+            ("+" (lambda () (interactive) (efrit-limits--adjust-step 50))
+             :description efrit-limits--label-step :transient t)
+            ("-" "smaller step" (lambda () (interactive) (efrit-limits--adjust-step -50))
+             :transient t)
+            ("?" "limits in force" efrit-limits--show-details :transient t)]])
        t))
     (fboundp 'efrit-limits-menu)))
+
+(defun efrit-limits--hide-details ()
+  (when-let* ((buf (get-buffer "*efrit-limits*"))
+              (win (get-buffer-window buf t)))
+    (ignore-errors (quit-window nil win))))
 
 (defun efrit-limits--ask-with-menu ()
   (setq efrit-limits--answer 'pending)
@@ -256,16 +345,28 @@ DEFAULT is the customization value the caller would otherwise use."
           (add-hook 'transient-post-exit-hook #'efrit-limits--exit-recursive-edit)
           (run-at-time 0 nil (lambda () (call-interactively #'efrit-limits-menu)))
           (condition-case nil (recursive-edit) (quit nil)))
-      (remove-hook 'transient-post-exit-hook #'efrit-limits--exit-recursive-edit)))
+      (remove-hook 'transient-post-exit-hook #'efrit-limits--exit-recursive-edit)
+      (efrit-limits--hide-details)))
   (if (eq efrit-limits--answer 'pending) nil efrit-limits--answer))
 
 (defun efrit-limits--ask-in-echo-area ()
+  "Fallback when no menu can be shown (terminal without transient)."
   (pcase (read-char-choice
-          (format "%s  [c]ontinue %d more  [s]ession  [p]roject  [n]o "
-                  (efrit-limits--menu-description)
-                  (plist-get efrit-limits--context :step))
+          (format "%s reached %d %s.  [c]ontinue %d more  [s]ession %d  [p]roject %d  [n]o "
+                  "Efrit" (efrit-limits--current) (efrit-limits--unit (efrit-limits--name))
+                  (efrit-limits--step) (efrit-limits--raised) (efrit-limits--raised))
           '(?c ?s ?p ?n))
     (?c 'once) (?s 'session) (?p 'project) (_ nil)))
+
+(defun efrit-limits--note (text face)
+  "Append TEXT in FACE to the agent transcript, like the sandbox notes."
+  (when (and (boundp 'efrit-agent-buffer-name)
+             (get-buffer (symbol-value 'efrit-agent-buffer-name))
+             (fboundp 'efrit-agent--append-to-conversation))
+    (with-current-buffer (symbol-value 'efrit-agent-buffer-name)
+      (funcall 'efrit-agent--append-to-conversation
+               (concat (propertize (concat "  ⏱ " text) 'face face) "\n")
+               (list 'efrit-type 'limits-note)))))
 
 (defun efrit-limits-ask-to-raise (name current &optional root)
   "Ask whether to go past limit NAME, currently CURRENT, for ROOT.
@@ -281,11 +382,22 @@ when the user stops (or nothing can ask).  Never signals."
                               (efrit-limits--ask-with-menu)
                             (efrit-limits--ask-in-echo-area))
                         (quit nil)
-                        (error (efrit-log 'warn "limits prompt: %s" (error-message-string err)) nil)))))
-    (pcase answer
-      ('once (efrit-limits-set name (+ current efrit-limits-continue-step) 'once root))
-      ((or 'session 'project) (efrit-limits-set name (efrit-limits--raised) answer root))
-      (_ nil))))
+                        (error (efrit-log 'warn "limits prompt: %s" (error-message-string err)) nil))))
+         (unit (efrit-limits--unit name))
+         (result
+          (pcase answer
+            ('once (efrit-limits-set name (+ current (efrit-limits--step)) 'once root))
+            ((or 'session 'project) (efrit-limits-set name (efrit-limits--raised) answer root))
+            (_ nil))))
+    (when (and efrit-limits-ask (not noninteractive))
+      (efrit-limits--note
+       (pcase answer
+         ('once (format "limit reached at %d %s; continuing for %d more" current unit (efrit-limits--step)))
+         ('session (format "limit reached at %d %s; raised to %d for this session" current unit result))
+         ('project (format "limit reached at %d %s; raised to %d for this project (saved)" current unit result))
+         (_ (format "limit reached at %d %s; stopped" current unit)))
+       (if answer 'efrit-limits-heading 'efrit-limits-dim)))
+    result))
 
 (provide 'efrit-limits)
 

@@ -46,5 +46,26 @@ first and re-points the minor-mode alist and mode buffers."
     (should (eq (cdr (assq 'efrit-agent-input-mode minor-mode-map-alist))
                 efrit-agent-input-mode-map))))
 
+(ert-deftest test-reload-updates-itself-first ()
+  "An old efrit-reload (plain loads, no self-reload) still ends up running
+the new code: the new definition reloads efrit-reload before the rest."
+  (require 'efrit-agent) (require 'efrit-agent-input)
+  (let ((real (symbol-function 'efrit-reload)))
+    (unwind-protect
+        (progn
+          ;; the new definition's entry point re-dispatches after loading
+          ;; itself; simulate a session where only the old body exists
+          (fmakunbound 'efrit-reload--run)
+          (efrit)
+          (with-current-buffer (efrit-agent--get-buffer)
+            (define-key efrit-agent-input-mode-map (kbd "<up>") nil)
+            (goto-char (point-max)) (efrit-agent--maybe-enable-input-mode)
+            (should-not (eq (key-binding [up]) 'efrit-agent-input-up))
+            (funcall real)
+            (efrit-agent--maybe-enable-input-mode)
+            (should (fboundp 'efrit-reload--run))
+            (should (eq (key-binding [up]) 'efrit-agent-input-up))))
+      (fset 'efrit-reload real))))
+
 (provide 'test-reload)
 ;;; test-reload.el ends here

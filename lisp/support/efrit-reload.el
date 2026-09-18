@@ -49,7 +49,12 @@
 
 (defconst efrit-reload--never
   '(efrit-reload)
-  "Features left alone: reloading this file while it runs is pointless.")
+  "Features not reloaded by the main pass.
+This file reloads *itself* first, separately (see `efrit-reload'), so
+a fix to the reloader takes effect in the same invocation.")
+
+(defvar efrit-reload--self-reloaded nil
+  "Non-nil while `efrit-reload' runs its freshly loaded self.")
 
 (defun efrit-reload-features ()
   "The loaded efrit features, oldest first (the order to reload them in).
@@ -110,6 +115,20 @@ an efrit major mode get the new mode map as their local map."
 With VERBOSE (a prefix argument) list each file as it loads.  Files
 that fail to load are reported at the end; the rest still load."
   (interactive "P")
+  ;; Reload this file first and run the new definition, so a fix to
+  ;; the reloader (the keymap refresh was one) applies right away
+  ;; instead of one restart later.  The re-entered call sees the flag
+  ;; and does the real work.
+  (if (and (not efrit-reload--self-reloaded)
+           (efrit-reload--library-file 'efrit-reload))
+      (let ((efrit-reload--self-reloaded t)
+            (load-prefer-newer t))
+        (load (efrit-reload--library-file 'efrit-reload) nil t)
+        (funcall 'efrit-reload verbose))
+    (efrit-reload--run verbose)))
+
+(defun efrit-reload--run (verbose)
+  "The body of `efrit-reload', run from its freshly loaded definition."
   (let ((load-prefer-newer t)
         (loaded 0)
         (failed nil)
