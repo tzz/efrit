@@ -23,6 +23,7 @@
 (require 'efrit-agent-tools)
 (require 'efrit-agent-input)
 (require 'efrit-todo)
+(require 'efrit-events)
 
 ;; TODO struct accessors and state now come from efrit-todo.el
 ;; Backward-compatible aliases (efrit-do-todo-item-*, efrit-do--current-todos) are provided there.
@@ -274,6 +275,47 @@ Uses incremental inline update instead of full re-render."
 ;; efrit-agent.el. Duplicate wrapper versions here were always shadowed
 ;; (efrit-agent.el requires this file before defining its own) and were
 ;; removed (ef-d89).
+
+;;; Review rows
+;;
+;; The second-model review (efrit-review) publishes review-start and
+;; review-verdict.  Show it as a tool-style row so the user sees that
+;; the turn was judged, by which model, and the outcome -- approvals
+;; included, not only rejections.  The row expands (TAB / d) to what
+;; the reviewer was shown and what it answered.
+
+(defvar-local efrit-agent--review-row nil
+  "Tool-row id of the review in flight, or nil.")
+
+(defun efrit-agent--on-review-start (event)
+  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (let ((input (make-hash-table :test 'equal)))
+          (puthash "calls" (alist-get :calls event) input)
+          (puthash "model" (alist-get :model event) input)
+          (puthash "shown to reviewer" (alist-get :prompt event) input)
+          (setq efrit-agent--review-row
+                (efrit-agent--add-tool-call "review" input)))))))
+
+(defun efrit-agent--on-review-verdict (event)
+  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (when efrit-agent--review-row
+          (let* ((verdict (alist-get :verdict event))
+                 (reason (alist-get :reason event))
+                 (text (pcase verdict
+                         ('approve "approved")
+                         ('reject (concat "rejected · " (or reason "no reason given")))
+                         (_ (format "%s" verdict)))))
+            (efrit-agent--update-tool-result efrit-agent--review-row text
+                                             (eq verdict 'approve) nil)
+            (setq efrit-agent--review-row nil)))))))
+
+(with-eval-after-load 'efrit-events
+  (efrit-subscribe 'review-start #'efrit-agent--on-review-start)
+  (efrit-subscribe 'review-verdict #'efrit-agent--on-review-verdict))
 
 (provide 'efrit-agent-integration)
 

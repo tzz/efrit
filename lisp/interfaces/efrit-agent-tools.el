@@ -103,6 +103,11 @@ SUCCESS-P indicates if the tool succeeded."
        (if (string-match "\\[SESSION-COMPLETE: \\(\\(?:.\\|\n\\)*\\)\\]" result-str)
            (match-string 1 result-str)
          result-str)))
+     ;; A report buffer: name it and say how to open it
+     ((and success-p (member tool-name '("buffer_create" "create_buffer")))
+      (if (string-match "Created buffer '\\([^']+\\)' with \\([0-9]+\\) characters" result-str)
+          (format "%s (%s chars) · o opens" (match-string 1 result-str) (match-string 2 result-str))
+        "report buffer · o opens"))
      ;; Read tool - show size
      ((string-match-p "Read\\|read" tool-name)
       (let ((lines (length (split-string result-str "\n"))))
@@ -356,8 +361,14 @@ Returns a short string describing what the tool is operating on."
           (pattern (and (string-match-p "grep\\|search" tool-name)
                         (efrit-agent--input-field input "pattern" "query")))
           (cmd (and (string-match-p "bash\\|shell" tool-name)
-                    (efrit-agent--input-field input "cmd" "command"))))
+                    (efrit-agent--input-field input "cmd" "command")))
+          (calls (and (equal tool-name "review") (efrit-agent--input-field input "calls"))))
       (cond
+       ;; the review row: how many calls, judged by which model
+       (calls
+        (format "%s tool call%s%s" calls (if (eql calls 1) "" "s")
+                (if-let* ((m (efrit-agent--input-field input "model")))
+                    (format " · %s" m) "")))
        ((stringp path)
         (let ((name (file-name-nondirectory (directory-file-name path))))
           (if (> (length name) 30) (concat "..." (substring name -27)) name)))

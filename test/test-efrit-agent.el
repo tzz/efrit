@@ -548,6 +548,68 @@ C-p still crosses into the transcript, C-c C-u kills the whole input."
     (goto-char (point-min)) (search-forward "❯")
     (should (memq 'efrit-agent-user-prefix (ensure-list (get-text-property (1- (point)) 'face))))))
 
+(ert-deftest test-efrit-agent-review-rows-show-approve-and-reject ()
+  "The reviewer's start and verdict events render as a tool-style row."
+  (require 'efrit-review)
+  (efrit)
+  (with-current-buffer (efrit-agent--get-buffer)
+    (efrit-publish 'review-start '((:session-id . "s") (:calls . 2) (:model . "m") (:prompt . "P")))
+    (efrit-publish 'review-verdict '((:session-id . "s") (:verdict . approve)))
+    (efrit-publish 'review-start '((:session-id . "s") (:calls . 1) (:model . "m") (:prompt . "P")))
+    (efrit-publish 'review-verdict '((:session-id . "s") (:verdict . reject) (:reason . "wrong file")))
+    (let* ((text (buffer-substring-no-properties (point-min) (point-max)))
+           ;; header rows only: the rejected one auto-expands and its
+           ;; body mentions the reviewer too
+           (rows (seq-filter (lambda (l) (string-match-p "[✓✗] review:" l)) (split-string text "\n"))))
+      (should (= (length rows) 2))
+      (should (string-match-p "✓ review: 2 tool calls · m · approved" (nth 0 rows)))
+      (should (string-match-p "✗ review: 1 tool call · m · rejected · wrong file" (nth 1 rows))))
+    ;; d expands in the transcript, inserts in the input
+    (goto-char (point-min)) (search-forward "review")
+    (should (eq (key-binding "d") 'efrit-agent-toggle-expand))
+    (goto-char (point-max)) (efrit-agent--maybe-enable-input-mode)
+    (should (eq (key-binding "d") 'self-insert-command))))
+
+(ert-deftest test-efrit-agent-report-buffer-quits-and-opens-from-row ()
+  (require 'efrit-tool-edit-buffer)
+  (efrit)
+  (unwind-protect
+      (progn
+        (efrit-tool-create-buffer '((name . "*efrit-report: T*") (content . "x\n") (mode . "text-mode")))
+        (with-current-buffer "*efrit-report: T*"
+          (should (eq (key-binding "q") 'quit-window))
+          (should efrit-tool-report-buffer))
+        (with-current-buffer (efrit-agent--get-buffer)
+          (let ((h (make-hash-table :test 'equal)))
+            (puthash "name" "*efrit-report: T*" h)
+            (let ((id (efrit-agent-show-tool-start "buffer_create" h)))
+              (efrit-agent-show-tool-result id "Created buffer '*efrit-report: T*' with 2 characters" t 0.0)))
+          (let ((row (seq-find (lambda (l) (string-match-p "buffer_create" l))
+                               (split-string (buffer-substring-no-properties (point-min) (point-max)) "\n"))))
+            (should (string-match-p "\\*efrit-report: T\\* (2 chars) · o opens" row)))
+          ;; not shown until asked
+          (should-not (get-buffer-window "*efrit-report: T*"))
+          (goto-char (point-min)) (search-forward "buffer_create")
+          (cl-letf (((symbol-function 'select-window) (lambda (w &rest _) w)))
+            (efrit-agent-open-at-point))
+          (should (get-buffer-window "*efrit-report: T*"))))
+    (when (get-buffer "*efrit-report: T*")
+      (ignore-errors (delete-window (get-buffer-window "*efrit-report: T*")))
+      (kill-buffer "*efrit-report: T*"))))
+
+(ert-deftest test-efrit-agent-display-reuses-window ()
+  "Showing the agent buffer twice does not create a second window for it."
+  (efrit)
+  (let* ((buf (efrit-agent--get-buffer))
+         (before (length (window-list))))
+    (efrit-agent-display buf)
+    (let ((after-first (length (window-list))))
+      (efrit-agent-display buf)
+      (efrit-agent-display buf t)
+      (should (= (length (window-list)) after-first))
+      (should (= 1 (length (get-buffer-window-list buf nil t))))
+      (should (<= (- after-first before) 1)))))
+
 (provide 'test-efrit-agent)
 
 ;;; test-efrit-agent.el ends here

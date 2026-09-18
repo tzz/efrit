@@ -413,14 +413,42 @@ Deletes from input-start marker to end of buffer."
             (run-at-time 1 1 #'efrit-agent--update-elapsed buffer)))
     buffer))
 
+(defcustom efrit-agent-display-buffer-action
+  '((display-buffer-reuse-window
+     display-buffer-in-previous-window
+     display-buffer-at-bottom)
+    (window-height . 0.4)
+    (reusable-frames . visible)
+    (inhibit-same-window . nil))
+  "How the agent buffer is shown (a `display-buffer' action).
+The default reuses a window already showing it (in any visible
+frame), then the window it was last shown in, and only then splits
+off a bottom window.  Earlier versions always split, so each
+`M-x efrit' stacked another window."
+  :type 'sexp
+  :group 'efrit-agent)
+
+(defun efrit-agent-display (&optional buffer select)
+  "Show the agent BUFFER (default the current one) per `efrit-agent-display-buffer-action'.
+With SELECT, select its window and put point in the input region.
+Returns the window.  Every path that shows the agent buffer goes
+through here so window behaviour is consistent."
+  (let* ((buffer (or buffer (efrit-agent--get-buffer)))
+         (win (display-buffer buffer efrit-agent-display-buffer-action)))
+    (when (and select (window-live-p win))
+      (select-window win)
+      (with-current-buffer buffer
+        (when (and efrit-agent--input-start
+                   (marker-position efrit-agent--input-start))
+          (goto-char (point-max)))))
+    win))
+
 (defun efrit-agent--show-buffer ()
   "Display the agent buffer.
 Does nothing in batch mode or when `efrit-agent-auto-show' is nil."
   (when (and efrit-agent-auto-show
              (not noninteractive))
-    (let ((buffer (efrit-agent--get-buffer)))
-      (display-buffer buffer '(display-buffer-at-bottom
-                               (window-height . 15))))))
+    (efrit-agent-display (efrit-agent--get-buffer))))
 
 (defun efrit-agent--cleanup-timer ()
   "Clean up the elapsed and spinner timers when buffer is killed."

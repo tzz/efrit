@@ -133,8 +133,7 @@ question waiting for a typed answer."
 (defun efrit-agent--question-menu-custom ()
   "Close the menu and leave point in the input for a typed answer."
   (when (buffer-live-p efrit-agent--question-menu-buffer)
-    (pop-to-buffer efrit-agent--question-menu-buffer)
-    (goto-char (point-max))))
+    (efrit-agent-display efrit-agent--question-menu-buffer t)))
 
 (defun efrit-agent--question-menu-description ()
   "The question text as the menu's heading, wrapped to the frame."
@@ -319,6 +318,8 @@ Returns nil if no options or N is out of range."
     ;; so they behave like normal editing whenever point is in the input area.
     (define-key map (kbd "C-k") #'kill-line)
     (define-key map (kbd "C-q") #'quoted-insert)
+    (define-key map (kbd "d") #'self-insert-command)
+    (define-key map (kbd "o") #'self-insert-command)
     ;; comint conventions: C-a goes to just after the prompt, C-c C-u
     ;; kills the whole input, C-c C-a is the true beginning of line
     (define-key map (kbd "C-a") #'efrit-agent-input-bol)

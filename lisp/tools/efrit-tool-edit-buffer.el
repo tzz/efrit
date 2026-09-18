@@ -31,6 +31,23 @@
 
 ;;; Buffer Creation Tool
 
+(defvar efrit-tool-report-keys-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "q") #'quit-window)
+    map)
+  "Keys layered onto every buffer `buffer_create' makes.")
+
+(defun efrit-tool--make-report-quittable ()
+  "Give the current buffer a `q' that closes its window, whatever its mode.
+Composed under the mode map, so a mode that already binds q wins."
+  (unless (and (current-local-map)
+               (eq (lookup-key (current-local-map) (kbd "q")) #'quit-window))
+    (use-local-map (make-composed-keymap (current-local-map) efrit-tool-report-keys-map)))
+  (setq-local efrit-tool-report-buffer t))
+
+(defvar-local efrit-tool-report-buffer nil
+  "Non-nil in buffers created by `buffer_create'.")
+
 (defun efrit-tool-create-buffer (args)
   "Create a new buffer with optional initial content and mode.
 
@@ -76,6 +93,9 @@ Returns a string describing what was created."
                                      mode)))
                   (when (fboundp mode-symbol)
                     (funcall mode-symbol))))
+              ;; A report buffer behaves like a popup: `q' closes it.
+              ;; The major mode keeps its own keys; only q is added.
+              (efrit-tool--make-report-quittable)
               ;; Set read-only if requested
               (when read-only
                 (setq buffer-read-only t))))

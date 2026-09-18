@@ -273,6 +273,7 @@ request).  CALLBACK is called with (VERDICT . REASON), VERDICT being
          (batch (efrit-review-describe-batch content))
          (request (efrit-review--request-data intent proposer batch))
          (done nil)
+         (prompt (efrit-review--user-message intent proposer batch))
          (finish (lambda (verdict)
                    (unless done
                      (setq done t)
@@ -281,10 +282,13 @@ request).  CALLBACK is called with (VERDICT . REASON), VERDICT being
                      (efrit-publish 'review-verdict
                                     `((:session-id . ,session-id)
                                       (:verdict . ,(car verdict))
-                                      (:reason . ,(cdr verdict))))
+                                      (:reason . ,(cdr verdict))
+                                      (:prompt . ,prompt)))
                      (funcall callback verdict)))))
     (efrit-publish 'review-start `((:session-id . ,session-id)
-                                   (:calls . ,(length (split-string batch "\n" t)))))
+                                   (:calls . ,(length (split-string batch "\n" t)))
+                                   (:model . ,(or efrit-review-model efrit-default-model))
+                                   (:prompt . ,prompt)))
     (condition-case err
         (let ((efrit-api-request-purpose
                (format "reviewing %d proposed tool call(s) before they run"
