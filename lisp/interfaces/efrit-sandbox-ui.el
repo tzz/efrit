@@ -45,6 +45,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'seq)
 (require 'tabulated-list)
 (require 'efrit-sandbox)
 (require 'efrit-sandbox-store)
@@ -69,6 +70,10 @@
 (defface efrit-sandbox-deny-face
   '((t :inherit error))
   "Face for a recorded denial in the agent buffer.")
+
+(defface efrit-sandbox-detail-face
+  '((t :inherit fixed-pitch))
+  "Face of the request detail (the form or command) in the sandbox menu.")
 
 ;;; Transcript notes
 
@@ -114,9 +119,31 @@
      (propertize (format "Efrit: %s wants to %s" tool (efrit-sandbox-ui--scope-word req))
                  'face 'efrit-sandbox-prompt-face)
      (when (and detail (not (string-empty-p detail)))
-       (concat "\n  " (truncate-string-to-width
-                       (replace-regexp-in-string "\n" " " detail) (- (frame-width) 6) nil nil "…")))
+       (concat "\n" (efrit-sandbox-ui--detail-block detail)))
      "\n")))
+
+(defcustom efrit-sandbox-ui-detail-lines 12
+  "Most lines of the request detail (the form, the command) shown in the menu.
+The rest is in the ? popup."
+  :type 'integer
+  :group 'efrit-sandbox-ui)
+
+(defun efrit-sandbox-ui--detail-block (detail)
+  "DETAIL as an indented block for the menu heading: code as code.
+Multi-line details (an eval_sexp form) keep their lines, in a
+fixed-pitch face, cut to `efrit-sandbox-ui-detail-lines' with a note;
+each line is chopped to the frame width."
+  (let* ((lines (split-string detail "\n"))
+         (shown (seq-take lines efrit-sandbox-ui-detail-lines))
+         (width (- (frame-width) 6)))
+    (concat
+     (mapconcat (lambda (l)
+                  (concat "  " (propertize (truncate-string-to-width l width nil nil "…")
+                                           'face 'efrit-sandbox-detail-face)))
+                shown "\n")
+     (when (> (length lines) (length shown))
+       (propertize (format "\n  … %d more lines (? shows all)" (- (length lines) (length shown)))
+                   'face 'shadow)))))
 
 (defun efrit-sandbox-ui--project-label ()
   (format "this project (%s, saved)"
@@ -232,15 +259,49 @@ Shown next to the transient menu, not selected: the menu is still
 reading keys.  The popup is dedicated and `q' dismisses it once the
 menu is gone; answering the menu removes it too."
   (require 'efrit-ui-helpers)
-  (efrit-show-preview
-   efrit-sandbox-ui--details-buffer
-   (format "Tool:       %s\nCapability: %s\nTarget:     %s\nProject:    %s\nDetail:\n%s\n\nGrants in force:\n%s"
-           (efrit-sandbox-request-tool req)
-           (efrit-sandbox-request-cap req)
-           (efrit-sandbox-request-target req)
-           (efrit-sandbox-project-root)
-           (or (efrit-sandbox-request-detail req) "(none)")
-           (efrit-sandbox-ui--grants-text))))
+  (let* ((tool (efrit-sandbox-request-tool req))
+         (cap (efrit-sandbox-request-cap req))
+         (target (efrit-sandbox-request-target req))
+         (detail (or (efrit-sandbox-request-detail req) "(none)"))
+         (what (pcase cap
+                 ('elisp "Form to evaluate")
+                 ('shell "Command")
+                 ('net "Request")
+                 ('buffer "Buffer")
+                 (_ "Detail")))
+         (header (format "%s wants to %s\nProject: %s%s\n\n%s:\n"
+                         (or tool "a tool") (efrit-sandbox-ui--scope-word req)
+                         (abbreviate-file-name (efrit-sandbox-project-root))
+                         (if (and (stringp target) (not (eq cap 'elisp)))
+                             (format "\nTarget:  %s" (abbreviate-file-name target))
+                           "")
+                         what))
+         (footer (concat "\n\nGrants in force:\n" (efrit-sandbox-ui--grants-text))))
+    (efrit-show-preview
+     efrit-sandbox-ui--details-buffer
+     (concat header detail footer)
+     'efrit-preview-mode)
+    ;; the form reads best fontified as Lisp; only the detail span
+    (when (eq cap 'elisp)
+      (with-current-buffer efrit-sandbox-ui--details-buffer
+        (let ((inhibit-read-only t)
+              (start (+ (point-min) (length header)))
+              (end (- (point-max) (length footer))))
+          (when (< start end)
+            (let ((text (buffer-substring-no-properties start end)))
+              (with-temp-buffer
+                (insert text)
+                (delay-mode-hooks (emacs-lisp-mode))
+                ;; font-lock is off in batch and in fresh temp buffers
+                ;; until enabled; `font-lock-ensure' alone then does nothing
+                (font-lock-mode 1)
+                (font-lock-ensure)
+                (let ((fontified (buffer-string)))
+                  (with-current-buffer efrit-sandbox-ui--details-buffer
+                    (let ((inhibit-read-only t))
+                      (delete-region start end)
+                      (goto-char start)
+                      (insert fontified))))))))))))
 
 (defun efrit-sandbox-ui--grants-text ()
   (let ((gs (efrit-sandbox-grants)))

@@ -458,3 +458,30 @@ Each test opts into a target buffer by binding the functions itself."
                               '(with-temp-buffer (insert "hi") (buffer-string))))))
           (kill-buffer buf)
           (delete-directory outside t))))))
+
+;;; Prompt detail
+
+(ert-deftest test-sb-eval-detail-is-the-form ()
+  "The elisp request's detail is the pretty-printed form, not a fixed phrase."
+  (test-sb--in-project
+    (defvar test-sb--req nil)
+    (let ((efrit-sandbox-request-function (lambda (req) (setq test-sb--req req) nil)))
+      (ignore-errors (efrit-sandbox-eval-form '(let ((x 1)) (message "hi %s" x))))
+      (should test-sb--req)
+      (should (eq (efrit-sandbox-request-cap test-sb--req) 'elisp))
+      (should (string-match-p "(message \"hi %s\" x)" (efrit-sandbox-request-detail test-sb--req))))
+    ;; a huge form is cut with a note
+    (let ((efrit-sandbox-eval-detail-max-chars 80)
+          (efrit-sandbox-request-function (lambda (req) (setq test-sb--req req) nil)))
+      (ignore-errors (efrit-sandbox-eval-form `(list ,@(number-sequence 1 200))))
+      (should (string-match-p "more chars" (efrit-sandbox-request-detail test-sb--req)))
+      (should (< (length (efrit-sandbox-request-detail test-sb--req)) 140)))))
+
+(ert-deftest test-sb-ui-detail-block-keeps-lines-and-caps ()
+  (require 'efrit-sandbox-ui)
+  (let* ((efrit-sandbox-ui-detail-lines 3)
+         (block (efrit-sandbox-ui--detail-block "l1\nl2\nl3\nl4\nl5")))
+    (should (string-match-p "^  l1\n  l2\n  l3" (substring-no-properties block)))
+    (should-not (string-match-p "l4" block))
+    (should (string-match-p "2 more lines" block))))
+

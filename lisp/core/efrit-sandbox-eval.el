@@ -56,6 +56,7 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'pp)
 (require 'efrit-sandbox)
 (require 'efrit-log)
 
@@ -283,6 +284,21 @@ current buffer is where eval already runs."
     (unless (advice-member-p #'efrit-sandbox-eval--guard-read-buffer fn)
       (advice-add fn :around #'efrit-sandbox-eval--guard-read-buffer))))
 
+(defcustom efrit-sandbox-eval-detail-max-chars 1200
+  "Longest form shown in the sandbox prompt; longer ones are cut with a note."
+  :type 'integer
+  :group 'efrit-sandbox)
+
+(defun efrit-sandbox-eval--describe-form (form)
+  "FORM pretty-printed for the sandbox prompt, cut to a readable size."
+  (let ((text (condition-case nil
+                  (string-trim-right (pp-to-string form))
+                (error (format "%S" form)))))
+    (if (> (length text) efrit-sandbox-eval-detail-max-chars)
+        (concat (substring text 0 efrit-sandbox-eval-detail-max-chars)
+                (format "\n… [%d more chars]" (- (length text) efrit-sandbox-eval-detail-max-chars)))
+      text)))
+
 (defun efrit-sandbox-eval-form (form &optional evaluator)
   "Evaluate FORM under the sandbox; return its value.
 Requires the `elisp' capability, refuses forms the static inspection
@@ -290,7 +306,9 @@ rejects (signalling `efrit-sandbox-denied' with a request whose
 detail explains), and runs FORM with the file-name handler and
 process advice active.  EVALUATOR, if given, is called with FORM
 instead of `eval' (the caller's timeout/input-blocking wrapper)."
-  (efrit-sandbox-check 'elisp t "eval_sexp" "evaluate Emacs Lisp")
+  ;; The detail is the form itself: that is what the user is deciding
+  ;; about.  Pretty-printed and capped so a huge form stays readable.
+  (efrit-sandbox-check 'elisp t "eval_sexp" (efrit-sandbox-eval--describe-form form))
   (when-let* ((why (efrit-sandbox-eval-inspect form)))
     (efrit-log 'warn "sandbox: refused eval form: %s" why)
     (signal 'efrit-sandbox-denied

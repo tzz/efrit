@@ -56,9 +56,12 @@ line.  Text properties mark it `user-message' with an id."
                 (cl-loop for l in lines for i from 0 collect (cons (zerop i) l))
                 "\n"))
          (formatted-text
-          (concat (propertize (concat body "\n") 'face 'efrit-agent-user-block
-                              'font-lock-face 'efrit-agent-user-block)
-                  "\n")))
+          ;; The block background is *added* under the prefix/message
+          ;; faces; `propertize' would replace them and the line lost
+          ;; its gold prompt and text colour.
+          (let ((block (concat body "\n")))
+            (add-face-text-property 0 (length block) 'efrit-agent-user-block t block)
+            (concat block "\n"))))
     (efrit-agent--append-to-conversation
      formatted-text
      (list 'efrit-type 'user-message

@@ -536,6 +536,18 @@ C-p still crosses into the transcript, C-c C-u kills the whole input."
           (should (efrit-agent--input-first-line-p)))
       (efrit-agent--clear-input))))
 
+(ert-deftest test-efrit-agent-user-turn-keeps-prefix-and-text-faces ()
+  "The user block background is layered under the prompt/text faces, not over them."
+  (efrit)
+  (with-current-buffer (efrit-agent--get-buffer)
+    (efrit-agent--add-user-message "check limits")
+    (goto-char (point-min)) (search-forward "check")
+    (let ((face (get-text-property (point) 'face)))
+      (should (memq 'efrit-agent-user-message (ensure-list face)))
+      (should (memq 'efrit-agent-user-block (ensure-list face))))
+    (goto-char (point-min)) (search-forward "❯")
+    (should (memq 'efrit-agent-user-prefix (ensure-list (get-text-property (1- (point)) 'face))))))
+
 (provide 'test-efrit-agent)
 
 ;;; test-efrit-agent.el ends here

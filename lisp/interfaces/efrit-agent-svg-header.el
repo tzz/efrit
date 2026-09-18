@@ -107,15 +107,21 @@ propertized string; `none' hides the header."
          (rgb (and (stringp name) (color-name-to-rgb name))))
     (if rgb (apply #'color-rgb-to-hex (append rgb '(2))) "#808080")))
 
+(defcustom efrit-agent-header-text-scale 1.0
+  "Multiplier on the header's text size relative to the buffer text.
+1.0 matches the default face; raise or lower it if the header looks
+out of proportion on your display."
+  :type 'number
+  :group 'efrit-agent-header)
+
 (defun efrit-agent-svg--font-size ()
-  "Pixel size of the default font, or the char height if unknown."
-  (or (when-let* (((display-graphic-p))
-                  (font (face-attribute 'default :font))
-                  ((fontp font))
-                  (size (font-get font :size))
-                  ((and (numberp size) (> size 0))))
-        size)
-      (frame-char-height)))
+  "Font size for the header SVG, in the units images are drawn in.
+Derived from `frame-char-height' only.  The font's own :size is not
+used: on HiDPI displays (macOS Retina) it reports physical pixels
+while char height and image placement are in logical points, which
+rendered the header at about 1.6x the body text.  A font's nominal
+size is close to 0.8 of its line height."
+  (max 8 (round (* 0.8 (frame-char-height) efrit-agent-header-text-scale))))
 
 (defun efrit-agent-svg--text-width (node)
   "Pixel width of text NODE: each tspan's text plus its dx gap."
