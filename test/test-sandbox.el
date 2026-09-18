@@ -325,3 +325,136 @@
     (should-not (efrit-permission-needed-p "eval_sexp")))
   (let ((efrit-sandbox-enabled nil) (efrit-permission-policy '(write exec)))
     (should (efrit-permission-needed-p "eval_sexp"))))
+
+;;; Buffer capability
+
+(defmacro test-sb--with-buffers (&rest body)
+  "Run BODY with sandbox predicates neutralised: no target, no agent buffer.
+Each test opts into a target buffer by binding the functions itself."
+  (declare (indent 0))
+  `(let ((efrit-sandbox-target-buffer-function nil)
+         (efrit-sandbox-agent-buffer-p-function nil))
+     ,@body))
+
+(defun test-sb--file-buffer (path content)
+  "A live buffer visiting PATH with CONTENT written to disk first."
+  (with-temp-file path (insert content))
+  (find-file-noselect path))
+
+(ert-deftest test-sb-buffer-target-keys ()
+  (test-sb--in-project
+    (let* ((in (expand-file-name "in.txt" root))
+           (buf (test-sb--file-buffer in "x")))
+      (unwind-protect
+          (should (equal (efrit-sandbox-buffer-target buf)
+                         (efrit-sandbox-canonical in)))
+        (kill-buffer buf)))
+    (let ((buf (get-buffer-create "*scratchy*")))
+      (unwind-protect
+          (should (equal (efrit-sandbox-buffer-target buf) '(buffer . "*scratchy*")))
+        (kill-buffer buf)))))
+
+(ert-deftest test-sb-buffer-in-project-allowed ()
+  (test-sb--in-project
+    (test-sb--with-buffers
+      (let* ((in (expand-file-name "in.txt" root))
+             (buf (test-sb--file-buffer in "x")))
+        (unwind-protect
+            (progn
+              (should (efrit-sandbox-buffer-allowed-p buf))
+              (should (efrit-sandbox-check-buffer buf "read_buffer")))
+          (kill-buffer buf))))))
+
+(ert-deftest test-sb-buffer-outside-denied-then-grantable ()
+  (test-sb--in-project
+    (test-sb--with-buffers
+      (let* ((outside (make-temp-file "efrit-sb-out-" t))
+             (path (expand-file-name "secret.txt" outside))
+             (buf (test-sb--file-buffer path "s")))
+        (unwind-protect
+            (progn
+              (should-not (efrit-sandbox-buffer-allowed-p buf))
+              ;; no prompt function -> denial that names the buffer cap
+              (condition-case err
+                  (progn (efrit-sandbox-check-buffer buf "read_buffer") (should nil))
+                (efrit-sandbox-denied
+                 (let ((req (cadr err)))
+                   (should (eq (efrit-sandbox-request-cap req) 'buffer))
+                   (should (equal (efrit-sandbox-request-target req)
+                                  (efrit-sandbox-canonical path))))))
+              ;; grant it for the session, then it passes
+              (efrit-sandbox-grant 'buffer (efrit-sandbox-canonical path) 'session)
+              (should (efrit-sandbox-buffer-allowed-p buf))
+              (should (efrit-sandbox-check-buffer buf "read_buffer")))
+          (kill-buffer buf)
+          (delete-directory outside t))))))
+
+(ert-deftest test-sb-buffer-target-and-agent-exempt ()
+  (test-sb--in-project
+    (let* ((outside (make-temp-file "efrit-sb-out-" t))
+           (path (expand-file-name "f.txt" outside))
+           (buf (test-sb--file-buffer path "s")))
+      (unwind-protect
+          (progn
+            ;; as the user's target buffer: allowed though outside
+            (let ((efrit-sandbox-target-buffer-function (lambda () buf))
+                  (efrit-sandbox-agent-buffer-p-function nil))
+              (should (efrit-sandbox-buffer-allowed-p buf)))
+            ;; as an efrit UI buffer: allowed
+            (let ((efrit-sandbox-target-buffer-function nil)
+                  (efrit-sandbox-agent-buffer-p-function (lambda (b) (eq b buf))))
+              (should (efrit-sandbox-buffer-allowed-p buf))))
+        (kill-buffer buf)
+        (delete-directory outside t)))))
+
+(ert-deftest test-sb-buffer-fileless-nontarget-needs-grant ()
+  (test-sb--in-project
+    (test-sb--with-buffers
+      (let ((buf (get-buffer-create "*Messages-like*")))
+        (unwind-protect
+            (progn
+              (should-not (efrit-sandbox-buffer-allowed-p buf))
+              (efrit-sandbox-grant 'buffer '(buffer . "*Messages-like*") 'session)
+              (should (efrit-sandbox-buffer-allowed-p buf)))
+          (kill-buffer buf))))))
+
+(ert-deftest test-sb-buffer-hidden-exempt ()
+  (test-sb--in-project
+    (test-sb--with-buffers
+      (let ((buf (get-buffer-create " *hidden*")))
+        (unwind-protect
+            (should (efrit-sandbox-buffer-allowed-p buf))
+          (kill-buffer buf))))))
+
+(ert-deftest test-sb-buffer-grant-persists-fileless ()
+  (test-sb--in-project
+    (efrit-sandbox-grant 'buffer '(buffer . "*keep*") 'project)
+    (should (file-exists-p (efrit-sandbox-store-file root)))
+    ;; reload from disk into a clean project table
+    (clrhash efrit-sandbox--project-grants)
+    (efrit-sandbox-store-forget root)
+    (efrit-sandbox-store-load root)
+    (let ((g (car (gethash root efrit-sandbox--project-grants))))
+      (should (eq (plist-get g :cap) 'buffer))
+      (should (equal (plist-get g :target) '(buffer . "*keep*"))))))
+
+(ert-deftest test-sb-eval-buffer-switch-outside-denied ()
+  (test-sb--in-project
+    (test-sb--with-buffers
+      (let* ((outside (make-temp-file "efrit-sb-out-" t))
+             (path (expand-file-name "secret.txt" outside))
+             (buf (test-sb--file-buffer path "TOPSECRET")))
+        (unwind-protect
+            (progn
+              ;; elisp granted; buffer read of an outside file is refused
+              (efrit-sandbox-grant 'elisp t 'session)
+              (should-error
+               (efrit-sandbox-eval-form
+                `(with-current-buffer ,(buffer-name buf) (buffer-string)))
+               :type 'efrit-sandbox-denied)
+              ;; a temp (fileless) buffer is fine
+              (should (equal "hi"
+                             (efrit-sandbox-eval-form
+                              '(with-temp-buffer (insert "hi") (buffer-string))))))
+          (kill-buffer buf)
+          (delete-directory outside t))))))

@@ -221,10 +221,51 @@ outside the sandbox fail before the real operation is even attempted.")
   (let ((efrit-sandbox-eval--in-guard t))
     (apply orig args)))
 
+;; Buffer guard.  A live buffer visiting a file outside the project
+;; exposes that file's contents through buffer operations that resolve
+;; no file name, so the file-name handler above never sees them.
+;; `set-buffer' is the chokepoint `with-current-buffer' and
+;; `save-current-buffer' expand to; the cross-buffer readers below take
+;; another buffer without switching.  Only file-visiting out-of-project
+;; buffers are checked: fileless buffers (`with-temp-buffer', output
+;; buffers) are the model's own scratch space and must pass freely, or
+;; every eval that formats output would prompt.
+(defun efrit-sandbox-eval--check-buffer (buffer-or-name op)
+  "Check BUFFER-OR-NAME for the `buffer' capability if it visits a file.
+OP names the operation for the prompt.  Fileless or missing buffers
+pass; efrit's buffer check applies the target/in-project exemptions."
+  (let ((buffer (and buffer-or-name (get-buffer buffer-or-name))))
+    (when (and buffer
+               (buffer-local-value 'buffer-file-name buffer)
+               (not (efrit-sandbox-buffer-allowed-p buffer)))
+      (efrit-sandbox-check-buffer buffer "eval_sexp" (format "%s" op)))))
+
+(defun efrit-sandbox-eval--guard-set-buffer (orig &rest args)
+  (when (and efrit-sandbox-eval--active (not efrit-sandbox-eval--in-guard))
+    (let ((efrit-sandbox-eval--in-guard t))
+      (efrit-sandbox-eval--check-buffer (car args) 'set-buffer)))
+  (apply orig args))
+
+(defun efrit-sandbox-eval--guard-read-buffer (orig &rest args)
+  "Guard readers whose *source* buffer is another buffer.
+For `insert-buffer'/`insert-buffer-substring*' the source is the first
+argument; for `replace-buffer-contents' too; `buffer-swap-text' swaps
+the current buffer with its argument, so both must be allowed, but the
+current buffer is where eval already runs."
+  (when (and efrit-sandbox-eval--active (not efrit-sandbox-eval--in-guard))
+    (let ((efrit-sandbox-eval--in-guard t))
+      (efrit-sandbox-eval--check-buffer (car args) 'read-buffer)))
+  (apply orig args))
+
 (defconst efrit-sandbox-eval--process-fns
   '(make-process call-process call-process-region start-process
     shell-command shell-command-to-string async-shell-command
     process-lines start-file-process process-file))
+
+(defconst efrit-sandbox-eval--read-buffer-fns
+  '(insert-buffer insert-buffer-substring insert-buffer-substring-no-properties
+    replace-buffer-contents buffer-swap-text)
+  "Readers/mutators that take another buffer without switching to it.")
 
 (defun efrit-sandbox-eval--install-advice ()
   (dolist (fn efrit-sandbox-eval--process-fns)
@@ -233,7 +274,12 @@ outside the sandbox fail before the real operation is even attempted.")
   (dolist (fn '(make-network-process open-network-stream url-retrieve
                 url-retrieve-synchronously))
     (unless (advice-member-p #'efrit-sandbox-eval--guard-network fn)
-      (advice-add fn :around #'efrit-sandbox-eval--guard-network))))
+      (advice-add fn :around #'efrit-sandbox-eval--guard-network)))
+  (unless (advice-member-p #'efrit-sandbox-eval--guard-set-buffer 'set-buffer)
+    (advice-add 'set-buffer :around #'efrit-sandbox-eval--guard-set-buffer))
+  (dolist (fn efrit-sandbox-eval--read-buffer-fns)
+    (unless (advice-member-p #'efrit-sandbox-eval--guard-read-buffer fn)
+      (advice-add fn :around #'efrit-sandbox-eval--guard-read-buffer))))
 
 (defun efrit-sandbox-eval-form (form &optional evaluator)
   "Evaluate FORM under the sandbox; return its value.

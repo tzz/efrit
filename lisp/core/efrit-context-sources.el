@@ -272,6 +272,18 @@ plain INPUT is what is shown in the conversation."
         (concat ctx "\n\n" input)
       input)))
 
+;;; Sandbox integration
+;;
+;; The sandbox exempts the user's target buffer and efrit's own UI
+;; buffers from the `buffer' capability check.  It cannot depend on
+;; this file (that would be a cycle), so it reads two injected
+;; functions; set them here, where both are defined.
+
+(with-eval-after-load 'efrit-sandbox
+  (setq efrit-sandbox-target-buffer-function #'efrit-context-target-buffer
+        efrit-sandbox-agent-buffer-p-function
+        (lambda (buf) (funcall efrit-context--agent-buffer-p-function buf))))
+
 (provide 'efrit-context-sources)
 
 ;;; efrit-context-sources.el ends here

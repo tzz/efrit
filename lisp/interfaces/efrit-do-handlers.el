@@ -1080,11 +1080,16 @@ TOOL-INPUT contains buffer name to get info about."
 TOOL-INPUT may name a BUFFER; otherwise the user's working buffer is
 used (see `efrit-context-target-buffer')."
   (require 'efrit-context-sources)
+  (require 'efrit-sandbox)
   (let* ((name (and (hash-table-p tool-input) (gethash "buffer" tool-input)))
          (buf (if (and name (not (string-empty-p name)))
                   (or (get-buffer name)
                       (error "No buffer named %s" name))
                 (efrit-context-target-buffer))))
+    ;; A named buffer may visit a file outside the project; the default
+    ;; target buffer is always allowed by the buffer rules.
+    (when (and name (not (string-empty-p name)))
+      (efrit-sandbox-check-buffer buf "editor_state"))
     (or (efrit-context-snapshot buf)
         "<editor-context>\n(no context sources enabled)\n</editor-context>")))
 

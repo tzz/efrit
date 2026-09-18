@@ -45,17 +45,39 @@
 
 ;;; Validation
 
+(defconst efrit-sandbox-store--buffer-target-prefix "buffer:"
+  "A JSON target string with this prefix is a fileless-buffer grant.
+The remainder is the buffer name; it deserializes to (buffer . NAME).
+Chosen because it cannot be confused with an absolute file path.")
+
+(defun efrit-sandbox-store--target-to-json (target)
+  "Serialize grant TARGET (t, a path, or (buffer . NAME)) for JSON."
+  (if (and (consp target) (eq (car target) 'buffer))
+      (concat efrit-sandbox-store--buffer-target-prefix (cdr target))
+    target))
+
+(defun efrit-sandbox-store--target-from-json (target)
+  "Deserialize a JSON TARGET back to t, a path, or (buffer . NAME)."
+  (if (and (stringp target)
+           (string-prefix-p efrit-sandbox-store--buffer-target-prefix target))
+      (cons 'buffer (substring target (length efrit-sandbox-store--buffer-target-prefix)))
+    target))
+
 (defun efrit-sandbox-store--valid-grant (g)
   "Return a grant plist for JSON object G (a hash table), or nil if invalid."
   (when (hash-table-p g)
     (let* ((cap (gethash "cap" g))
-           (target (gethash "target" g))
+           (raw-target (gethash "target" g))
            (scope (gethash "scope" g))
-           (cap-sym (and (stringp cap) (intern cap))))
-      (when (and (memq cap-sym '(read write elisp shell net))
+           (cap-sym (and (stringp cap) (intern cap)))
+           (target (efrit-sandbox-store--target-from-json raw-target)))
+      (when (and (memq cap-sym '(read write elisp shell net buffer))
                  (equal scope "project")
                  (or (eq target t)
-                     (and (stringp target) (file-name-absolute-p target))))
+                     (and (stringp target) (file-name-absolute-p target))
+                     ;; a fileless-buffer target
+                     (and (eq cap-sym 'buffer) (consp target)
+                          (stringp (cdr target)) (not (string-empty-p (cdr target))))))
         (list :cap cap-sym :target target :scope 'project)))))
 
 (defun efrit-sandbox-store--parse (file)
@@ -94,7 +116,8 @@ state on the user's explicit instruction, never a tool acting."
                   (grants . ,(vconcat
                               (mapcar (lambda (g)
                                         `((cap . ,(symbol-name (plist-get g :cap)))
-                                          (target . ,(plist-get g :target))
+                                          (target . ,(efrit-sandbox-store--target-to-json
+                                                      (plist-get g :target)))
                                           (scope . "project")))
                                       grants)))))))
     (make-directory (file-name-directory file) t)

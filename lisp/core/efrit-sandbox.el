@@ -17,10 +17,21 @@
 ;;   exec   elisp    evaluate Lisp (eval_sexp)
 ;;   exec   shell    run shell commands (one grant; see below)
 ;;   exec   net      fetch URLs / web search
+;;   buffer TARGET   touch a live buffer (read or edit its text)
 ;;
 ;; A PREFIX is a directory (or file) path.  It includes the Tramp
 ;; remote identity, so /ssh:host:/proj is a different scope from
 ;; /proj.  The project root gets `read' by default and nothing else.
+;;
+;; The `buffer' capability closes a hole the file checks cannot see: a
+;; live buffer already visiting a file outside the project exposes that
+;; file's contents through buffer operations (buffer-string, insert,
+;; save) that resolve no file name, so the file-name handler never
+;; fires.  Reading or editing such a buffer needs a `buffer' grant.
+;; The buffer the user works in, efrit's own UI buffers, and buffers
+;; visiting a file inside the project are allowed without asking (see
+;; `efrit-sandbox-buffer-allowed-p').  A grant's TARGET is the visited
+;; file's path when the buffer has one, else the cons (buffer . NAME).
 ;;
 ;; When a tool needs more than the current scope allows, it does not
 ;; run.  `efrit-sandbox-check' signals `efrit-sandbox-denied' carrying
@@ -62,10 +73,11 @@ nil restores the pre-0.5 prefix check only (efrit-project-sandbox)."
 
 (defcustom efrit-sandbox-default-project-grants '(read)
   "Capabilities granted on the project root without asking.
-A list drawn from `read', `write', `elisp', `shell', `net'.  The
-default lets the model read the project it was invoked in; anything
-else asks."
-  :type '(set (const read) (const write) (const elisp) (const shell) (const net))
+A list drawn from `read', `write', `elisp', `shell', `net', `buffer'.
+The default lets the model read the project it was invoked in;
+anything else asks."
+  :type '(set (const read) (const write) (const elisp) (const shell)
+              (const net) (const buffer))
   :group 'efrit-sandbox)
 
 (defcustom efrit-sandbox-always-deny
@@ -84,8 +96,9 @@ model-writable."
 ;;; Grant representation
 ;;
 ;; A grant is a plist (:cap CAP :target TARGET :scope SCOPE) where
-;;   CAP    ∈ read write elisp shell net
-;;   TARGET a canonical directory/file path for read/write, or t
+;;   CAP    ∈ read write elisp shell net buffer
+;;   TARGET a canonical directory/file path for read/write, or t;
+;;          for buffer, a canonical file path or the cons (buffer . NAME)
 ;;   SCOPE  ∈ once session project
 ;; Session and once grants live in memory; project grants are what
 ;; efrit-sandbox-store persists.  Lookup: a request (cap target) is satisfied by
@@ -109,6 +122,36 @@ model-writable."
 It must return a scope symbol (`once' `session' `project') to grant
 the request at that scope, or nil to deny.  efrit-sandbox-ui sets
 this to an interactive prompt; nil means every failure is a denial.")
+
+;;; Buffer identity (injected by efrit-context-sources to avoid a
+;;; dependency cycle; safe fallbacks when it is not loaded).
+
+(defvar efrit-sandbox-target-buffer-function nil
+  "Function of no args returning the buffer the user works in, or nil.
+Set from efrit-context-sources.  That buffer is allowed without a
+`buffer' grant.")
+
+(defvar efrit-sandbox-agent-buffer-p-function nil
+  "Predicate on a buffer: non-nil if it is one of efrit's own UI buffers.
+Set from efrit-context-sources.  efrit's buffers never need a grant.")
+
+(defun efrit-sandbox--own-buffer-p (buffer)
+  "Non-nil if BUFFER is efrit's own UI buffer, or a hidden/temp buffer.
+Hidden buffers (name starts with a space) are Emacs scratch space the
+model creates itself; they carry no user file, so they are exempt."
+  (or (string-prefix-p " " (buffer-name buffer))
+      (and efrit-sandbox-agent-buffer-p-function
+           (condition-case nil
+               (funcall efrit-sandbox-agent-buffer-p-function buffer)
+             (error nil)))))
+
+(defun efrit-sandbox-buffer-target (buffer)
+  "The grant target that identifies BUFFER.
+Its visited file's canonical path when it has one, else (buffer . NAME)."
+  (let ((file (buffer-local-value 'buffer-file-name buffer)))
+    (if (and (stringp file) (not (string-empty-p file)))
+        (efrit-sandbox-canonical file)
+      (cons 'buffer (buffer-name buffer)))))
 
 ;;; Canonical paths
 
@@ -155,6 +198,8 @@ trailing slash.  Remote identity is preserved."
   (and (eq (plist-get grant :cap) cap)
        (let ((gt (plist-get grant :target)))
          (or (eq gt t)
+             ;; a fileless-buffer target: (buffer . NAME), matched exactly
+             (and (consp target) (consp gt) (equal target gt))
              (and (stringp target) (stringp gt)
                   (efrit-sandbox--under-p target gt))))))
 
@@ -184,6 +229,28 @@ trailing slash.  Remote identity is preserved."
       t)
      (t nil))))
 
+(defun efrit-sandbox-buffer-allowed-p (buffer &optional root)
+  "Non-nil if efrit may touch BUFFER without a `buffer' grant.
+Allowed without asking: efrit's own and hidden buffers, the user's
+target buffer, and buffers visiting a file inside ROOT.  A buffer
+visiting a file outside ROOT, or a fileless non-target buffer, needs
+an explicit grant (checked by `efrit-sandbox-check-buffer')."
+  (let ((root (or root (efrit-sandbox-project-root))))
+    (or
+     (efrit-sandbox--own-buffer-p buffer)
+     ;; the buffer the user is working in
+     (and efrit-sandbox-target-buffer-function
+          (eq buffer (condition-case nil
+                         (funcall efrit-sandbox-target-buffer-function)
+                       (error nil))))
+     ;; a buffer visiting a file inside the project root
+     (let ((target (efrit-sandbox-buffer-target buffer)))
+       (and (stringp target)
+            (not (efrit-sandbox--always-denied-p target))
+            (efrit-sandbox--under-p target root)))
+     ;; an explicit buffer grant covering it
+     (efrit-sandbox-allowed-p 'buffer (efrit-sandbox-buffer-target buffer) root))))
+
 ;;; Granting
 
 (defun efrit-sandbox--suggest-target (cap target root)
@@ -193,7 +260,12 @@ alongside is covered) but never anything above the user's home for
 write."
   (cond
    ((memq cap '(elisp shell net)) t)
+   ;; a fileless buffer: grant exactly that buffer, never wider
+   ((and (eq cap 'buffer) (consp target)) target)
    ((not (stringp target)) t)
+   ;; a buffer grant on a file names that file, not its directory: the
+   ;; user allowed *this* out-of-project file, not everything beside it
+   ((eq cap 'buffer) target)
    ((efrit-sandbox--under-p target root) root)
    (t (let ((dir (if (directory-name-p target) target (file-name-directory target))))
         (if (and (eq cap 'write)
@@ -289,6 +361,35 @@ With `efrit-sandbox-enabled' nil this is a no-op that returns t."
               (efrit-publish 'sandbox-denied `((:cap . ,cap) (:target . ,ctarget) (:tool . ,tool))))
             (signal 'efrit-sandbox-denied (list req)))))))))
 
+(defun efrit-sandbox--target-label (target)
+  "A short human label for a grant TARGET (path or (buffer . NAME))."
+  (cond ((and (consp target) (eq (car target) 'buffer))
+         (format "buffer %s" (cdr target)))
+        ((stringp target) (abbreviate-file-name target))
+        (t (format "%s" target))))
+
+(defun efrit-sandbox-check-buffer (buffer &optional tool detail)
+  "Ensure efrit may touch BUFFER, asking for a `buffer' grant if not.
+Returns t when allowed.  Signals `efrit-sandbox-denied' when refused,
+exactly like `efrit-sandbox-check', so callers propagate it the same
+way.  A no-op returning t when `efrit-sandbox-enabled' is nil.
+
+The user's target buffer, efrit's own buffers, hidden buffers, and
+buffers visiting a file inside the project are allowed without asking."
+  (if (not efrit-sandbox-enabled)
+      t
+    (let ((buffer (get-buffer buffer)))
+      (cond
+       ((null buffer) t)                ; nothing to protect
+       ((efrit-sandbox-buffer-allowed-p buffer) t)
+       (t
+        (efrit-sandbox-check
+         'buffer (efrit-sandbox-buffer-target buffer)
+         (or tool "buffer")
+         (or detail
+             (format "the buffer %s visits a file outside the project"
+                     (buffer-name buffer)))))))))
+
 (defun efrit-sandbox-describe-request (req)
   "One-line human description of REQ for prompts and tool results."
   (let ((cap (efrit-sandbox-request-cap req))
@@ -299,6 +400,7 @@ With `efrit-sandbox-enabled' nil this is a no-op that returns t."
       ('elisp "evaluate Emacs Lisp")
       ('shell "run shell commands")
       ('net "access the network")
+      ('buffer (format "touch %s" (efrit-sandbox--target-label target)))
       (_ (format "%s %s" cap target)))))
 
 (defconst efrit-sandbox-denied-prefix "Error sandbox denied: "

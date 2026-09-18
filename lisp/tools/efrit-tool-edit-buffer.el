@@ -16,6 +16,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'efrit-sandbox)
 
 (declare-function efrit-log "efrit-log")
 
@@ -53,6 +54,12 @@ Returns a string describing what was created."
           (unless (stringp content)
             (error "Content must be a string, got %s" (type-of content))))
         
+        ;; An existing buffer of this name would be erased below; if it
+        ;; visits a file outside the project, that is a destructive
+        ;; touch and needs a grant.  A brand-new buffer needs none.
+        (when-let* ((existing (get-buffer name)))
+          (efrit-sandbox-check-buffer existing "create_buffer"))
+
         ;; Create buffer
         (let ((buffer (get-buffer-create name)))
           (with-current-buffer buffer
@@ -76,7 +83,7 @@ Returns a string describing what was created."
           ;; Return success message
           (format "Created buffer '%s' with %d characters"
                   name (length (or content "")))))
-    
+    (efrit-sandbox-denied (signal (car err) (cdr err)))
     (error
      (format "Error creating buffer: %s" (error-message-string err)))))
 
@@ -113,7 +120,8 @@ Returns a string describing the edit operation."
           (error "Text must be a string"))
         (unless buffer
           (error "Buffer %s not found" buffer-arg))
-        
+        (efrit-sandbox-check-buffer buffer "edit_buffer")
+
         ;; Edit the buffer
         (with-current-buffer buffer
           (let ((inhibit-read-only t))
@@ -142,7 +150,7 @@ Returns a string describing the edit operation."
                 (insert text)
                 (format "Inserted %d characters into buffer '%s' at position %s"
                         (length text) (buffer-name) position))))))
-    
+    (efrit-sandbox-denied (signal (car err) (cdr err)))
     (error
      (format "Error editing buffer: %s" (error-message-string err)))))
 
@@ -168,12 +176,13 @@ Returns the buffer contents as a string."
         
         (unless buffer
           (error "Buffer %s not found" buffer-arg))
-        
+        (efrit-sandbox-check-buffer buffer "read_buffer")
+
         (with-current-buffer buffer
           (let ((min (if (integerp start) start (point-min)))
                 (max (if (integerp end) end (point-max))))
             (buffer-substring-no-properties min max))))
-    
+    (efrit-sandbox-denied (signal (car err) (cdr err)))
     (error
      (format "Error reading buffer: %s" (error-message-string err)))))
 
@@ -195,7 +204,8 @@ Returns an alist with buffer properties."
         
         (unless buffer
           (error "Buffer %s not found" buffer-arg))
-        
+        (efrit-sandbox-check-buffer buffer "buffer_info")
+
         (with-current-buffer buffer
           `((name . ,(buffer-name))
             (file . ,buffer-file-name)
@@ -206,7 +216,7 @@ Returns an alist with buffer properties."
             (point . ,(point))
             (point-min . ,(point-min))
             (point-max . ,(point-max)))))
-    
+    (efrit-sandbox-denied (signal (car err) (cdr err)))
     (error
      (format "Error getting buffer info: %s" (error-message-string err)))))
 
