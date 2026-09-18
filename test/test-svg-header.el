@@ -46,7 +46,10 @@
       (should (string-match-p "<path" xml))
       ;; the arc marker precedes the status word, and the word is pushed
       ;; past the arc box (font-size + 6) so they never overlap
-      (should (string-match-p "efrit-spinner=\"([^\"]*Working)\"></tspan><tspan[^>]*dx=\"14\">Working" xml))
+      (should (string-match-p "efrit-spinner=\"([^\"]*Working)\"></tspan><tspan[^>]*dx=\"14\"[^>]*>Working" xml))
+      ;; every text run is pinned to the width Emacs measured, so the
+      ;; arc's computed x matches where librsvg puts the words
+      (should (string-match-p "textLength=\"[0-9]+\"[^>]*>Working" xml))
       (should-not (string-match-p "waiting for Claude" xml))
       ;; canvas never exceeds the window width (in batch the frame is
       ;; 80 "pixels" wide, so shrinking cannot be observed; on a real

@@ -213,6 +213,21 @@ The glyph is one token, then whitespace, in both display styles."
 
 ;;; Rendering
 
+(defun efrit-agent-svg--tspan (text fill dx &optional extra)
+  "A tspan for TEXT in FILL after a DX gap, with EXTRA attributes.
+`textLength' pins the run to the width Emacs measured with
+`string-pixel-width', so librsvg's layout agrees with the width walk
+in `efrit-agent-svg--place-spinners' whatever font it substitutes.
+Without it the arc landed under the following word on displays where
+the two disagreed."
+  (dom-node 'tspan
+            `((fill . ,fill)
+              (dx . ,(format "%s" dx))
+              (textLength . ,(format "%d" (max 1 (string-pixel-width text))))
+              (lengthAdjust . "spacingAndGlyphs")
+              ,@extra)
+            text))
+
 (defun efrit-agent-svg--row (x y font-size family segments)
   "Build a text NODE at X,Y from SEGMENTS, a list of (TEXT . FACE).
 Segments are separated by ➤ in the default foreground.  A segment
@@ -228,10 +243,7 @@ drawn afterwards by `efrit-agent-svg--place-spinners' and shows LABEL."
              (label (if spin (nth 3 spin) text)))
         (when (and label (not (string-empty-p label)))
           (unless first
-            (dom-append-child node (dom-node 'tspan
-                                             `((fill . ,(efrit-agent-svg--hex 'default))
-                                               (dx . "8"))
-                                             "➤")))
+            (dom-append-child node (efrit-agent-svg--tspan "➤" (efrit-agent-svg--hex 'default) 8)))
           (when spin
             ;; An empty tspan marking where the arc goes; the arc is a
             ;; font-size square whose LEFT edge is this tspan's x
@@ -241,10 +253,9 @@ drawn afterwards by `efrit-agent-svg--place-spinners' and shows LABEL."
                                              `((dx . ,(if first "0" "8"))
                                                (efrit-spinner . ,spin))
                                              "")))
-          (dom-append-child node (dom-node 'tspan
-                                           `((fill . ,(efrit-agent-svg--hex (cdr seg)))
-                                             (dx . ,(if spin (format "%d" (+ 6 font-size)) "8")))
-                                           label))
+          (dom-append-child node (efrit-agent-svg--tspan
+                                  label (efrit-agent-svg--hex (cdr seg))
+                                  (if spin (+ 6 font-size) 8)))
           (setq first nil))))
     node))
 
