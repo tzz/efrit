@@ -246,6 +246,30 @@ read back; reset removes the override."
         (test-perm--goto (lambda (id) (eq (plist-get id :var) 'efrit-permission-policy)))
         (should (string-match-p "write exec" (buffer-substring (line-beginning-position) (line-end-position))))))))
 
+(ert-deftest test-perm-markable-rows-are-visibly-different-and-ret-closes-menus ()
+  (test-perm--in-project
+    (efrit-sandbox-grant 'write root 'project)
+    (efrit-sandbox root)
+    (with-current-buffer efrit-permissions--buffer
+      (test-perm--goto (lambda (id) (eq (plist-get id :kind) 'grant)))
+      (should (string-prefix-p (concat " " efrit-permissions-markable-glyph)
+                               (buffer-substring (line-beginning-position) (line-end-position))))
+      (efrit-permissions-mark)
+      (test-perm--goto (lambda (id) (eq (plist-get id :kind) 'grant)))
+      (should (string-prefix-p (concat " " efrit-permissions-marked-glyph)
+                               (buffer-substring (line-beginning-position) (line-end-position))))
+      (test-perm--goto (lambda (id) (eq (plist-get id :kind) 'review)))
+      (should-not (string-match-p (regexp-quote efrit-permissions-markable-glyph)
+                                  (buffer-substring (line-beginning-position) (line-end-position))))
+      ;; every row menu binds RET to done
+      (when (efrit-permissions--define-menus)
+        (dolist (menu '(efrit-permissions-grant-menu efrit-permissions-default-menu
+                        efrit-permissions-review-menu efrit-permissions-limit-menu
+                        efrit-permissions-global-menu))
+          (let ((suffix (transient-get-suffix menu "RET")))
+            (should suffix)
+            (should (eq (plist-get (cdr suffix) :command) 'efrit-permissions-menu-done))))))))
+
 (ert-deftest test-perm-eval-cannot-reach-the-editor ()
   (require 'efrit-sandbox-eval)
   (should (efrit-sandbox-eval-inspect '(efrit-permissions-grant-to-project)))

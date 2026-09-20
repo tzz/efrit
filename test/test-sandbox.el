@@ -83,6 +83,54 @@
             (should (string-suffix-p "deep/" (efrit-sandbox-request-target test-sb--seen))))
         (delete-directory outside t)))))
 
+(ert-deftest test-sb-read-outside-in-a-git-tree-suggests-the-whole-tree ()
+  "A read inside another git checkout asks for that checkout's root once,
+not one subdirectory per request; a write still asks for the directory;
+a tree at $HOME is not widened."
+  (skip-unless (executable-find "git"))
+  (test-sb--in-project
+    (let* ((repo (file-name-as-directory (make-temp-file "efrit-sb-repo-" t)))
+           (deep (expand-file-name "lisp/core/" repo))
+           (seen nil)
+           (efrit-sandbox-request-function (lambda (req) (setq seen req) 'session)))
+      (unwind-protect
+          (progn
+            (make-directory deep t)
+            (let ((default-directory repo))
+              (should (eq 0 (call-process "git" nil nil nil "init" "-q"))))
+            (efrit-sandbox-forget-git-toplevels)
+            ;; the temp dir is under $HOME or /tmp; only widen when under home
+            (let ((under-home (efrit-sandbox--under-p (efrit-sandbox-canonical repo)
+                                                      (efrit-sandbox-canonical "~"))))
+              (should (efrit-sandbox-check 'read (expand-file-name "x.el" deep) "read_file"))
+              (should (equal (efrit-sandbox-request-target seen)
+                             (efrit-sandbox-canonical (if under-home repo deep))))
+              (when under-home
+                ;; one grant covers the whole tree now
+                (should (efrit-sandbox-allowed-p 'read (expand-file-name "docs/a.md" repo)))
+                (should (= 1 (length (efrit-sandbox-grants root))))))
+            ;; write asks for the directory only
+            (efrit-sandbox-check 'write (expand-file-name "y.el" deep) "edit_file")
+            (should (equal (efrit-sandbox-request-target seen) (efrit-sandbox-canonical deep))))
+        (delete-directory repo t)))))
+
+(ert-deftest test-sb-wider-grant-absorbs-narrower-ones ()
+  "Granting the parent removes the child grants of the same capability."
+  (test-sb--in-project
+    (let ((a (file-name-as-directory (expand-file-name "a" root)))
+          (b (file-name-as-directory (expand-file-name "a/b" root))))
+      (make-directory b t)
+      (efrit-sandbox-grant 'read b 'session)
+      (efrit-sandbox-grant 'write b 'session)
+      (efrit-sandbox-grant 'read a 'session)
+      (let ((gs (efrit-sandbox-grants root)))
+        (should (= 2 (length gs)))
+        (should (cl-find-if (lambda (g) (and (eq (plist-get g :cap) 'read)
+                                             (equal (plist-get g :target) (efrit-sandbox-canonical a))))
+                            gs))
+        ;; the write on b is untouched
+        (should (cl-find-if (lambda (g) (eq (plist-get g :cap) 'write)) gs))))))
+
 (ert-deftest test-sb-always-deny-cannot-be-granted ()
   (test-sb--in-project
     (let ((efrit-sandbox-request-function (lambda (_) 'project)))

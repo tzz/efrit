@@ -51,6 +51,8 @@
 (require 'efrit-repl-loop)
 (require 'efrit-do-circuit-breaker)
 
+(declare-function transient-quit-one "transient")
+
 (defgroup efrit-permissions-ui nil
   "The permissions editor."
   :group 'efrit-sandbox)
@@ -105,6 +107,14 @@
   "Grant ids marked for a bulk action.")
 
 (defconst efrit-permissions--buffer "*efrit-permissions*")
+
+(defconst efrit-permissions-markable-glyph "○"
+  "Shown in the mark column of a row that `m' can mark (a grant).
+Other rows leave the column blank, so what is markable is visible
+before pressing anything.")
+
+(defconst efrit-permissions-marked-glyph "●"
+  "Shown in the mark column of a marked grant.")
 
 (defun efrit-permissions--projects ()
   "Project roots to show: the focus first, then the registry, then any
@@ -164,7 +174,8 @@ root with session grants in memory."
       (let ((id (list :kind 'grant :root root :grant g)))
         (push (list id
                     (vector (if (member id efrit-permissions--marks)
-                                (propertize "*" 'face 'efrit-permissions-mark) "")
+                                (propertize efrit-permissions-marked-glyph 'face 'efrit-permissions-mark)
+                              (propertize efrit-permissions-markable-glyph 'face 'efrit-permissions-default))
                             (format "  %s" (plist-get g :cap))
                             (propertize (efrit-permissions--grant-target-string g)
                                         'face (if (efrit-permissions--wide-p g)
@@ -258,7 +269,7 @@ root with session grants in memory."
 
 (define-derived-mode efrit-permissions-mode tabulated-list-mode "Efrit-Permissions"
   "Editor for efrit's grants and policy.  \\{efrit-permissions-mode-map}"
-  (setq tabulated-list-format [("" 1 nil) ("What" 22 nil) ("Value" 44 nil) ("Scope" 8 nil) ("" 0 nil)])
+  (setq tabulated-list-format [("" 2 nil) ("What" 22 nil) ("Value" 44 nil) ("Scope" 8 nil) ("" 0 nil)])
   (setq tabulated-list-padding 1)
   (tabulated-list-init-header))
 
@@ -335,7 +346,7 @@ The same editor as `efrit-permissions', limited to one project."
   "Mark the grant at point and move down."
   (interactive)
   (let ((id (efrit-permissions--id)))
-    (unless (eq (plist-get id :kind) 'grant) (user-error "Only grants can be marked"))
+    (unless (eq (plist-get id :kind) 'grant) (user-error "Only grants (rows with %s) can be marked" efrit-permissions-markable-glyph))
     (cl-pushnew id efrit-permissions--marks :test #'equal)
     (efrit-permissions-refresh)
     (forward-line 1)))
@@ -372,7 +383,7 @@ The same editor as `efrit-permissions', limited to one project."
 (defun efrit-permissions-revoke-marked ()
   "Revoke every marked grant."
   (interactive)
-  (unless efrit-permissions--marks (user-error "Nothing marked (m marks a grant)"))
+  (unless efrit-permissions--marks (user-error "Nothing marked (m marks a grant; rows with %s can be marked)" efrit-permissions-markable-glyph))
   (when (yes-or-no-p (format "Revoke %d marked grant%s? " (length efrit-permissions--marks)
                              (if (cdr efrit-permissions--marks) "s" "")))
     (mapc #'efrit-permissions--revoke-id efrit-permissions--marks)
@@ -603,6 +614,11 @@ The same editor as `efrit-permissions', limited to one project."
 
 ;; the menus
 
+(defun efrit-permissions-menu-done ()
+  "Close the row menu.  The changes were applied as they were made."
+  (interactive)
+  (transient-quit-one))
+
 (defun efrit-permissions--define-menus ()
   "Define the per-row transient prefixes once.  Return non-nil when transient is available."
   (when (require 'transient nil t)
@@ -619,7 +635,8 @@ The same editor as `efrit-permissions', limited to one project."
               ("w" "widen (parent dir / any command)" efrit-permissions-grant-widen)
               ("n" "narrow (subdir / command list)" efrit-permissions-grant-narrow)]
              ["Remove"
-              ("d" "revoke" efrit-permissions-grant-revoke)]])
+              ("d" "revoke" efrit-permissions-grant-revoke)]
+             ["" ("RET" "done" efrit-permissions-menu-done)]])
           (transient-define-prefix efrit-permissions-default-menu ()
             "Edit the project's default grants."
             [:description efrit-permissions--menu-heading
@@ -637,7 +654,8 @@ The same editor as `efrit-permissions', limited to one project."
               ("b" (lambda () (interactive) (efrit-permissions-default-toggle 'buffer))
                :description (efrit-permissions--default-label 'buffer) :transient t)]
              ["Override"
-              ("x" "use the global default again" efrit-permissions-default-reset)]])
+              ("x" "use the global default again" efrit-permissions-default-reset)]
+             ["" ("RET" "done" efrit-permissions-menu-done)]])
           (transient-define-prefix efrit-permissions-review-menu ()
             "Edit the project's review policy."
             [:description efrit-permissions--menu-heading
@@ -654,7 +672,8 @@ The same editor as `efrit-permissions', limited to one project."
               ("r" (lambda () (interactive) (efrit-permissions-review-toggle-class 'read))
                :description (efrit-permissions--review-class-label 'read) :transient t)]
              ["Override"
-              ("x" "use the global settings again" efrit-permissions-review-reset)]])
+              ("x" "use the global settings again" efrit-permissions-review-reset)]
+             ["" ("RET" "done" efrit-permissions-menu-done)]])
           (transient-define-prefix efrit-permissions-limit-menu ()
             "Edit a loop limit."
             [:description efrit-permissions--menu-heading
@@ -662,14 +681,16 @@ The same editor as `efrit-permissions', limited to one project."
               ("p" "for the project (saved)" efrit-permissions-limit-set-project)
               ("s" "for this session" efrit-permissions-limit-set-session)]
              ["Override"
-              ("x" "use the global default again" efrit-permissions-limit-reset)]])
+              ("x" "use the global default again" efrit-permissions-limit-reset)]
+             ["" ("RET" "done" efrit-permissions-menu-done)]])
           (transient-define-prefix efrit-permissions-global-menu ()
             "Edit a global variable."
             [:description efrit-permissions--menu-heading
              ["Value"
               ("t" "toggle (booleans)" efrit-permissions-global-toggle)
               ("c" "customize" efrit-permissions-global-customize)
-              ("S" "save current value" efrit-permissions-global-save)]]))
+              ("S" "save current value" efrit-permissions-global-save)]
+             ["" ("RET" "done" efrit-permissions-menu-done)]]))
        t))
     (fboundp 'efrit-permissions-grant-menu)))
 

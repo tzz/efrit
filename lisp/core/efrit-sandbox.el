@@ -470,12 +470,52 @@ write."
    ;; user allowed *this* out-of-project file, not everything beside it
    ((eq cap 'buffer) target)
    ((efrit-sandbox--under-p target root) root)
-   (t (let ((dir (if (directory-name-p target) target (file-name-directory target))))
-        (if (and (eq cap 'write)
-                 (let ((home (efrit-sandbox-canonical "~")))
-                   (or (string= dir home) (string= dir "/"))))
-            target                       ; a lone file in $HOME or /: just that file
-          dir)))))
+   (t (let* ((dir (if (directory-name-p target) target (file-name-directory target)))
+             (home (efrit-sandbox-canonical "~")))
+        (cond
+         ;; a lone file in $HOME or /: just that file
+         ((and (eq cap 'write) (or (string= dir home) (string= dir "/"))) target)
+         ;; a read inside a git work tree: the whole tree.  Reading one
+         ;; directory of a checkout is never what the user meant, and
+         ;; asking again for each subdirectory trained them to say yes
+         ;; without looking.  Never above $HOME, never for write.
+         ((eq cap 'read)
+          (let ((top (efrit-sandbox--git-toplevel dir)))
+            (if (and top (not (string= top home)) (not (string= top "/"))
+                     (efrit-sandbox--under-p top home))
+                top
+              dir)))
+         (t dir))))))
+
+(defvar efrit-sandbox--git-toplevel-cache (make-hash-table :test 'equal)
+  "Directory -> its git top-level (or `none'), for `efrit-sandbox--git-toplevel'.")
+
+(defun efrit-sandbox--git-toplevel (dir)
+  "The canonical git work-tree root containing DIR, or nil.
+Cached per directory; a repository created after the first lookup is
+seen after `efrit-sandbox-forget-git-toplevels'."
+  (let ((cached (gethash dir efrit-sandbox--git-toplevel-cache)))
+    (cond
+     ((eq cached 'none) nil)
+     (cached cached)
+     (t
+      (let* ((default-directory dir)
+             (top (and (file-directory-p dir)
+                       (efrit-tool-executable-find "git" dir)
+                       (with-temp-buffer
+                         (when (eq 0 (ignore-errors
+                                       (efrit-tool-call-process "git" nil t nil
+                                                                "rev-parse" "--show-toplevel")))
+                           (let ((out (string-trim (buffer-string))))
+                             (and (not (string-empty-p out))
+                                  (efrit-sandbox-canonical
+                                   (concat (file-remote-p dir) out)))))))))
+        (puthash dir (or top 'none) efrit-sandbox--git-toplevel-cache)
+        top)))))
+
+(defun efrit-sandbox-forget-git-toplevels ()
+  "Drop the git top-level cache."
+  (clrhash efrit-sandbox--git-toplevel-cache))
 
 (defun efrit-sandbox-grant (cap target scope &optional root)
   "Record a grant of CAP on TARGET at SCOPE for ROOT.
@@ -485,9 +525,11 @@ persisted via `efrit-sandbox-store-save'."
          (grant (list :cap cap :target target :scope scope)))
     (pcase scope
       ('once (setq efrit-sandbox--once-grant grant))
-      ('session (push grant (gethash root efrit-sandbox--session-grants)))
+      ('session (puthash root (efrit-sandbox--absorb grant (gethash root efrit-sandbox--session-grants))
+                         efrit-sandbox--session-grants))
       ('project
-       (push grant (gethash root efrit-sandbox--project-grants))
+       (puthash root (efrit-sandbox--absorb grant (gethash root efrit-sandbox--project-grants))
+                efrit-sandbox--project-grants)
        (efrit-sandbox-store-save root))
       (_ (error "Unknown grant scope %S" scope)))
     (efrit-log 'info "sandbox: granted %s %s (%s) for %s" cap target scope root)
@@ -495,6 +537,19 @@ persisted via `efrit-sandbox-store-save'."
       (efrit-publish 'sandbox-grant `((:cap . ,cap) (:target . ,target)
                                       (:scope . ,scope) (:root . ,root))))
     grant))
+
+(defun efrit-sandbox--absorb (grant grants)
+  "GRANTS with GRANT added, minus the path grants GRANT now covers.
+A read on the repository root makes the earlier read on lisp/ redundant;
+keeping both only clutters the editor.  Only same-capability path
+prefixes are absorbed; shell lists, buffers and t are left alone."
+  (let ((cap (plist-get grant :cap)) (tg (plist-get grant :target)))
+    (cons grant
+          (cl-remove-if (lambda (g)
+                          (and (eq (plist-get g :cap) cap)
+                               (stringp tg) (stringp (plist-get g :target))
+                               (efrit-sandbox--under-p (plist-get g :target) tg)))
+                        grants))))
 
 (defun efrit-sandbox-revoke (cap target &optional root)
   "Remove every session and project grant matching CAP and TARGET for ROOT."
