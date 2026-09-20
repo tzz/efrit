@@ -105,6 +105,40 @@ old menu with its old keys."
       (put sym 'transient--layout nil))
     syms))
 
+(defun efrit-reload-global-minor-modes ()
+  "The efrit global minor modes, as (SYMBOL . ON-P) before a reload.
+A `define-minor-mode' with :global t re-runs its variable's
+`defcustom' on load; its :set function turns the mode off when the
+standard value is nil, dropping the advice the mode installed.  The
+reloader turns the ones that were on back on."
+  (let ((out nil))
+    (mapatoms (lambda (sym)
+                (when (and (fboundp sym) (boundp sym)
+                           (string-prefix-p efrit-reload--feature-prefix (symbol-name sym))
+                           (string-suffix-p "-mode" (symbol-name sym))
+                           (get sym 'globalized-minor-mode)
+                           nil)
+                  (push (cons sym (symbol-value sym)) out))
+                (when (and (fboundp sym) (boundp sym)
+                           (string-prefix-p efrit-reload--feature-prefix (symbol-name sym))
+                           (string-suffix-p "-mode" (symbol-name sym))
+                           (eq (get sym 'custom-type) 'boolean)
+                           (get sym 'standard-value)
+                           (not (local-variable-if-set-p sym)))
+                  (push (cons sym (symbol-value sym)) out))))
+    out))
+
+(defun efrit-reload--restore-global-minor-modes (before)
+  "Turn back on the global minor modes in BEFORE that were on.  Returns them."
+  (let ((restored nil))
+    (dolist (m before)
+      (when (and (cdr m) (fboundp (car m)))
+        (condition-case err
+            (progn (funcall (car m) 1) (push (car m) restored))
+          (error (efrit-log 'warn "reload: could not re-enable %s: %s"
+                            (car m) (error-message-string err))))))
+    restored))
+
 (defun efrit-reload--unbind-keymaps ()
   "Make every efrit keymap variable void so its defvar runs on reload.
 Returns the symbols, for `efrit-reload--rebind-keymaps'."
@@ -229,6 +263,7 @@ re-run either)."
     ;; Let keymap defvars re-run (see Commentary)
     (let ((maps (efrit-reload--unbind-keymaps))
           (defaults (efrit-reload-option-defaults))
+          (modes (efrit-reload-global-minor-modes))
           (reset nil))
       (efrit-reload--unbind-transient-prefixes)
       (unwind-protect
@@ -243,7 +278,8 @@ re-run either)."
                   (error
                    (push (cons feature (error-message-string err)) failed))))))
         (efrit-reload--rebind-keymaps maps)
-        (setq reset (efrit-reload--refresh-changed-defaults defaults)))
+        (setq reset (efrit-reload--refresh-changed-defaults defaults))
+        (efrit-reload--restore-global-minor-modes modes))
       (efrit-reload--report loaded failed reset start))))
 
 (defun efrit-reload--report (loaded failed reset start)

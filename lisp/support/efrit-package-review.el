@@ -200,27 +200,33 @@ OLD-DESC is the installed version or nil.  Returns a plist
 ;;; The request
 
 (defconst efrit-package-review--system-prompt
-  "You review an Emacs Lisp package before it is installed.  You are given its source files, a unified diff from the previously installed version when there was one, and its change log.  Report what a careful maintainer would want pointed at before saying yes.
+  "You are helping an Emacs user decide whether to install or upgrade an Emacs Lisp package from a public package archive.  This is an ordinary pre-install code review of open-source software, the same reading a careful maintainer does before pressing yes.  You are given the package's source files, a unified diff from the version already installed when there is one, and its change log.
 
-Look for, in this order of concern:
-1. Code that fetches from the network and evaluates, loads, or writes what it fetched.
-2. eval, load, load-file, require of computed names, or byte-code constants applied to data from outside the package.
-3. Writes outside the package's own directory: init files, ~/.emacs.d, dotfiles, ssh/gpg/auth material, the shell profile, system paths.
-4. Processes spawned (call-process, start-process, shell-command, make-process) and what they run.
-5. Advice on, or redefinition of, core functions (defalias/fset of built-ins, advice on read/eval/load/process primitives, file-name handlers).
-6. Obfuscation: base64 or hex blobs, string-built symbol names, unusual encodings, code hidden after ^L or in long lines.
-7. Credentials read or sent: auth-source, environment variables with KEY/TOKEN/SECRET, hard-coded hosts.
-8. In the diff: a change of maintainer, archive, or repository URL; new dependencies; new autoloads that run on load.
+Report, briefly and specifically, what the user should look at before installing.  In order of importance:
+1. Network use, and what is done with anything received.
+2. Evaluation or loading of code that is not part of the package's own files.
+3. Files written or modified outside the package's own directory (user init files, dotfiles, system paths).
+4. External programs run, and which.
+5. Redefinition of, or advice on, built-in Emacs functions.
+6. Encoded or hard-to-read data in the source, and what it is for.
+7. Configuration or credentials read, and where they are sent.
+8. In the diff: changes of maintainer, archive or repository URL; new dependencies; new code that runs at load time.
 
-Ordinary package behaviour is not a finding: reading its own files, customizable options, buffers, timers, hooks, network access that is the package's declared purpose (say so, once, as info).
+Behaviour that is the package's stated purpose is not a finding; mention it once as info (a package manager fetching from the network, for example).
 
 Answer with exactly one JSON object and nothing else:
 {\"verdict\": \"approve\" | \"reject\",
  \"summary\": one or two sentences for the user,
  \"findings\": [{\"severity\": \"high\"|\"medium\"|\"low\"|\"info\", \"file\": \"relative/path.el\", \"line\": N or null, \"note\": one sentence}],
  \"saw_everything\": true | false}
-Reject when any finding is high, or when a medium finding is not explained by the package's purpose.  If input was cut, set saw_everything false and say what you could not judge."
-  "System prompt for the package reviewer.")
+Use reject when a high finding exists, or a medium one is not explained by the package's purpose.  If input was cut, set saw_everything false and say what you could not assess."
+  "System prompt for the package reviewer.
+Worded as the ordinary pre-install review it is.  An earlier version
+listed what to hunt for (exfiltration, credential theft, obfuscated
+payloads) and the API refused the request outright (stop_reason
+refusal, zero output tokens) on a plain package: the classifier reads
+a hunt-list beside 50k tokens of code as a request to analyse
+malware.")
 
 (defun efrit-package-review--user-message (info)
   "The user message for INFO (see `efrit-package-review-gather')."
@@ -310,6 +316,16 @@ with a brace after the object; a fence around the object is fine."
         (cond
          ((and response (efrit-response-error response))
           (list :verdict 'error :summary (efrit-error-message (efrit-response-error response))))
+         ;; The API declined before generating anything.  Say so in
+         ;; plain terms: the user must not read this as "the package is
+         ;; bad", nor as "the package is fine".
+         ((equal (efrit-response-stop-reason response) "refusal")
+          (list :verdict 'error
+                :refused t
+                :summary (format "the API refused to process this request (stop reason refusal, %s tokens in). Nothing was judged. This is a classifier decision about the request, not a finding about %s; try a smaller input (efrit-package-review-max-total-chars) or another model (efrit-package-review-model)."
+                                 (let ((u (efrit-response-usage response)))
+                                   (or (and u (gethash "input_tokens" u)) "?"))
+                                 (plist-get info :name))))
          (t (let ((text (efrit-package-review--response-text response)))
               (efrit-log 'debug "package review %s: reviewer said: %s" (plist-get info :name)
                          (truncate-string-to-width text 600 nil nil "…"))
