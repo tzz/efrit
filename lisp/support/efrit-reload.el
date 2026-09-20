@@ -82,6 +82,29 @@ a fix to the reloader takes effect in the same invocation.")
                   (push sym out))))
     out))
 
+(defun efrit-reload-transient-prefixes ()
+  "The efrit transient prefix commands defined so far.
+They are defined lazily behind an `fboundp' guard (the sandbox prompt,
+the limits menu, the editor's row menus), so a plain reload keeps the
+old menu with its old keys."
+  (let ((out nil))
+    (when (featurep 'transient)
+      (mapatoms (lambda (sym)
+                  (when (and (fboundp sym)
+                             (string-prefix-p efrit-reload--feature-prefix (symbol-name sym))
+                             (get sym 'transient--prefix))
+                    (push sym out)))))
+    out))
+
+(defun efrit-reload--unbind-transient-prefixes ()
+  "Make every efrit transient prefix void so its lazy definition runs again."
+  (let ((syms (efrit-reload-transient-prefixes)))
+    (dolist (sym syms)
+      (fmakunbound sym)
+      (put sym 'transient--prefix nil)
+      (put sym 'transient--layout nil))
+    syms))
+
 (defun efrit-reload--unbind-keymaps ()
   "Make every efrit keymap variable void so its defvar runs on reload.
 Returns the symbols, for `efrit-reload--rebind-keymaps'."
@@ -207,6 +230,7 @@ re-run either)."
     (let ((maps (efrit-reload--unbind-keymaps))
           (defaults (efrit-reload-option-defaults))
           (reset nil))
+      (efrit-reload--unbind-transient-prefixes)
       (unwind-protect
           (dolist (feature (efrit-reload-features))
             (let ((file (efrit-reload--library-file feature)))

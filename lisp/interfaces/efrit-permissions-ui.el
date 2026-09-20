@@ -527,10 +527,10 @@ The same editor as `efrit-permissions', limited to one project."
   (efrit-permissions--after-edit))
 
 (defun efrit-permissions--default-label (cap)
-  (lambda ()
-    (format "%s %s" (if (memq cap (efrit-sandbox-effective-default-grants (efrit-permissions--row-root)))
-                        "[x]" "[ ]")
-            cap)))
+  "Checkbox label for CAP in the default-grants menu."
+  (format "%s %s" (if (memq cap (efrit-sandbox-effective-default-grants (efrit-permissions--row-root)))
+                      "[x]" "[ ]")
+          cap))
 
 ;; review actions
 
@@ -556,10 +556,10 @@ The same editor as `efrit-permissions', limited to one project."
   (efrit-permissions--after-edit))
 
 (defun efrit-permissions--review-class-label (class)
-  (lambda ()
-    (format "%s %s" (if (memq class (efrit-review-effective-classes (efrit-permissions--row-root)))
-                        "[x]" "[ ]")
-            class)))
+  "Checkbox label for CLASS in the review menu."
+  (format "%s %s" (if (memq class (efrit-review-effective-classes (efrit-permissions--row-root)))
+                      "[x]" "[ ]")
+          class))
 
 (defun efrit-permissions--review-toggle-label ()
   (if (efrit-review-enabled-p (efrit-permissions--row-root)) "turn review off here" "turn review on here"))
@@ -619,12 +619,8 @@ The same editor as `efrit-permissions', limited to one project."
   (interactive)
   (transient-quit-one))
 
-(defun efrit-permissions--define-menus ()
-  "Define the per-row transient prefixes once.  Return non-nil when transient is available."
-  (when (require 'transient nil t)
-    (unless (fboundp 'efrit-permissions-grant-menu)
-      (eval
-       '(progn
+(defconst efrit-permissions--menu-definitions
+  '(progn
           (transient-define-prefix efrit-permissions-grant-menu ()
             "Edit a grant."
             [:description efrit-permissions--menu-heading
@@ -636,26 +632,26 @@ The same editor as `efrit-permissions', limited to one project."
               ("n" "narrow (subdir / command list)" efrit-permissions-grant-narrow)]
              ["Remove"
               ("d" "revoke" efrit-permissions-grant-revoke)]
-             ["" ("RET" "done" efrit-permissions-menu-done)]])
+             [("RET" "done" efrit-permissions-menu-done)]])
           (transient-define-prefix efrit-permissions-default-menu ()
             "Edit the project's default grants."
             [:description efrit-permissions--menu-heading
              ["Granted on the project root without asking"
               ("r" (lambda () (interactive) (efrit-permissions-default-toggle 'read))
-               :description (efrit-permissions--default-label 'read) :transient t)
+               :description (lambda () (efrit-permissions--default-label 'read)) :transient t)
               ("w" (lambda () (interactive) (efrit-permissions-default-toggle 'write))
-               :description (efrit-permissions--default-label 'write) :transient t)
+               :description (lambda () (efrit-permissions--default-label 'write)) :transient t)
               ("e" (lambda () (interactive) (efrit-permissions-default-toggle 'elisp))
-               :description (efrit-permissions--default-label 'elisp) :transient t)
+               :description (lambda () (efrit-permissions--default-label 'elisp)) :transient t)
               ("s" (lambda () (interactive) (efrit-permissions-default-toggle 'shell))
-               :description (efrit-permissions--default-label 'shell) :transient t)
+               :description (lambda () (efrit-permissions--default-label 'shell)) :transient t)
               ("n" (lambda () (interactive) (efrit-permissions-default-toggle 'net))
-               :description (efrit-permissions--default-label 'net) :transient t)
+               :description (lambda () (efrit-permissions--default-label 'net)) :transient t)
               ("b" (lambda () (interactive) (efrit-permissions-default-toggle 'buffer))
-               :description (efrit-permissions--default-label 'buffer) :transient t)]
+               :description (lambda () (efrit-permissions--default-label 'buffer)) :transient t)]
              ["Override"
               ("x" "use the global default again" efrit-permissions-default-reset)]
-             ["" ("RET" "done" efrit-permissions-menu-done)]])
+             [("RET" "done" efrit-permissions-menu-done)]])
           (transient-define-prefix efrit-permissions-review-menu ()
             "Edit the project's review policy."
             [:description efrit-permissions--menu-heading
@@ -664,16 +660,16 @@ The same editor as `efrit-permissions', limited to one project."
                :transient t)]
              ["Classes reviewed"
               ("w" (lambda () (interactive) (efrit-permissions-review-toggle-class 'write))
-               :description (efrit-permissions--review-class-label 'write) :transient t)
+               :description (lambda () (efrit-permissions--review-class-label 'write)) :transient t)
               ("e" (lambda () (interactive) (efrit-permissions-review-toggle-class 'exec))
-               :description (efrit-permissions--review-class-label 'exec) :transient t)
+               :description (lambda () (efrit-permissions--review-class-label 'exec)) :transient t)
               ("n" (lambda () (interactive) (efrit-permissions-review-toggle-class 'net))
-               :description (efrit-permissions--review-class-label 'net) :transient t)
+               :description (lambda () (efrit-permissions--review-class-label 'net)) :transient t)
               ("r" (lambda () (interactive) (efrit-permissions-review-toggle-class 'read))
-               :description (efrit-permissions--review-class-label 'read) :transient t)]
+               :description (lambda () (efrit-permissions--review-class-label 'read)) :transient t)]
              ["Override"
               ("x" "use the global settings again" efrit-permissions-review-reset)]
-             ["" ("RET" "done" efrit-permissions-menu-done)]])
+             [("RET" "done" efrit-permissions-menu-done)]])
           (transient-define-prefix efrit-permissions-limit-menu ()
             "Edit a loop limit."
             [:description efrit-permissions--menu-heading
@@ -682,7 +678,7 @@ The same editor as `efrit-permissions', limited to one project."
               ("s" "for this session" efrit-permissions-limit-set-session)]
              ["Override"
               ("x" "use the global default again" efrit-permissions-limit-reset)]
-             ["" ("RET" "done" efrit-permissions-menu-done)]])
+             [("RET" "done" efrit-permissions-menu-done)]])
           (transient-define-prefix efrit-permissions-global-menu ()
             "Edit a global variable."
             [:description efrit-permissions--menu-heading
@@ -690,9 +686,19 @@ The same editor as `efrit-permissions', limited to one project."
               ("t" "toggle (booleans)" efrit-permissions-global-toggle)
               ("c" "customize" efrit-permissions-global-customize)
               ("S" "save current value" efrit-permissions-global-save)]
-             ["" ("RET" "done" efrit-permissions-menu-done)]]))
-       t))
-    (fboundp 'efrit-permissions-grant-menu)))
+             [("RET" "done" efrit-permissions-menu-done)]]))
+  "The per-row transient prefixes, kept as data so a reload redefines
+them (a definition guarded by `fboundp' survived `efrit-reload' with
+stale keys).  Evaluated at load when transient is available.")
+
+(defun efrit-permissions--define-menus ()
+  "Define the per-row transient prefixes.  Return non-nil when transient is available."
+  (when (require 'transient nil t)
+    (eval efrit-permissions--menu-definitions t)
+    t))
+
+(when (require 'transient nil t)
+  (eval efrit-permissions--menu-definitions t))
 
 (defun efrit-permissions-edit ()
   "Open the edit menu for the row at point."

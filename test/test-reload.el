@@ -136,5 +136,19 @@ Emacs only after a restart."
       (setq features (delq 'efrit-reload-probe-opt features))
       (delete-directory dir t))))
 
+(ert-deftest test-reload-redefines-lazy-transient-menus ()
+  "A transient prefix defined behind an fboundp guard is void after the
+unbind step, so the guard re-fires and the new keys appear."
+  (skip-unless (require 'transient nil t))
+  (require 'efrit-permissions-ui)
+  (should (fboundp 'efrit-permissions-grant-menu))
+  (should (memq 'efrit-permissions-grant-menu (efrit-reload-transient-prefixes)))
+  (efrit-reload--unbind-transient-prefixes)
+  (should-not (fboundp 'efrit-permissions-grant-menu))
+  ;; the reload brings it back, with RET bound
+  (efrit-reload)
+  (should (fboundp 'efrit-permissions-grant-menu))
+  (should (transient-get-suffix 'efrit-permissions-grant-menu "RET")))
+
 (provide 'test-reload)
 ;;; test-reload.el ends here
