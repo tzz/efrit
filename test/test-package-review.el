@@ -78,10 +78,26 @@ recording each request's messages in `test-pr--requests'."
             (should-not (string-match-p (regexp-quote root) (plist-get info :diff))))
           (let ((msg (efrit-package-review--user-message info)))
             (should (string-match-p "upgrading from 1.0" msg))
+            ;; maintainers is a string; never a run of char codes
+            (should-not (string-match-p "Maintainers: [0-9]+, [0-9]+" msg))
             (should (string-match-p "=== FILES (2) ===" msg))
             (should-not (string-match-p "=== SOURCE FILES ===" msg))
             ;; the diff shows the change, not the whole file, and no .elc
             (should-not (string-match-p "junk" msg))))
+      (delete-directory root t))))
+
+(ert-deftest test-package-review-maintainers-line-is-text ()
+  "package-maintainers returns a string; it must be shown as one."
+  (let* ((root (file-name-as-directory (make-temp-file "efrit-pr-" t))))
+    (unwind-protect
+        (let* ((pkg (test-pr--fake-package root "mnt" "1.0" '(("mnt.el" . "(provide 'mnt)\n"))))
+               (desc (cdr pkg)))
+          (setf (package-desc-extras desc) '((:maintainer . ("Some One" . "one@example.com"))))
+          (let* ((info (efrit-package-review-gather desc (car pkg) nil))
+                 (msg (efrit-package-review--user-message info)))
+            (should (stringp (plist-get info :maintainers)))
+            (should (string-match-p "Maintainers: .*Some One.*one@example.com" msg))
+            (should-not (string-match-p "Maintainers: [0-9]+," msg))))
       (delete-directory root t))))
 
 (ert-deftest test-package-review-read-tool-is-confined-to-the-package ()

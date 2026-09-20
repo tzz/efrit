@@ -190,7 +190,11 @@ sources themselves are read on the reviewer's request."
     (list :name (symbol-name (package-desc-name pkg-desc))
           :version (package-version-join (package-desc-version pkg-desc))
           :archive (package-desc-archive pkg-desc)
-          :maintainers (ignore-errors (package-maintainers pkg-desc))
+          ;; a string ("Name <mail>", comma-separated), not a list:
+          ;; walking it as a sequence printed char codes, and a line of
+          ;; comma-separated numbers under "Maintainers:" got every
+          ;; request refused by the API as encoded data
+          :maintainers (ignore-errors (package-maintainers pkg-desc t))
           :old-version (and old-desc (package-version-join (package-desc-version old-desc)))
           :dir pkg-dir
           :files (mapcar (lambda (rel)
@@ -288,9 +292,10 @@ each request modest and match how an upgrade is read by a person.")
                (format " (upgrading from %s)" (plist-get info :old-version))
              " (new install)")
            (or (plist-get info :archive) "unknown")
-           (or (mapconcat (lambda (m) (format "%s" (if (consp m) (car m) m)))
-                          (plist-get info :maintainers) ", ")
-               "unknown")
+           (let ((m (plist-get info :maintainers)))
+             (cond ((and (stringp m) (not (string-empty-p m))) m)
+                   ((consp m) (mapconcat (lambda (x) (format "%s" (if (consp x) (car x) x))) m ", "))
+                   (t "unknown")))
            (if (plist-get info :cut)
                "NOTE: the diff or changelog below was cut for size; open files to see the rest."
              ""))
