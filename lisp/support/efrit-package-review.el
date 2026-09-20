@@ -34,14 +34,15 @@
 ;; `M-x efrit-review-package' runs the same review on demand for an
 ;; installed or an archive package, on any Emacs version.
 ;;
-;; The rubric asks for the things a reader looks for and a diff hides
-;; well: network access, evaluation or loading of fetched or generated
-;; code, writes outside the package's own directory or into init
-;; files, advice on core primitives, processes spawned, obfuscated or
-;; encoded forms, and a change of maintainer or archive.  The reviewer
-;; is told what it did not see: files are cut at
-;; `efrit-package-review-max-file-chars', and a verdict on a cut
-;; package says so.
+;; The reviewer starts from the diff and the change log (or the file
+;; list, for a new install) and opens files itself with one tool,
+;; read_package_file, confined to the package directory.  A whole
+;; package sent up front was refused by the API; this is also how a
+;; person reads an upgrade.  The report lists what was opened.  The
+;; rubric: network use, evaluation or loading of foreign code, writes
+;; outside the package directory, external programs, redefinition of
+;; built-ins, encoded data, credentials, and diff-level changes of
+;; maintainer, archive, dependencies or load-time code.
 ;;
 ;; The model is `efrit-package-review-model' when set, else the
 ;; per-turn reviewer's model, else the default: a rarer and higher
@@ -96,8 +97,9 @@ the verdict."
   :type 'integer
   :group 'efrit-package-review)
 
-(defcustom efrit-package-review-max-total-chars 300000
-  "Most characters of source, diff and changelog sent in one review."
+(defcustom efrit-package-review-max-total-chars 120000
+  "Most characters of the diff sent in the first request.
+A longer diff is cut with a note; the reviewer opens the files."
   :type 'integer
   :group 'efrit-package-review)
 
@@ -112,29 +114,25 @@ the verdict."
 
 (defconst efrit-package-review--buffer "*efrit-package-review*")
 
-;;; Gathering what the reviewer sees
+;;; Gathering what the reviewer sees first
+;;
+;; The first request is small: package metadata, the change log, the
+;; diff from the installed version (or, for a new install, the file
+;; list with sizes), and one tool the reviewer may call to read any
+;; file of the package by name, whole or by line range.  The reviewer
+;; decides what to open.  This keeps the request within what the API
+;; accepts (a whole package up front was refused outright) and mirrors
+;; how a person reviews an upgrade: read the diff, open what it
+;; touches.
 
 (defun efrit-package-review--source-files (dir)
-  "The reviewable files under DIR: Lisp, shell, Makefiles, docs; never .elc."
-  (cl-remove-if
-   (lambda (f)
-     (or (string-match-p "\\.\\(elc\\|eln\\|png\\|jpg\\|gif\\|svg\\|info\\|gz\\)\\'" f)
-         (string-match-p "/\\.git/" f)))
-   (directory-files-recursively dir "" nil)))
-
-(defun efrit-package-review--read-file (file limit)
-  "FILE's text, cut at LIMIT characters with a note.
-Not a sandbox-checked read: the model did not ask for this file, the
-user did by installing the package, and package.el is about to show
-the same files on request.  The sandbox gates the model's actions."
-  (with-temp-buffer
-    (insert-file-contents file nil 0 (* 2 limit))
-    (let ((text (buffer-string)))
-      (if (> (length text) limit)
-          (concat (substring text 0 limit)
-                  (format "\n[... cut: %d more characters not shown ...]\n"
-                          (- (nth 7 (file-attributes file)) limit)))
-        text))))
+  "The reviewable files under DIR, relative names, never .elc or images."
+  (mapcar (lambda (f) (file-relative-name f dir))
+          (cl-remove-if
+           (lambda (f)
+             (or (string-match-p "\\.\\(elc\\|eln\\|png\\|jpg\\|gif\\|svg\\|info\\|gz\\)\\'" f)
+                 (string-match-p "/\\.git/" f)))
+           (directory-files-recursively dir "" nil))))
 
 (defun efrit-package-review--news-file (pkg-desc pkg-dir)
   "The change log file for PKG-DESC unpacked in PKG-DIR, or nil.
@@ -148,59 +146,113 @@ be PKG-DIR yet; look in PKG-DIR first, with the usual names."
            (ignore-errors (package-find-news-file pkg-desc)))))
 
 (defun efrit-package-review--diff (old-dir new-dir)
-  "Unified diff from OLD-DIR to NEW-DIR as a string, or nil when git is missing."
+  "Unified diff from OLD-DIR to NEW-DIR as a string, or nil when git is missing.
+Paths are shown relative to each tree, so the reviewer can name a file
+to open without the temp directory prefix."
   (when (executable-find "git")
     (with-temp-buffer
       (call-process "git" nil t nil "diff" "--no-index" "--no-color"
                     "--diff-filter=d" "--minimal" old-dir new-dir)
-      (buffer-string))))
+      (let ((text (buffer-string)))
+        (dolist (dir (list old-dir new-dir))
+          (setq text (replace-regexp-in-string (regexp-quote (directory-file-name dir)) "" text t t)))
+        ;; --no-index takes no pathspec: drop the sections for compiled
+        ;; and binary files here, they are noise in a review
+        (mapconcat #'identity
+                   (cl-remove-if (lambda (section)
+                                   (string-match-p "\\`--git a/.*\\.\\(elc\\|eln\\|info\\|png\\|jpg\\|gif\\|gz\\) " section))
+                                 (split-string text "^diff " t))
+                   "diff ")))))
+
+(defun efrit-package-review--cut (text limit label)
+  "TEXT cut at LIMIT characters with a note naming LABEL, or nil for nil."
+  (cond ((null text) nil)
+        ((<= (length text) limit) text)
+        (t (concat (substring text 0 limit)
+                   (format "\n[... %s cut here: %d more characters; open the file to see the rest ...]\n"
+                           label (- (length text) limit))))))
 
 (defun efrit-package-review-gather (pkg-desc pkg-dir old-desc)
-  "Everything the reviewer sees for PKG-DESC unpacked in PKG-DIR.
+  "What the first request carries for PKG-DESC unpacked in PKG-DIR.
 OLD-DESC is the installed version or nil.  Returns a plist
-\(:name :version :archive :maintainers :old-version :sources :diff
-:news :cut), where :sources is an alist (RELATIVE-NAME . TEXT) and
-:cut is non-nil when something was left out."
-  (let* ((budget efrit-package-review-max-total-chars)
-         (cut nil)
-         (take (lambda (text)
-                 (cond
-                  ((null text) nil)
-                  ((<= (length text) budget)
-                   (cl-decf budget (length text)) text)
-                  (t (setq cut t)
-                     (prog1 (concat (substring text 0 (max 0 budget))
-                                    "\n[... cut: total review budget reached ...]\n")
-                       (setq budget 0))))))
-         (news (efrit-package-review--news-file pkg-desc pkg-dir))
+\(:name :version :archive :maintainers :old-version :dir :files
+:diff :news :cut).  :files is the relative file list with sizes;
+sources themselves are read on the reviewer's request."
+  (let* ((news-file (efrit-package-review--news-file pkg-desc pkg-dir))
          (old-dir (and old-desc (package-desc-dir old-desc)))
-         (diff (and old-dir (file-directory-p old-dir)
-                    (funcall take (efrit-package-review--diff old-dir pkg-dir))))
-         (sources
-          (delq nil
-                (mapcar (lambda (f)
-                          (let ((text (funcall take (efrit-package-review--read-file
-                                                     f efrit-package-review-max-file-chars))))
-                            (when (string-match-p "\\[\\.\\.\\. cut:" (or text ""))
-                              (setq cut t))
-                            (and text (cons (file-relative-name f pkg-dir) text))))
-                        (efrit-package-review--source-files pkg-dir)))))
+         (raw-diff (and old-dir (file-directory-p old-dir)
+                        (efrit-package-review--diff old-dir pkg-dir)))
+         (diff (efrit-package-review--cut raw-diff efrit-package-review-max-total-chars "diff"))
+         (news (and news-file
+                    (efrit-package-review--cut
+                     (with-temp-buffer (insert-file-contents news-file) (buffer-string))
+                     efrit-package-review-max-file-chars "changelog"))))
     (list :name (symbol-name (package-desc-name pkg-desc))
           :version (package-version-join (package-desc-version pkg-desc))
           :archive (package-desc-archive pkg-desc)
           :maintainers (ignore-errors (package-maintainers pkg-desc))
           :old-version (and old-desc (package-version-join (package-desc-version old-desc)))
-          :sources sources
+          :dir pkg-dir
+          :files (mapcar (lambda (rel)
+                           (cons rel (or (nth 7 (file-attributes (expand-file-name rel pkg-dir))) 0)))
+                         (efrit-package-review--source-files pkg-dir))
           :diff diff
-          :news (and news (file-readable-p news)
-                     (funcall take (efrit-package-review--read-file
-                                    news efrit-package-review-max-file-chars)))
-          :cut cut)))
+          :news news
+          :cut (or (and raw-diff (> (length raw-diff) (length diff)))
+                   (and news (string-match-p "cut here" news))))))
+
+;;; The reviewer's one tool
+
+(defconst efrit-package-review--tool-name "read_package_file")
+
+(defconst efrit-package-review--tool-schema
+  `(("name" . ,efrit-package-review--tool-name)
+    ("description" . "Read a file of the package under review, whole or a line range.  Paths are relative to the package directory, as listed in the file list and the diff.  Use it on the files the diff touches and on anything the changelog or the file list makes you want to see.")
+    ("input_schema" . (("type" . "object")
+                       ("properties" . (("path" . (("type" . "string")
+                                                   ("description" . "Relative path inside the package")))
+                                        ("start_line" . (("type" . "integer")
+                                                         ("description" . "First line to return, 1-based (default 1)")))
+                                        ("end_line" . (("type" . "integer")
+                                                       ("description" . "Last line to return (default: end of file)")))))
+                       ("required" . ["path"]))))
+  "The tool schema, in the alist shape `efrit-api' encodes.")
+
+(defun efrit-package-review--read-tool (dir input)
+  "Run the read tool: INPUT's path under DIR, optional line range.
+Never leaves DIR: a path that resolves outside it is refused, as is
+one the file list excludes.  Returns the text, or an error string."
+  (let* ((rel (gethash "path" input))
+         (start (or (gethash "start_line" input) 1))
+         (end (gethash "end_line" input))
+         (file (and (stringp rel) (expand-file-name rel dir)))
+         (root (file-name-as-directory (file-truename dir))))
+    (cond
+     ((not (stringp rel)) "Error: path is required")
+     ((not (string-prefix-p root (file-truename file)))
+      (format "Error: %s is outside the package directory" rel))
+     ((not (file-regular-p file)) (format "Error: no such file in the package: %s" rel))
+     ((not (member rel (efrit-package-review--source-files dir)))
+      (format "Error: %s is not a reviewable source file" rel))
+     (t
+      (with-temp-buffer
+        (insert-file-contents file)
+        (let* ((total (count-lines (point-min) (point-max)))
+               (end (min total (or end total)))
+               (start (max 1 (min start end))))
+          (goto-char (point-min)) (forward-line (1- start))
+          (let ((from (point)))
+            (forward-line (1+ (- end start)))
+            (let ((text (buffer-substring from (point))))
+              (concat (format "%s lines %d-%d of %d:\n" rel start end total)
+                      (efrit-package-review--cut text efrit-package-review-max-file-chars rel))))))))))
 
 ;;; The request
 
 (defconst efrit-package-review--system-prompt
-  "You are helping an Emacs user decide whether to install or upgrade an Emacs Lisp package from a public package archive.  This is an ordinary pre-install code review of open-source software, the same reading a careful maintainer does before pressing yes.  You are given the package's source files, a unified diff from the version already installed when there is one, and its change log.
+  "You are helping an Emacs user decide whether to install or upgrade an Emacs Lisp package from a public package archive.  This is an ordinary pre-install code review of open-source software, the same reading a careful maintainer does before pressing yes.
+
+You are given the package's metadata, its change log, and either a unified diff from the version already installed or, for a new install, the list of files.  You have one tool, read_package_file, to open any file of the package by name, whole or by line range.  Start from the diff: open the files it touches where the diff alone does not show what the new code does.  For a new install, open the main file and anything whose name or size stands out.  Do not read every file; read what the decision needs.
 
 Report, briefly and specifically, what the user should look at before installing.  In order of importance:
 1. Network use, and what is done with anything received.
@@ -212,24 +264,23 @@ Report, briefly and specifically, what the user should look at before installing
 7. Configuration or credentials read, and where they are sent.
 8. In the diff: changes of maintainer, archive or repository URL; new dependencies; new code that runs at load time.
 
-Behaviour that is the package's stated purpose is not a finding; mention it once as info (a package manager fetching from the network, for example).
+Behaviour that is the package's stated purpose is not a finding; mention it once as info.
 
-Answer with exactly one JSON object and nothing else:
+When you have read enough, answer with exactly one JSON object and nothing else:
 {\"verdict\": \"approve\" | \"reject\",
  \"summary\": one or two sentences for the user,
  \"findings\": [{\"severity\": \"high\"|\"medium\"|\"low\"|\"info\", \"file\": \"relative/path.el\", \"line\": N or null, \"note\": one sentence}],
+ \"files_read\": [\"relative/path.el\", ...],
  \"saw_everything\": true | false}
-Use reject when a high finding exists, or a medium one is not explained by the package's purpose.  If input was cut, set saw_everything false and say what you could not assess."
+Use reject when a high finding exists, or a medium one is not explained by the package's purpose.  Set saw_everything false if you could not open something you needed."
   "System prompt for the package reviewer.
-Worded as the ordinary pre-install review it is.  An earlier version
-listed what to hunt for (exfiltration, credential theft, obfuscated
-payloads) and the API refused the request outright (stop_reason
-refusal, zero output tokens) on a plain package: the classifier reads
-a hunt-list beside 50k tokens of code as a request to analyse
-malware.")
+Diff first, sources on request.  A whole package sent up front (57k
+tokens of code beside a review rubric) was refused by the API before
+generation; the small first request and the reviewer's own reads keep
+each request modest and match how an upgrade is read by a person.")
 
 (defun efrit-package-review--user-message (info)
-  "The user message for INFO (see `efrit-package-review-gather')."
+  "The first user message for INFO (see `efrit-package-review-gather')."
   (concat
    (format "Package: %s %s%s\nArchive: %s\nMaintainers: %s\n%s\n"
            (plist-get info :name) (plist-get info :version)
@@ -241,26 +292,28 @@ malware.")
                           (plist-get info :maintainers) ", ")
                "unknown")
            (if (plist-get info :cut)
-               "NOTE: some content was cut for size; say so in the verdict."
+               "NOTE: the diff or changelog below was cut for size; open files to see the rest."
              ""))
+   (format "\n=== FILES (%d) ===\n%s\n" (length (plist-get info :files))
+           (mapconcat (lambda (f) (format "%s  (%d bytes)" (car f) (cdr f)))
+                      (plist-get info :files) "\n"))
    (when-let* ((news (plist-get info :news)))
      (concat "\n=== CHANGELOG ===\n" news "\n"))
-   (when-let* ((diff (plist-get info :diff)))
-     (concat "\n=== DIFF FROM INSTALLED VERSION ===\n" diff "\n"))
-   "\n=== SOURCE FILES ===\n"
-   (mapconcat (lambda (src) (format "\n--- %s ---\n%s" (car src) (cdr src)))
-              (plist-get info :sources) "\n")))
+   (if-let* ((diff (plist-get info :diff)))
+       (concat "\n=== DIFF FROM INSTALLED VERSION ===\n" diff "\n")
+     "\n(New install: no previous version to diff against.  Open the main file and what stands out.)\n")))
 
 (defun efrit-package-review-model ()
   "The model that reviews packages."
   (or efrit-package-review-model efrit-review-model efrit-default-model))
 
-(defun efrit-package-review--request (info)
+(defun efrit-package-review--request (messages)
+  "A request carrying MESSAGES (the growing review conversation)."
   `(("model" . ,(efrit-package-review-model))
-    ("max_tokens" . 2000)
+    ("max_tokens" . 3000)
     ("system" . ,(efrit-api-cacheable-system efrit-package-review--system-prompt))
-    ("messages" . [(("role" . "user")
-                    ("content" . ,(efrit-package-review--user-message info)))])))
+    ("tools" . ,(vector efrit-package-review--tool-schema))
+    ("messages" . ,(vconcat messages))))
 
 (defun efrit-package-review--json-span (text)
   "The first balanced {...} object in TEXT, or nil.
@@ -281,7 +334,7 @@ with a brace after the object; a fence around the object is fine."
 (defun efrit-package-review-parse (text)
   "Parse the reviewer's TEXT into a plist, or nil if malformed.
 \(:verdict SYM :summary STR :findings ((:severity SYM :file STR :line N :note STR)...)
-:saw-everything BOOL)."
+:files-read LIST :saw-everything BOOL)."
   (when-let* ((span (efrit-package-review--json-span text)))
     (condition-case nil
         (let* ((obj (json-parse-string span
@@ -292,6 +345,7 @@ with a brace after the object; a fence around the object is fine."
             (list :verdict verdict
                   :summary (or (alist-get 'summary obj) "")
                   :saw-everything (eq (alist-get 'saw_everything obj) t)
+                  :files-read (cl-remove-if-not #'stringp (alist-get 'files_read obj))
                   :findings
                   (delq nil
                         (mapcar (lambda (f)
@@ -304,39 +358,77 @@ with a brace after the object; a fence around the object is fine."
                                 (alist-get 'findings obj))))))
       (error nil))))
 
+(defcustom efrit-package-review-max-reads 40
+  "Most read_package_file calls one review may make before it must answer."
+  :type 'integer
+  :group 'efrit-package-review)
+
 (defun efrit-package-review-run (info)
-  "Review INFO synchronously.  Returns the parsed verdict plist, or
-\(:verdict error :summary WHY) when the call or the parse failed."
-  (condition-case err
-      (let* ((efrit-api-request-purpose
-              (format "reviewing package %s %s before install"
-                      (plist-get info :name) (plist-get info :version)))
-             (response (efrit-api-request-sync (efrit-package-review--request info)
-                                               efrit-package-review-timeout)))
-        (cond
-         ((and response (efrit-response-error response))
-          (list :verdict 'error :summary (efrit-error-message (efrit-response-error response))))
-         ;; The API declined before generating anything.  Say so in
-         ;; plain terms: the user must not read this as "the package is
-         ;; bad", nor as "the package is fine".
-         ((equal (efrit-response-stop-reason response) "refusal")
-          (list :verdict 'error
-                :refused t
-                :summary (format "the API refused to process this request (stop reason refusal, %s tokens in). Nothing was judged. This is a classifier decision about the request, not a finding about %s; try a smaller input (efrit-package-review-max-total-chars) or another model (efrit-package-review-model)."
-                                 (let ((u (efrit-response-usage response)))
-                                   (or (and u (gethash "input_tokens" u)) "?"))
-                                 (plist-get info :name))))
-         (t (let ((text (efrit-package-review--response-text response)))
-              (efrit-log 'debug "package review %s: reviewer said: %s" (plist-get info :name)
-                         (truncate-string-to-width text 600 nil nil "…"))
-              (or (efrit-package-review-parse text)
-                  ;; keep the answer: the user must be able to read
-                  ;; what the reviewer said instead of a verdict
-                  (list :verdict 'error
-                        :summary (format "the reviewer's answer was not a verdict (%d chars, stop reason %s)"
-                                         (length text) (or (efrit-response-stop-reason response) "?"))
-                        :raw text))))))
-    (error (list :verdict 'error :summary (error-message-string err)))))
+  "Review INFO: a synchronous tool loop until the reviewer answers.
+Returns the parsed verdict plist with :reads (the files opened), or
+\(:verdict error :summary WHY [:refused t] [:raw TEXT]) when the call,
+the parse, or the read budget failed."
+  (let* ((dir (plist-get info :dir))
+         (messages (list `((role . "user") (content . ,(efrit-package-review--user-message info)))))
+         (reads nil)
+         (result nil)
+         (efrit-api-request-purpose
+          (format "reviewing package %s %s before install"
+                  (plist-get info :name) (plist-get info :version))))
+    (condition-case err
+        (while (not result)
+          (let ((response (efrit-api-request-sync (efrit-package-review--request messages)
+                                                  efrit-package-review-timeout)))
+            (cond
+             ((and response (efrit-response-error response))
+              (setq result (list :verdict 'error
+                                 :summary (efrit-error-message (efrit-response-error response)))))
+             ;; The API declined before generating.  Not a finding.
+             ((equal (efrit-response-stop-reason response) "refusal")
+              (setq result
+                    (list :verdict 'error :refused t
+                          :summary (format "the API refused to process this request (stop reason refusal, %s tokens in). Nothing was judged. This is a classifier decision about the request, not a finding about %s; try another model (efrit-package-review-model)."
+                                           (let ((u (efrit-response-usage response)))
+                                             (or (and u (gethash "input_tokens" u)) "?"))
+                                           (plist-get info :name)))))
+             (t
+              (let* ((content (efrit-response-content response))
+                     (uses (delq nil (mapcar #'efrit-content-item-as-tool-use (append content nil))))
+                     (text (efrit-package-review--response-text response)))
+                (cond
+                 ;; tool calls: answer them and go round again
+                 ((and uses (< (length reads) efrit-package-review-max-reads))
+                  (setq messages (append messages (list `((role . "assistant") (content . ,content)))))
+                  (let ((results nil))
+                    (dolist (use uses)
+                      (let* ((input (nth 2 use))
+                             (rel (and (hash-table-p input) (gethash "path" input)))
+                             (out (if (equal (nth 1 use) efrit-package-review--tool-name)
+                                      (efrit-package-review--read-tool dir input)
+                                    (format "Error: unknown tool %s" (nth 1 use)))))
+                        (efrit-log 'debug "package review %s: read %s (%d chars)"
+                                   (plist-get info :name) rel (length out))
+                        (push rel reads)
+                        (push (efrit-api-build-tool-result (nth 0 use) out
+                                                           (string-prefix-p "Error" out))
+                              results)))
+                    (setq messages (append messages
+                                           (list `((role . "user") (content . ,(vconcat (nreverse results)))))))))
+                 (uses
+                  (setq result (list :verdict 'error
+                                     :summary (format "the reviewer asked to read more than %d files without answering"
+                                                      efrit-package-review-max-reads))))
+                 (t
+                  (efrit-log 'debug "package review %s: reviewer said: %s" (plist-get info :name)
+                             (truncate-string-to-width text 600 nil nil "…"))
+                  (setq result
+                        (or (efrit-package-review-parse text)
+                            (list :verdict 'error
+                                  :summary (format "the reviewer's answer was not a verdict (%d chars, stop reason %s)"
+                                                   (length text) (or (efrit-response-stop-reason response) "?"))
+                                  :raw text))))))))))
+      (error (setq result (list :verdict 'error :summary (error-message-string err)))))
+    (append (list :reads (nreverse reads)) result)))
 
 (defun efrit-package-review--response-text (response)
   (let ((content (efrit-response-content response)) (texts nil))
@@ -397,11 +489,13 @@ with a brace after the object; a fence around the object is fine."
      (concat "\nThe reviewer's answer, verbatim:\n\n"
              (mapconcat (lambda (l) (concat "  | " l)) (split-string raw "\n") "\n")
              "\n"))
-   (format "\nReviewer: %s.  Sources: %d file(s)%s%s."
+   (format "\nReviewer: %s.  Given: %d file(s) listed%s%s.  Opened: %s."
            (efrit-package-review-model)
-           (length (plist-get info :sources))
+           (length (plist-get info :files))
            (if (plist-get info :diff) ", diff against installed" "")
-           (if (plist-get info :news) ", changelog" ""))))
+           (if (plist-get info :news) ", changelog" "")
+           (let ((reads (delete-dups (copy-sequence (plist-get verdict :reads)))))
+             (if reads (mapconcat #'identity reads ", ") "nothing")))))
 
 (defun efrit-package-review-show (info verdict)
   "Show the report in a popup and return it."
@@ -414,10 +508,9 @@ with a brace after the object; a fence around the object is fine."
 (defun efrit-package-review--around (orig pkg-desc pkg-dir old-desc)
   "Review PKG-DESC in PKG-DIR against OLD-DESC before ORIG asks the user."
   (let* ((info (efrit-package-review-gather pkg-desc pkg-dir old-desc))
-         (_ (efrit-log 'info "package review %s %s: %d file(s), %d chars%s%s%s"
+         (_ (efrit-log 'info "package review %s %s: %d file(s) listed%s%s%s"
                        (plist-get info :name) (plist-get info :version)
-                       (length (plist-get info :sources))
-                       (apply #'+ (mapcar (lambda (s) (length (cdr s))) (plist-get info :sources)))
+                       (length (plist-get info :files))
                        (if (plist-get info :diff) (format ", diff %d chars" (length (plist-get info :diff))) "")
                        (if (plist-get info :news) ", changelog" "")
                        (if (plist-get info :cut) ", CUT" "")))

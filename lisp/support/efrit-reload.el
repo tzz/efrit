@@ -113,12 +113,9 @@ standard value is nil, dropping the advice the mode installed.  The
 reloader turns the ones that were on back on."
   (let ((out nil))
     (mapatoms (lambda (sym)
-                (when (and (fboundp sym) (boundp sym)
-                           (string-prefix-p efrit-reload--feature-prefix (symbol-name sym))
-                           (string-suffix-p "-mode" (symbol-name sym))
-                           (get sym 'globalized-minor-mode)
-                           nil)
-                  (push (cons sym (symbol-value sym)) out))
+                ;; a global minor mode's variable is a boolean defcustom
+                ;; that is not buffer-local; a buffer-local mode
+                ;; (efrit-agent-input-mode) is per buffer and untouched
                 (when (and (fboundp sym) (boundp sym)
                            (string-prefix-p efrit-reload--feature-prefix (symbol-name sym))
                            (string-suffix-p "-mode" (symbol-name sym))
@@ -264,6 +261,7 @@ re-run either)."
     (let ((maps (efrit-reload--unbind-keymaps))
           (defaults (efrit-reload-option-defaults))
           (modes (efrit-reload-global-minor-modes))
+          (modes-on nil)
           (reset nil))
       (efrit-reload--unbind-transient-prefixes)
       (unwind-protect
@@ -279,20 +277,22 @@ re-run either)."
                    (push (cons feature (error-message-string err)) failed))))))
         (efrit-reload--rebind-keymaps maps)
         (setq reset (efrit-reload--refresh-changed-defaults defaults))
-        (efrit-reload--restore-global-minor-modes modes))
-      (efrit-reload--report loaded failed reset start))))
+        (setq modes-on (efrit-reload--restore-global-minor-modes modes)))
+      (efrit-reload--report loaded failed reset modes-on start))))
 
-(defun efrit-reload--report (loaded failed reset start)
+(defun efrit-reload--report (loaded failed reset modes-on start)
   "Revert visiting buffers, then message and log the reload summary.
 LOADED is the library count, FAILED an alist of (FEATURE . ERROR),
-RESET the options whose changed default was adopted, START the
-`float-time' the reload began.  Returns LOADED."
+RESET the options whose changed default was adopted, MODES-ON the
+global minor modes turned back on, START the `float-time' the reload
+began.  Returns LOADED."
   (let* ((reverted (efrit-reload--revert-visiting-buffers))
-         (summary (format "efrit: reloaded %d librar%s in %.1fs%s%s%s"
+         (summary (format "efrit: reloaded %d librar%s in %.1fs%s%s%s%s"
                           loaded (if (= loaded 1) "y" "ies")
                           (- (float-time) start)
                           (if (> reverted 0) (format ", reverted %d buffer%s" reverted (if (= reverted 1) "" "s")) "")
                           (if reset (format ", new default for %s" (mapconcat #'symbol-name reset ", ")) "")
+                          (if modes-on (format ", re-enabled %s" (mapconcat #'symbol-name modes-on ", ")) "")
                           (if failed
                               (format "; %d failed: %s" (length failed)
                                       (mapconcat (lambda (f) (format "%s (%s)" (car f) (cdr f)))

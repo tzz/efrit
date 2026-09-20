@@ -26,6 +26,10 @@
 (require 'cl-lib)
 (require 'efrit-common)
 (require 'efrit-log)
+(declare-function efrit-response-usage "efrit-chat-response")
+(declare-function efrit-response-error "efrit-chat-response")
+(declare-function efrit-response-stop-reason "efrit-chat-response")
+(declare-function efrit-error-message "efrit-chat-response")
 
 (declare-function efrit-log "efrit-log")
 (declare-function efrit-log-debug "efrit-log")
