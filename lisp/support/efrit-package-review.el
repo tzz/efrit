@@ -47,8 +47,9 @@
 ;; per-turn reviewer's model, else the default: a rarer and higher
 ;; stakes review is where a stronger model earns its cost.
 ;;
-;; Nothing here runs package code.  Sources are read under the
-;; sandbox's `read' capability; the API call carries a purpose so a
+;; Nothing here runs package code.  The reads are efrit's own, made
+;; on the user's request, so they are not sandbox prompts (the sandbox
+;; gates what the model does); the API call carries a purpose so a
 ;; failure names it.  None of this is reachable from eval_sexp: the
 ;; efrit-package-review prefix is on the refused list.
 
@@ -61,7 +62,6 @@
 (require 'efrit-api)
 (require 'efrit-chat-response)
 (require 'efrit-review)          ; efrit-review-model, efrit-review-parse-verdict
-(require 'efrit-sandbox)
 (require 'efrit-ui-helpers)
 
 (defvar efrit-default-model)
@@ -123,8 +123,10 @@ the verdict."
    (directory-files-recursively dir "" nil)))
 
 (defun efrit-package-review--read-file (file limit)
-  "FILE's text, cut at LIMIT characters with a note.  Sandbox-checked read."
-  (efrit-sandbox-check 'read file "package_review" (file-name-nondirectory file))
+  "FILE's text, cut at LIMIT characters with a note.
+Not a sandbox-checked read: the model did not ask for this file, the
+user did by installing the package, and package.el is about to show
+the same files on request.  The sandbox gates the model's actions."
   (with-temp-buffer
     (insert-file-contents file nil 0 (* 2 limit))
     (let ((text (buffer-string)))
