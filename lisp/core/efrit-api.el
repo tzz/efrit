@@ -234,6 +234,33 @@ response buffer."
 
 ;;; Async Request
 
+(defun efrit-api--log-request (request-data transport)
+  "Log the outgoing request: purpose, model, size, TRANSPORT.  Returns `float-time'."
+  (let* ((messages (alist-get "messages" request-data nil nil #'equal))
+         (tools (alist-get "tools" request-data nil nil #'equal)))
+    (efrit-log 'info "api → %s: %s, %d message(s), %d tool(s), via %s"
+               (alist-get "model" request-data nil nil #'equal)
+               (or efrit-api-request-purpose "request")
+               (length messages) (length tools) transport))
+  (float-time))
+
+(defun efrit-api--log-response (response started &optional purpose)
+  "Log RESPONSE: stop reason, tokens, elapsed since STARTED, for PURPOSE."
+  (let* ((usage (and response (efrit-response-usage response)))
+         (err (and response (efrit-response-error response))))
+    (if err
+        (efrit-log 'warn "api ← error after %.1fs: %s (%s)"
+                   (- (float-time) started) (efrit-error-message err)
+                   (or purpose efrit-api-request-purpose "request"))
+      (efrit-log 'info "api ← %s in %.1fs: in=%s out=%s cache_read=%s cache_write=%s (%s)"
+                 (or (and response (efrit-response-stop-reason response)) "?")
+                 (- (float-time) started)
+                 (and usage (gethash "input_tokens" usage))
+                 (and usage (gethash "output_tokens" usage))
+                 (and usage (gethash "cache_read_input_tokens" usage))
+                 (and usage (gethash "cache_creation_input_tokens" usage))
+                 (or purpose efrit-api-request-purpose "request")))))
+
 (defun efrit-api-request-async (request-data callback &optional error-callback)
   "Send REQUEST-DATA to Claude API asynchronously.
 Calls CALLBACK with (RESPONSE) on success.
@@ -252,7 +279,9 @@ Calls ERROR-CALLBACK with (ERROR-MESSAGE) on failure, or signals error if nil."
              (describe-args (list (plist-get req :url)
                                   (alist-get "model" request-data nil nil #'equal)
                                   "url-retrieve"
-                                  efrit-api-request-purpose)))
+                                  efrit-api-request-purpose))
+             (purpose efrit-api-request-purpose)
+             (started (efrit-api--log-request request-data "url-retrieve")))
         (url-retrieve
          (plist-get req :url)
          (lambda (status)
@@ -270,10 +299,12 @@ Calls ERROR-CALLBACK with (ERROR-MESSAGE) on failure, or signals error if nil."
                          (error "%s" (or (efrit-api--error-from-body)
                                          (format "HTTP error: %s" http-err))))
                        (let ((response (efrit-api-parse-response)))
+                         (efrit-api--log-response response started purpose)
                          (funcall callback response)))
                    (error
                     (let ((msg (apply #'efrit-api-describe-failure
                                       (error-message-string url-err) describe-args)))
+                      (efrit-log 'warn "api ← failed after %.1fs: %s" (- (float-time) started) msg)
                       (if error-callback
                           (funcall error-callback msg)
                         (error "%s" msg)))))
@@ -303,6 +334,7 @@ Returns the parsed response hash-table, or signals an error."
          (url-request-method "POST")
          (url-request-extra-headers (plist-get req :headers))
          (url-request-data (efrit-api-encode-request (plist-get req :body)))
+         (started (efrit-api--log-request request-data "url-retrieve (sync)"))
          (response-buffer (url-retrieve-synchronously
                            (plist-get req :url)
                            nil t (or timeout 60))))
@@ -314,7 +346,9 @@ Returns the parsed response hash-table, or signals an error."
                    "url-retrieve (sync)")))
     (with-current-buffer response-buffer
       (unwind-protect
-          (efrit-api-parse-response)
+          (let ((response (efrit-api-parse-response)))
+            (efrit-api--log-response response started)
+            response)
         (kill-buffer)))))
 
 ;;; Prompt Caching

@@ -256,13 +256,29 @@ Reject when any finding is high, or when a medium finding is not explained by th
     ("messages" . [(("role" . "user")
                     ("content" . ,(efrit-package-review--user-message info)))])))
 
+(defun efrit-package-review--json-span (text)
+  "The first balanced {...} object in TEXT, or nil.
+A greedy match to the last brace fails when the answer has prose
+with a brace after the object; a fence around the object is fine."
+  (when (and (stringp text) (string-match "{" text))
+    (let ((start (match-beginning 0)) (depth 0) (i (match-beginning 0)) (in-string nil) (end nil))
+      (while (and (< i (length text)) (not end))
+        (let ((c (aref text i)))
+          (cond
+           (in-string (cond ((eq c ?\\) (cl-incf i)) ((eq c ?\") (setq in-string nil))))
+           ((eq c ?\") (setq in-string t))
+           ((eq c ?{) (cl-incf depth))
+           ((eq c ?}) (cl-decf depth) (when (zerop depth) (setq end (1+ i))))))
+        (cl-incf i))
+      (and end (substring text start end)))))
+
 (defun efrit-package-review-parse (text)
   "Parse the reviewer's TEXT into a plist, or nil if malformed.
 \(:verdict SYM :summary STR :findings ((:severity SYM :file STR :line N :note STR)...)
 :saw-everything BOOL)."
-  (when (and (stringp text) (string-match "{\\(?:.\\|\n\\)*}" text))
+  (when-let* ((span (efrit-package-review--json-span text)))
     (condition-case nil
-        (let* ((obj (json-parse-string (match-string 0 text)
+        (let* ((obj (json-parse-string span
                                        :object-type 'alist :array-type 'list
                                        :null-object nil :false-object nil))
                (verdict (intern (downcase (format "%s" (alist-get 'verdict obj))))))
@@ -294,8 +310,16 @@ Reject when any finding is high, or when a medium finding is not explained by th
         (cond
          ((and response (efrit-response-error response))
           (list :verdict 'error :summary (efrit-error-message (efrit-response-error response))))
-         (t (or (efrit-package-review-parse (efrit-package-review--response-text response))
-                (list :verdict 'error :summary "the reviewer's answer was not a verdict")))))
+         (t (let ((text (efrit-package-review--response-text response)))
+              (efrit-log 'debug "package review %s: reviewer said: %s" (plist-get info :name)
+                         (truncate-string-to-width text 600 nil nil "…"))
+              (or (efrit-package-review-parse text)
+                  ;; keep the answer: the user must be able to read
+                  ;; what the reviewer said instead of a verdict
+                  (list :verdict 'error
+                        :summary (format "the reviewer's answer was not a verdict (%d chars, stop reason %s)"
+                                         (length text) (or (efrit-response-stop-reason response) "?"))
+                        :raw text))))))
     (error (list :verdict 'error :summary (error-message-string err)))))
 
 (defun efrit-package-review--response-text (response)
@@ -353,6 +377,10 @@ Reject when any finding is high, or when a medium finding is not explained by th
                                                (cl-position (plist-get b :severity) efrit-package-review-severities))))
                         "\n")
              "\n"))
+   (when-let* ((raw (plist-get verdict :raw)))
+     (concat "\nThe reviewer's answer, verbatim:\n\n"
+             (mapconcat (lambda (l) (concat "  | " l)) (split-string raw "\n") "\n")
+             "\n"))
    (format "\nReviewer: %s.  Sources: %d file(s)%s%s."
            (efrit-package-review-model)
            (length (plist-get info :sources))
@@ -370,7 +398,17 @@ Reject when any finding is high, or when a medium finding is not explained by th
 (defun efrit-package-review--around (orig pkg-desc pkg-dir old-desc)
   "Review PKG-DESC in PKG-DIR against OLD-DESC before ORIG asks the user."
   (let* ((info (efrit-package-review-gather pkg-desc pkg-dir old-desc))
+         (_ (efrit-log 'info "package review %s %s: %d file(s), %d chars%s%s%s"
+                       (plist-get info :name) (plist-get info :version)
+                       (length (plist-get info :sources))
+                       (apply #'+ (mapcar (lambda (s) (length (cdr s))) (plist-get info :sources)))
+                       (if (plist-get info :diff) (format ", diff %d chars" (length (plist-get info :diff))) "")
+                       (if (plist-get info :news) ", changelog" "")
+                       (if (plist-get info :cut) ", CUT" "")))
          (verdict (efrit-package-review-run info)))
+    (when (plist-get verdict :raw)
+      (efrit-log 'warn "package review %s: not a verdict: %s" (plist-get info :name)
+                 (truncate-string-to-width (plist-get verdict :raw) 600 nil nil "…")))
     (efrit-log 'info "package review %s %s: %s" (plist-get info :name)
                (plist-get info :version) (efrit-package-review-verdict-line verdict))
     (if (and (eq efrit-package-review-action 'auto-approve-clean)

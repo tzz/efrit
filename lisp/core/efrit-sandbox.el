@@ -646,8 +646,14 @@ With `efrit-sandbox-enabled' nil this is a no-op that returns t."
                 (list (efrit-sandbox-request-create
                        :cap cap :target ctarget :tool tool
                        :detail (format "%s is protected and can never be granted" ctarget)))))
-       ((efrit-sandbox-allowed-p cap ctarget root) t)
+       ((efrit-sandbox-allowed-p cap ctarget root)
+        (efrit-log 'debug "sandbox: allowed %s %s (%s)" cap
+                   (if (stringp ctarget) (abbreviate-file-name ctarget) ctarget) tool)
+        t)
        (t
+        (efrit-log 'debug "sandbox: %s %s not covered for %s; asking (%s)" cap
+                   (if (stringp ctarget) (abbreviate-file-name ctarget) ctarget)
+                   (abbreviate-file-name root) tool)
         (let* ((req (efrit-sandbox-request-create
                      :cap cap
                      :target (efrit-sandbox--suggest-target cap ctarget root)

@@ -398,8 +398,14 @@ request).  CALLBACK is called with (VERDICT . REASON), VERDICT being
                      ((efrit-response-error response)
                       (efrit-review--failure-verdict
                        (efrit-error-message (efrit-response-error response)) classes))
-                     (t (or (efrit-review-parse-verdict (efrit-review--response-text response))
-                            (efrit-review--failure-verdict "malformed verdict" classes))))))
+                     (t (let ((text (efrit-review--response-text response)))
+                          (efrit-log 'debug "review %s: reviewer said: %s" session-id
+                                     (truncate-string-to-width text 400 nil nil "…"))
+                          (or (efrit-review-parse-verdict text)
+                              (progn
+                                (efrit-log 'warn "review %s: not a verdict: %s" session-id
+                                           (truncate-string-to-width text 400 nil nil "…"))
+                                (efrit-review--failure-verdict "malformed verdict" classes))))))))
          (lambda (error-msg)
            (funcall finish (efrit-review--failure-verdict error-msg classes)))))
       (error

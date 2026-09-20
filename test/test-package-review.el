@@ -86,7 +86,25 @@
     (should (string-match-p "REJECT · 1 high" (efrit-package-review-verdict-line flagged)))
     (should (string-match-p "did not see everything" (efrit-package-review-verdict-line partial)))
     (should-not (efrit-package-review-parse "no json"))
-    (should-not (efrit-package-review-parse "{\"verdict\":\"maybe\"}"))))
+    (should-not (efrit-package-review-parse "{\"verdict\":\"maybe\"}"))
+    ;; fenced, and followed by prose with a brace: the first balanced object wins
+    (should (eq 'approve (plist-get (efrit-package-review-parse
+                                     "```json\n{\"verdict\":\"approve\",\"summary\":\"a } in text\",\"findings\":[],\"saw_everything\":true}\n```\nNote: {unbalanced")
+                                    :verdict)))))
+
+(ert-deftest test-package-review-non-verdict-answer-is-shown ()
+  (let* ((root (file-name-as-directory (make-temp-file "efrit-pr-" t)))
+         (efrit-project-root root))
+    (unwind-protect
+        (let* ((pkg (test-pr--fake-package root "qux" "1.0" '(("qux.el" . "(provide 'qux)\n"))))
+               (info (efrit-package-review-gather (cdr pkg) (car pkg) nil)))
+          (test-pr--with-verdict "I cannot review this package because the input was too long."
+            (let* ((v (efrit-package-review-run info))
+                   (report (efrit-package-review-report info v)))
+              (should (eq (plist-get v :verdict) 'error))
+              (should (string-match-p "not a verdict (6[0-9] chars, stop reason end_turn)" (plist-get v :summary)))
+              (should (string-match-p "verbatim:\n\n  | I cannot review" report)))))
+      (delete-directory root t))))
 
 (ert-deftest test-package-review-run-and-report ()
   (let* ((root (file-name-as-directory (make-temp-file "efrit-pr-" t)))

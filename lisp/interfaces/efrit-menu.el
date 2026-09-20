@@ -38,6 +38,8 @@
 (declare-function efrit-doctor--redact-url "efrit-doctor")
 (declare-function efrit-permissions "efrit-permissions-ui")
 (declare-function efrit-review-package "efrit-package-review")
+(declare-function efrit-log-toggle-debug "efrit-log")
+(defvar efrit-log-level)
 (declare-function efrit-sandbox-reset-session "efrit-sandbox")
 
 ;;; Description helpers (all pure, all safe with modules unloaded)
@@ -132,6 +134,8 @@
        ("D" "Doctor (static)" efrit-doctor)
        ("L" "Doctor with live API check" (lambda () (interactive) (efrit-doctor t)))
        ("l" "Show log" efrit-menu-show-log)
+       ("G" efrit-log-toggle-debug :transient t
+        :description (lambda () (format "Debug logging [%s]" (if (eq efrit-log-level 'debug) "on" "off"))))
        ("R" "Reload efrit from source" efrit-reload)
        ("u" "Usage / endpoint" (lambda () (interactive) (message "%s" (efrit-menu--desc-endpoint))))]
       ["View"
