@@ -90,6 +90,21 @@
         (efrit-agent-svg-header)
         (should (= renders 3))))))
 
+(ert-deftest test-svg-header-xml-is-well-formed-with-special-chars ()
+  "Text runs are escaped: the key hint contains S-<return>, which
+turned the header into unparsable XML (blank header on every open)."
+  (test-svg--in-agent-buffer
+    (setq efrit-agent--status 'idle efrit-agent--thinking-label nil)
+    (let* ((m (efrit-agent-svg--model))
+           (svg (efrit-agent-svg--build m))
+           (xml (with-temp-buffer (svg-print svg) (buffer-string))))
+      (should (string-match-p "S-<return>" (alist-get :hint m)))
+      (should (string-match-p "S-&lt;return&gt;" xml))
+      ;; the whole document parses
+      (should (with-temp-buffer
+                (insert xml)
+                (car (xml-parse-region (point-min) (point-max))))))))
+
 (ert-deftest test-svg-header-failed-render-is-not-cached ()
   "A render error shows the text header for that redisplay only; the
 next redisplay tries the SVG again.  Caching the fallback left the

@@ -247,7 +247,11 @@ and `textLength' merely keeps each run inside its cell."
                                                      (textLength . ,(format "%d" w))
                                                      (lengthAdjust . "spacingAndGlyphs")
                                                      ,@extra)
-                                                   text))
+                                                   ;; svg-print writes text nodes
+                                                   ;; verbatim: "S-<return>" in the
+                                                   ;; key hint became a tag and the
+                                                   ;; whole header failed to parse
+                                                   (svg--encode-text text)))
                   (setq cursor (+ cursor w gap)))))
       (dolist (seg segments)
         (let* ((text (car seg))
