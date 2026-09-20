@@ -70,14 +70,20 @@ Levels in order: debug, info, warn, error, none"
     (define-key map (kbd "e") #'efrit-show-errors)
     (define-key map (kbd "g") #'efrit-log-goto-end)
     (define-key map (kbd "?") #'efrit-log-help)
+    (define-key map (kbd "q") #'efrit-log-quit)
     map))
+
+(defun efrit-log-quit ()
+  "Bury the log buffer: the window closes, the buffer and its text stay."
+  (interactive)
+  (quit-window nil))
 
 (defun efrit-log-help ()
   "Show the keys of the log buffer."
   (interactive)
   (message "%s"
            (substitute-command-keys
-            "\\[efrit-log-toggle-debug] toggle debug logging  \\[efrit-log-clear] clear  \\[efrit-show-errors] errors only  \\[efrit-log-goto-end] newest line  \\[quit-window] close  \\[efrit-log-help] this help")))
+            "\\[efrit-log-toggle-debug] toggle debug logging  \\[efrit-log-clear] clear  \\[efrit-show-errors] errors only  \\[efrit-log-goto-end] newest line  \\[efrit-log-quit] close  \\[efrit-log-help] this help")))
 
 (define-derived-mode efrit-log-mode special-mode "Efrit-Log"
   "The efrit log.  d toggles debug logging, c clears, e shows errors only, q closes."

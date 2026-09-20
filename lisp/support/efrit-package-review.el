@@ -562,11 +562,13 @@ mode turns it on (t) when it is nil and says so."
 ;; pass, so the trigger is measured instead of guessed.
 
 (defconst efrit-package-review--probe-variants
-  '((full        "the review request as sent")
-    (no-tool     "same, without the read tool")
-    (no-rubric   "same message, system prompt is one neutral sentence")
-    (plain       "no system prompt, one sentence asking to summarise the diff")
-    (tiny        "no system prompt, the first 2000 chars of the diff, summarise"))
+  '((full          "the review request as sent")
+    (no-tool       "same, without the read tool")
+    (no-rubric     "same message, system prompt is one neutral sentence")
+    (system-hello  "system prompt is one neutral sentence, user says hello")
+    (inline-system "no system field; the rubric is the first paragraph of the user message")
+    (plain         "no system prompt, one sentence asking to summarise the diff")
+    (tiny          "no system prompt, the first 2000 chars of the diff, summarise"))
   "Probe variants, most like the real request first.")
 
 (defun efrit-package-review--probe-request (variant info)
@@ -583,6 +585,13 @@ mode turns it on (t) when it is nil and says so."
       ('no-rubric (append base
                           `(("system" . "You help an Emacs user read a package update before installing it.")
                             ("messages" . [(("role" . "user") ("content" . ,msg))]))))
+      ('system-hello (append base
+                             `(("system" . "You are a helpful assistant.")
+                               ("messages" . [(("role" . "user") ("content" . "Say hello."))]))))
+      ('inline-system (append base
+                              `(("messages" . [(("role" . "user")
+                                                ("content" . ,(concat efrit-package-review--system-prompt
+                                                                      "\n\n---\n\n" msg)))]))))
       ('plain (append base
                       `(("messages" . [(("role" . "user")
                                         ("content" . ,(concat "Summarise this diff of an Emacs Lisp package in three sentences.\n\n" diff)))]))))

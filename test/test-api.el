@@ -30,5 +30,41 @@
       (should (string-match-p "model m-2" got))
       (should (string-match-p "No API key found" got)))))
 
+(ert-deftest test-api-refusal-retries-with-inlined-system ()
+  "A pre-generation refusal of a request with a system prompt is retried
+once with the prompt folded into the first user message; the retry's
+response is marked.  A refusal without a system prompt is returned as is."
+  (let ((sent nil) (efrit-api-inline-system-on-refusal t))
+    (cl-letf (((symbol-function 'efrit-api--request-sync-1)
+               (lambda (req &optional _timeout)
+                 (push req sent)
+                 (let ((r (make-hash-table :test 'equal)))
+                   (if (alist-get "system" req nil nil #'equal)
+                       (progn (puthash "stop_reason" "refusal" r) (puthash "content" (vector) r))
+                     (puthash "stop_reason" "end_turn" r))
+                   r))))
+      (let ((r (efrit-api-request-sync '(("model" . "m") ("system" . "Be brief.")
+                                         ("messages" . [(("role" . "user") ("content" . "hi"))])))))
+        (should (equal (gethash "stop_reason" r) "end_turn"))
+        (should (gethash "efrit-inlined-system" r))
+        (should (= 2 (length sent)))
+        (let* ((retry (car sent))
+               (first (aref (alist-get "messages" retry nil nil #'equal) 0)))
+          (should-not (alist-get "system" retry nil nil #'equal))
+          (should (string-match-p "\\`Be brief\\.\n\n---\n\nhi\\'" (alist-get "content" first nil nil #'equal)))))
+      ;; a cacheable (vector) system prompt is flattened to its text
+      (setq sent nil)
+      (let ((r (efrit-api-request-sync `(("model" . "m")
+                                         ("system" . ,(vector '(("type" . "text") ("text" . "Sys A")) '(("type" . "text") ("text" . "Sys B"))))
+                                         ("messages" . [(("role" . "user") ("content" . "hi"))])))))
+        (should (gethash "efrit-inlined-system" r))
+        (should (string-prefix-p "Sys A\nSys B" (alist-get "content" (aref (alist-get "messages" (car sent) nil nil #'equal) 0) nil nil #'equal))))
+      ;; no system prompt: no retry
+      (setq sent nil)
+      (cl-letf (((symbol-function 'efrit-api--request-sync-1)
+                 (lambda (&rest _) (let ((r (make-hash-table :test 'equal))) (puthash "stop_reason" "refusal" r) r))))
+        (let ((r (efrit-api-request-sync '(("model" . "m") ("messages" . [(("role" . "user") ("content" . "hi"))])))))
+          (should (equal (gethash "stop_reason" r) "refusal")))))))
+
 (provide 'test-api)
 ;;; test-api.el ends here
