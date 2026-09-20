@@ -57,6 +57,7 @@
 (require 'efrit-sandbox-store)
 
 (defvar transient-post-exit-hook)
+(declare-function efrit-sandbox-ask "efrit-sandbox-ui")
 (declare-function efrit-agent--append-to-conversation "efrit-agent-core")
 (declare-function efrit-show-preview "efrit-ui-helpers")
 (defvar efrit-agent-buffer-name)

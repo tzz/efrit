@@ -5,7 +5,7 @@ EMACS = emacs
 EMACS_BATCH = $(EMACS) --batch --no-init-file
 LOAD_PATH = -L lisp -L lisp/core -L lisp/interfaces -L lisp/support -L lisp/tools -L lisp/dev
 PACKAGE_NAME = efrit
-VERSION = 0.3.0
+VERSION = 0.4.1
 
 # Source files
 EL_FILES = $(wildcard lisp/*.el lisp/core/*.el lisp/support/*.el lisp/interfaces/*.el lisp/tools/*.el)
@@ -108,7 +108,7 @@ lisp/%.elc: lisp/%.el
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/tools\")" \
-		--eval "(setq byte-compile-error-on-warn nil)" \
+		--eval "(setq byte-compile-error-on-warn t byte-compile-warnings (quote (not docstrings docstrings-wide)))" \
 		--eval "(setq load-prefer-newer t)" \
 		-f batch-byte-compile $<
 
@@ -120,7 +120,7 @@ lisp/core/%.elc: lisp/core/%.el
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/tools\")" \
-		--eval "(setq byte-compile-error-on-warn nil)" \
+		--eval "(setq byte-compile-error-on-warn t byte-compile-warnings (quote (not docstrings docstrings-wide)))" \
 		--eval "(setq load-prefer-newer t)" \
 		-f batch-byte-compile $<
 
@@ -132,7 +132,7 @@ lisp/support/%.elc: lisp/support/%.el
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/tools\")" \
-		--eval "(setq byte-compile-error-on-warn nil)" \
+		--eval "(setq byte-compile-error-on-warn t byte-compile-warnings (quote (not docstrings docstrings-wide)))" \
 		--eval "(setq load-prefer-newer t)" \
 		-f batch-byte-compile $<
 
@@ -144,7 +144,7 @@ lisp/interfaces/%.elc: lisp/interfaces/%.el
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/tools\")" \
-		--eval "(setq byte-compile-error-on-warn nil)" \
+		--eval "(setq byte-compile-error-on-warn t byte-compile-warnings (quote (not docstrings docstrings-wide)))" \
 		--eval "(setq load-prefer-newer t)" \
 		-f batch-byte-compile $<
 
@@ -156,7 +156,7 @@ lisp/tools/%.elc: lisp/tools/%.el
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/tools\")" \
-		--eval "(setq byte-compile-error-on-warn nil)" \
+		--eval "(setq byte-compile-error-on-warn t byte-compile-warnings (quote (not docstrings docstrings-wide)))" \
 		--eval "(setq load-prefer-newer t)" \
 		-f batch-byte-compile $<
 
@@ -202,7 +202,7 @@ lint: checkdoc lint-defun lint-toplevel
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/tools\")" \
-		--eval "(setq byte-compile-error-on-warn nil)" \
+		--eval "(setq byte-compile-error-on-warn t byte-compile-warnings (quote (not docstrings docstrings-wide)))" \
 		--eval "(setq load-prefer-newer t)" \
 		-f batch-byte-compile $(EL_FILES)
 	@echo "✅ Code style and warnings checks passed"

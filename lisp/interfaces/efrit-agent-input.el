@@ -47,6 +47,8 @@ persists and accumulates conversation context.")
 
 ;;; Question Display
 
+(declare-function efrit-agent-question-menu "efrit-agent-input")
+
 (defun efrit-agent--add-question (question &optional options)
   "Add a QUESTION from Claude to the conversation region.
 OPTIONS is an optional list of choices the user can select.

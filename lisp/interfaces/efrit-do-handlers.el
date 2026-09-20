@@ -57,6 +57,7 @@
 (require 'efrit-sandbox)
 
 ;; Forward declarations
+(declare-function efrit-tool-emacs-apropos "efrit-tool-emacs-apropos")
 (declare-function efrit-tool-confirm-action "efrit-tool-confirm-action")
 (declare-function efrit-tool-checkpoint "efrit-tool-checkpoint")
 (declare-function efrit-tool-restore-checkpoint "efrit-tool-checkpoint")

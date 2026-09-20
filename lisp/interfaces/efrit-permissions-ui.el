@@ -52,6 +52,11 @@
 (require 'efrit-do-circuit-breaker)
 
 (declare-function transient-quit-one "transient")
+(declare-function efrit-permissions-grant-menu "efrit-permissions-ui")
+(declare-function efrit-permissions-default-menu "efrit-permissions-ui")
+(declare-function efrit-permissions-review-menu "efrit-permissions-ui")
+(declare-function efrit-permissions-limit-menu "efrit-permissions-ui")
+(declare-function efrit-permissions-global-menu "efrit-permissions-ui")
 
 (defgroup efrit-permissions-ui nil
   "The permissions editor."

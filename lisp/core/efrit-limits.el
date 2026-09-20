@@ -41,6 +41,7 @@
 (require 'efrit-settings)
 
 (defvar transient-post-exit-hook)
+(declare-function efrit-limits-menu "efrit-limits")
 (declare-function efrit-show-preview "efrit-ui-helpers")
 
 (defgroup efrit-limits nil

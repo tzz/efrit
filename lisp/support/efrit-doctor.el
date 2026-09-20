@@ -66,6 +66,7 @@
 (declare-function efrit-sandbox-ui-prompt "efrit-sandbox-ui")
 (declare-function efrit-sandbox-store-file "efrit-sandbox-store")
 (declare-function efrit-sandbox-store-ensure-loaded "efrit-sandbox-store")
+(declare-function gnutls-boot-parameters "gnutls")
 
 (defvar efrit-api-auth-scheme)
 (defvar efrit-api-base-url)
