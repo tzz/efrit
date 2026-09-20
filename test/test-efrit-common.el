@@ -152,6 +152,33 @@
   (let ((result (efrit-common-escape-json-unicode "test \u2714 pass")))
     (should (string-match-p "\\\\u2714" result))))
 
+(ert-deftest test-common-escape-unicode-astral-is-a-surrogate-pair ()
+  "A character above U+FFFF is two escapes, and the result parses as JSON.
+One six-digit escape used to make the request invalid JSON (uniline's
+diff, full of box-drawing and emoji, failed with api_error)."
+  (should (equal (efrit-common-escape-json-unicode "\U0001F600") "\\uD83D\\uDE00"))
+  (should (equal (efrit-common-escape-json-unicode "\U0001D518") "\\uD835\\uDD18"))
+  (should (equal (efrit-common-escape-json-unicode "\U0010FFFF") "\\uDBFF\\uDFFF"))
+  (let* ((text (concat "box \u2500\u253C emoji \U0001F600 math \U0001D518"))
+         (json (efrit-common-escape-json-unicode (json-encode `(("t" . ,text))))))
+    (should (string-match-p "\\`[\x00-\x7F]*\\'" json))
+    (should (equal (gethash "t" (json-parse-string json)) text))))
+
+(ert-deftest test-common-escape-unicode-unencodable-becomes-replacement ()
+  "Raw bytes, lone surrogates, and out-of-range code points become U+FFFD.
+Raw bytes appear when a diff is read from a file that is not valid
+UTF-8; the API rejects the escape Emacs would print for them."
+  (let ((raw (string-to-multibyte "\377")))
+    (should (equal (efrit-common-escape-json-unicode raw) "\\uFFFD")))
+  (should (equal (efrit-common-escape-json-unicode (string #xD800)) "\\uFFFD"))
+  (should (equal (efrit-common-escape-json-unicode (string #x110000)) "\\uFFFD"))
+  ;; `json-encode' itself writes a raw byte as the text \\377 (a
+  ;; backslash and three digits), so a request is valid JSON either way
+  (let ((json (efrit-common-escape-json-unicode
+               (json-encode `(("t" . ,(concat "a" (string-to-multibyte "\377") "b")))))))
+    (should (string-match-p "\\`[\x00-\x7F]*\\'" json))
+    (should (json-parse-string json))))
+
 ;;; URL and Header Building Tests
 
 (ert-deftest test-common-get-base-url-default ()

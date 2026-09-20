@@ -88,7 +88,7 @@
 
 (defconst efrit-sandbox-eval--forbidden-prefixes
   '("efrit-sandbox" "efrit-permission" "efrit-review" "efrit-limits" "efrit-settings"
-    "efrit-package-review")
+    "efrit-package-review" "efrit-testdrive")
   "Symbol-name prefixes refused wherever they appear.
 efrit-review, efrit-limits and efrit-settings are included so the model
 cannot switch off its own reviewer, raise its own iteration cap, or

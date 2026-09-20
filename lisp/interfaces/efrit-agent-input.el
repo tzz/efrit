@@ -34,6 +34,9 @@
 (declare-function efrit-session-id "efrit-session")
 (declare-function efrit-agent--begin-session "efrit-agent-core")
 (declare-function efrit-agent-toggle-expand "efrit-agent")
+(declare-function efrit-agent-mode "efrit-agent")
+(declare-function efrit-agent--init-regions "efrit-agent")
+(declare-function efrit-agent--setup-regions "efrit-agent")
 
 ;;; REPL Session State
 ;;
@@ -404,9 +407,11 @@ If no REPL session exists, creates one automatically."
       ;; Use REPL session model
       (efrit-agent--repl-send input))))
 
-(defun efrit-agent--repl-send (input)
+(defun efrit-agent--repl-send (input &optional api-input)
   "Send INPUT to the REPL session.
-Creates a new REPL session if needed, otherwise continues the existing one."
+Creates a new REPL session if needed, otherwise continues the existing one.
+API-INPUT, when given, is what the model receives in place of INPUT
+\(see `efrit-repl-continue').  Returns non-nil if the turn started."
   ;; Ensure we have a REPL session
   (unless efrit-agent--repl-session
     (setq efrit-agent--repl-session (efrit-repl-session-create default-directory))
@@ -417,21 +422,23 @@ Creates a new REPL session if needed, otherwise continues the existing one."
       ;; Idle - continue with new input
       ('idle
        (efrit-repl-continue session input
-                            #'efrit-agent--on-turn-complete)
-       (message "Efrit: continuing conversation"))
+                            #'efrit-agent--on-turn-complete api-input)
+       (message "Efrit: continuing conversation")
+       t)
 
       ;; Paused - resume and continue
       ('paused
        (efrit-repl-session-resume session)
        (efrit-repl-continue session input
-                            #'efrit-agent--on-turn-complete)
-       (message "Efrit: resumed and continuing"))
+                            #'efrit-agent--on-turn-complete api-input)
+       (message "Efrit: resumed and continuing")
+       t)
 
       ;; Working - can't send right now
       ('working
        (message "Efrit: session is busy, please wait")
        ;; TODO: Queue input for later
-       )
+       nil)
 
       ;; Waiting for specific input (question)
       ('waiting
@@ -441,15 +448,41 @@ Creates a new REPL session if needed, otherwise continues the existing one."
        (setq efrit-agent--pending-question nil)
        (efrit-agent--reset-input-prompt)
        (efrit-repl-continue session input
-                            #'efrit-agent--on-turn-complete)
-       (message "Efrit: response sent"))
+                            #'efrit-agent--on-turn-complete api-input)
+       (message "Efrit: response sent")
+       t)
 
       ;; Unknown state
       (_
        (message "Efrit: unknown session state, resetting")
        (efrit-repl-session-reset session)
        (efrit-repl-continue session input
-                            #'efrit-agent--on-turn-complete)))))
+                            #'efrit-agent--on-turn-complete api-input)
+       t))))
+
+;;;###autoload
+(defun efrit-submit (shown &optional api-input)
+  "Start a REPL turn from Lisp: show SHOWN in the conversation, send API-INPUT.
+For packages that prepare a prompt over data they gathered (a mail
+reader over selected messages, say): SHOWN is the short line the user
+sees as their turn, API-INPUT (default SHOWN) the full text the model
+receives, with the usual editor-context block prepended.  Opens the
+agent buffer if needed.  Returns non-nil if the turn started; nil
+when the session is busy, in which case nothing was sent."
+  (require 'efrit-agent)
+  (let ((buffer (efrit-agent--get-buffer)))
+    (with-current-buffer buffer
+      (unless (derived-mode-p 'efrit-agent-mode)
+        (efrit-agent-mode))
+      (unless (and efrit-agent--conversation-end
+                   (marker-position efrit-agent--conversation-end))
+        (efrit-agent--init-regions)
+        (efrit-agent--setup-regions))
+      (let ((started (progn
+                       (efrit-agent--add-user-message shown)
+                       (efrit-agent--repl-send shown api-input))))
+        (efrit-agent-display buffer nil)
+        started))))
 
 (defun efrit-agent--on-turn-complete (session stop-reason)
   "Callback when a REPL turn completes.

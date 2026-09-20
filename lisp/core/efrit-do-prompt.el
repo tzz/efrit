@@ -27,7 +27,10 @@
 (declare-function efrit-context-item-result "efrit-context")
 
 ;; External variables
-(defvar efrit-do--last-result)
+(defvar efrit-do--last-result nil
+  "Result of the last executed command.
+Defined here, where the prompt reads it, and reused by efrit-do:
+the REPL loop builds its system prompt without efrit-do loaded.")
 (defvar efrit-do-max-retries)
 (defvar efrit-project-root)
 

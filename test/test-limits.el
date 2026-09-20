@@ -112,7 +112,7 @@
                 (lambda (_s _m cb)
                   (let ((r (pop test-responses)))
                     (if r (funcall cb r nil) (funcall cb nil "queue empty")))))
-               ((symbol-function 'efrit-do--execute-tool) (lambda (_i) "1"))
+               ((symbol-function 'efrit-do--execute-tool-string) (lambda (_i) "1"))
                ((symbol-function 'efrit-agent-set-status) #'ignore))
        (unwind-protect (progn ,@body) (clrhash efrit-repl-loop--active)))))
 

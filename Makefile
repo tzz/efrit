@@ -88,7 +88,6 @@ lisp/core/efrit-log.elc: lisp/core/efrit-config.elc
 lisp/core/efrit-common.elc: lisp/core/efrit-config.elc
 lisp/core/efrit-tools.elc: lisp/core/efrit-config.elc lisp/core/efrit-log.elc lisp/core/efrit-common.elc
 # Core module dependencies
-lisp/core/efrit-chat.elc: lisp/core/efrit-config.elc lisp/core/efrit-common.elc lisp/core/efrit-tools.elc lisp/interfaces/efrit-agent.elc
 lisp/core/efrit-session.elc: lisp/core/efrit-config.elc lisp/core/efrit-log.elc lisp/core/efrit-common.elc
 lisp/core/efrit-executor.elc: lisp/core/efrit-log.elc lisp/core/efrit-common.elc
 # Support module dependencies
@@ -266,7 +265,7 @@ lint-defun:
 # kill-emacs on load) are excluded.  Tests needing a real API key or
 # a git repo with history are expected to be skipped or to fail in a
 # bare checkout; see TEST_KNOWN_FAILING for the current list.
-ERT_TEST_FILES := $(filter-out test/test-fibonacci-scenario.el,$(wildcard test/test-*.el))
+ERT_TEST_FILES := $(wildcard test/test-*.el)
 ERT_LOAD_ARGS  := $(foreach f,$(ERT_TEST_FILES),-l $(f))
 
 # Autoloads.  package.el only scans lisp/ itself, so the commands that
@@ -353,7 +352,6 @@ coverage-simple: compile
 	@$(EMACS_BATCH) -L lisp -L lisp/core -L lisp/interfaces -L lisp/support -L lisp/tools -L test \
 		--eval "(require 'efrit)" \
 		--eval "(require 'efrit-do)" \
-		--eval "(require 'efrit-chat)" \
 		--eval "(require 'efrit-coverage)" \
 		--eval "(efrit-coverage-simple-start)" \
 		--eval "(efrit-config-data-file \"test\")" \

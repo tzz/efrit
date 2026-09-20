@@ -513,7 +513,7 @@ carries a cache_control block, which is the caching probe."
     (cond
      ((not (fboundp 'package-review))
       (efrit-doctor--info "Package review: this Emacs has no package-review (needs 31)"
-                          "M-x efrit-review-package still reviews an installed package on demand."))
+                          "M-x efrit-review-package still reviews an installed package on demand, and M-x efrit-review-all-packages reviews everything installed."))
      ((not (bound-and-true-p efrit-package-review-mode))
       (efrit-doctor--warn "Package review off"
                           "M-x efrit-package-review-mode has a model read each incoming package (source, diff, changelog) and report risks before package.el asks you."

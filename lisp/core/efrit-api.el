@@ -16,7 +16,7 @@
 ;; - Async and sync API request functions
 ;; - Response parsing utilities
 ;;
-;; Both efrit-chat-api.el and efrit-executor.el should use this layer
+;; The loop engine and the executor use this layer
 ;; instead of duplicating HTTP logic.
 
 ;;; Code:
@@ -265,10 +265,71 @@ response buffer."
                  (and usage (gethash "cache_creation_input_tokens" usage))
                  (or purpose efrit-api-request-purpose "request")))))
 
+(defcustom efrit-api-inline-system-on-refusal t
+  "When non-nil, a request refused before generation is retried once
+with its system prompt folded into the first user message.
+Some routes refuse any request that carries a `system' field (the
+stop reason is refusal, no output, in about a second) while the same
+text as part of the user message is answered.  The retry is logged;
+the response of the retry carries the key `efrit-inlined-system' so a
+caller can tell."
+  :type 'boolean
+  :group 'efrit)
+
+(defun efrit-api--refused-p (response)
+  "Non-nil if RESPONSE is a pre-generation refusal."
+  (and (hash-table-p response)
+       (equal (gethash "stop_reason" response) "refusal")))
+
+(defun efrit-api-inline-system (request-data)
+  "REQUEST-DATA with its system prompt moved into the first user message.
+Returns nil when there is no system prompt to move."
+  (let ((system (alist-get "system" request-data nil nil #'equal)))
+    (when system
+      (let* ((text (cond ((stringp system) system)
+                         ((vectorp system)
+                          (mapconcat (lambda (b) (or (alist-get "text" b nil nil #'equal) "")) system "\n"))
+                         (t (format "%s" system))))
+             (messages (append (alist-get "messages" request-data nil nil #'equal) nil))
+             (first (car messages))
+             (content (alist-get "content" first nil nil #'equal))
+             (new-first
+              (if (stringp content)
+                  `(("role" . "user") ("content" . ,(concat text "\n\n---\n\n" content)))
+                ;; a block vector: prepend a text block
+                `(("role" . "user")
+                  ("content" . ,(vconcat (vector `(("type" . "text") ("text" . ,text)))
+                                         content))))))
+        (append (cl-remove-if (lambda (c) (member (car c) '("system" "messages"))) request-data)
+                `(("messages" . ,(vconcat (cons new-first (cdr messages))))))))))
+
 (defun efrit-api-request-async (request-data callback &optional error-callback)
   "Send REQUEST-DATA to Claude API asynchronously.
 Calls CALLBACK with (RESPONSE) on success.
-Calls ERROR-CALLBACK with (ERROR-MESSAGE) on failure, or signals error if nil."
+Calls ERROR-CALLBACK with (ERROR-MESSAGE) on failure, or signals error if nil.
+A refusal of a request carrying a system prompt is retried once with
+the prompt inlined, as `efrit-api-request-sync' does."
+  (let ((purpose efrit-api-request-purpose))
+    (efrit-api--request-async-1
+     request-data
+     (lambda (response)
+       (if (and efrit-api-inline-system-on-refusal
+                (efrit-api--refused-p response)
+                (alist-get "system" request-data nil nil #'equal))
+           (let ((efrit-api-request-purpose purpose))
+             (efrit-log 'warn "api: refused with a system prompt; retrying with it inlined (%s)"
+                        (or purpose "request"))
+             (efrit-api--request-async-1
+              (efrit-api-inline-system request-data)
+              (lambda (r2)
+                (when (hash-table-p r2) (puthash "efrit-inlined-system" t r2))
+                (funcall callback r2))
+              error-callback))
+         (funcall callback response)))
+     error-callback)))
+
+(defun efrit-api--request-async-1 (request-data callback &optional error-callback)
+  "One asynchronous request; see `efrit-api-request-async'."
   (condition-case err
       (let* ((api-key (efrit-common-get-api-key))
              (req (efrit-api-apply-transforms
@@ -325,44 +386,6 @@ Calls ERROR-CALLBACK with (ERROR-MESSAGE) on failure, or signals error if nil."
        (signal (car err) (cdr err))))))
 
 ;;; Sync Request
-
-(defcustom efrit-api-inline-system-on-refusal t
-  "When non-nil, a request refused before generation is retried once
-with its system prompt folded into the first user message.
-Some routes refuse any request that carries a `system' field (the
-stop reason is refusal, no output, in about a second) while the same
-text as part of the user message is answered.  The retry is logged;
-the response of the retry carries the key `efrit-inlined-system' so a
-caller can tell."
-  :type 'boolean
-  :group 'efrit)
-
-(defun efrit-api--refused-p (response)
-  "Non-nil if RESPONSE is a pre-generation refusal."
-  (and (hash-table-p response)
-       (equal (gethash "stop_reason" response) "refusal")))
-
-(defun efrit-api-inline-system (request-data)
-  "REQUEST-DATA with its system prompt moved into the first user message.
-Returns nil when there is no system prompt to move."
-  (let ((system (alist-get "system" request-data nil nil #'equal)))
-    (when system
-      (let* ((text (cond ((stringp system) system)
-                         ((vectorp system)
-                          (mapconcat (lambda (b) (or (alist-get "text" b nil nil #'equal) "")) system "\n"))
-                         (t (format "%s" system))))
-             (messages (append (alist-get "messages" request-data nil nil #'equal) nil))
-             (first (car messages))
-             (content (alist-get "content" first nil nil #'equal))
-             (new-first
-              (if (stringp content)
-                  `(("role" . "user") ("content" . ,(concat text "\n\n---\n\n" content)))
-                ;; a block vector: prepend a text block
-                `(("role" . "user")
-                  ("content" . ,(vconcat (vector `(("type" . "text") ("text" . ,text)))
-                                         content))))))
-        (append (cl-remove-if (lambda (c) (member (car c) '("system" "messages"))) request-data)
-                `(("messages" . ,(vconcat (cons new-first (cdr messages))))))))))
 
 (defun efrit-api-request-sync (request-data &optional timeout)
   "Send REQUEST-DATA to Claude API synchronously.

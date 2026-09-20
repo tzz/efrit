@@ -368,72 +368,145 @@ with a brace after the object; a fence around the object is fine."
   :type 'integer
   :group 'efrit-package-review)
 
+(cl-defstruct (efrit-package-review-state (:constructor efrit-package-review-state-create)
+                                          (:copier nil))
+  "One review in progress: the conversation so far and the files opened."
+  info
+  messages
+  (reads nil))
+
+(defun efrit-package-review--begin (info)
+  "A fresh state for reviewing INFO."
+  (efrit-package-review-state-create
+   :info info
+   :messages (list `((role . "user") (content . ,(efrit-package-review--user-message info))))))
+
+(defun efrit-package-review--purpose (info)
+  "The `efrit-api-request-purpose' for a review of INFO."
+  (format "reviewing package %s %s" (plist-get info :name) (plist-get info :version)))
+
+(defun efrit-package-review--finish (state verdict)
+  "VERDICT with STATE's reads attached: what every driver returns."
+  (append (list :reads (reverse (efrit-package-review-state-reads state))) verdict))
+
+(defun efrit-package-review--answer-tools (state uses)
+  "Run the reviewer's tool calls USES, extend STATE's conversation with them."
+  (let* ((info (efrit-package-review-state-info state))
+         (dir (plist-get info :dir))
+         (results nil))
+    (dolist (use uses)
+      (let* ((input (nth 2 use))
+             (rel (and (hash-table-p input) (gethash "path" input)))
+             (out (if (equal (nth 1 use) efrit-package-review--tool-name)
+                      (efrit-package-review--read-tool dir input)
+                    (format "Error: unknown tool %s" (nth 1 use)))))
+        (efrit-log 'debug "package review %s: read %s (%d chars)" (plist-get info :name) rel (length out))
+        (push rel (efrit-package-review-state-reads state))
+        (push (efrit-api-build-tool-result (nth 0 use) out (string-prefix-p "Error" out)) results)))
+    (setf (efrit-package-review-state-messages state)
+          (append (efrit-package-review-state-messages state)
+                  (list `((role . "user") (content . ,(vconcat (nreverse results)))))))))
+
+(defun efrit-package-review--step (state response)
+  "Advance STATE with the reviewer's RESPONSE.
+Returns (done . VERDICT) when the review is over, or (continue) when
+the reviewer asked to read files and STATE's conversation now carries
+the answers for the next request."
+  (let ((info (efrit-package-review-state-info state)))
+    (cond
+     ((and response (efrit-response-error response))
+      (cons 'done (list :verdict 'error
+                        :summary (efrit-error-message (efrit-response-error response)))))
+     ;; The API declined before generating.  Not a finding.
+     ((equal (efrit-response-stop-reason response) "refusal")
+      (cons 'done
+            (list :verdict 'error :refused t
+                  :summary (format "the API refused to process this request (stop reason refusal, %s tokens in). Nothing was judged. This is a classifier decision about the request, not a finding about %s; try another model (efrit-package-review-model)."
+                                   (let ((u (efrit-response-usage response)))
+                                     (or (and u (gethash "input_tokens" u)) "?"))
+                                   (plist-get info :name)))))
+     (t
+      (let* ((content (efrit-response-content response))
+             (uses (delq nil (mapcar #'efrit-content-item-as-tool-use (append content nil))))
+             (text (efrit-package-review--response-text response)))
+        (cond
+         ;; tool calls: answer them and go round again
+         ((and uses (< (length (efrit-package-review-state-reads state)) efrit-package-review-max-reads))
+          (setf (efrit-package-review-state-messages state)
+                (append (efrit-package-review-state-messages state)
+                        (list `((role . "assistant") (content . ,content)))))
+          (efrit-package-review--answer-tools state uses)
+          (list 'continue))
+         (uses
+          (cons 'done (list :verdict 'error
+                            :summary (format "the reviewer asked to read more than %d files without answering"
+                                             efrit-package-review-max-reads))))
+         (t
+          (efrit-log 'debug "package review %s: reviewer said: %s" (plist-get info :name)
+                     (truncate-string-to-width text 600 nil nil "…"))
+          (cons 'done
+                (or (efrit-package-review-parse text)
+                    (list :verdict 'error
+                          :summary (format "the reviewer's answer was not a verdict (%d chars, stop reason %s)"
+                                           (length text) (or (efrit-response-stop-reason response) "?"))
+                          :raw text))))))))))
+
 (defun efrit-package-review-run (info)
   "Review INFO: a synchronous tool loop until the reviewer answers.
 Returns the parsed verdict plist with :reads (the files opened), or
 \(:verdict error :summary WHY [:refused t] [:raw TEXT]) when the call,
-the parse, or the read budget failed."
-  (let* ((dir (plist-get info :dir))
-         (messages (list `((role . "user") (content . ,(efrit-package-review--user-message info)))))
-         (reads nil)
+the parse, or the read budget failed.  Blocks: for `package-review',
+which is synchronous itself.  `efrit-package-review-run-async' is the
+same review without blocking."
+  (let* ((state (efrit-package-review--begin info))
          (result nil)
-         (efrit-api-request-purpose
-          (format "reviewing package %s %s before install"
-                  (plist-get info :name) (plist-get info :version))))
+         (efrit-api-request-purpose (efrit-package-review--purpose info)))
     (condition-case err
         (while (not result)
-          (let ((response (efrit-api-request-sync (efrit-package-review--request messages)
-                                                  efrit-package-review-timeout)))
-            (cond
-             ((and response (efrit-response-error response))
-              (setq result (list :verdict 'error
-                                 :summary (efrit-error-message (efrit-response-error response)))))
-             ;; The API declined before generating.  Not a finding.
-             ((equal (efrit-response-stop-reason response) "refusal")
-              (setq result
-                    (list :verdict 'error :refused t
-                          :summary (format "the API refused to process this request (stop reason refusal, %s tokens in). Nothing was judged. This is a classifier decision about the request, not a finding about %s; try another model (efrit-package-review-model)."
-                                           (let ((u (efrit-response-usage response)))
-                                             (or (and u (gethash "input_tokens" u)) "?"))
-                                           (plist-get info :name)))))
-             (t
-              (let* ((content (efrit-response-content response))
-                     (uses (delq nil (mapcar #'efrit-content-item-as-tool-use (append content nil))))
-                     (text (efrit-package-review--response-text response)))
-                (cond
-                 ;; tool calls: answer them and go round again
-                 ((and uses (< (length reads) efrit-package-review-max-reads))
-                  (setq messages (append messages (list `((role . "assistant") (content . ,content)))))
-                  (let ((results nil))
-                    (dolist (use uses)
-                      (let* ((input (nth 2 use))
-                             (rel (and (hash-table-p input) (gethash "path" input)))
-                             (out (if (equal (nth 1 use) efrit-package-review--tool-name)
-                                      (efrit-package-review--read-tool dir input)
-                                    (format "Error: unknown tool %s" (nth 1 use)))))
-                        (efrit-log 'debug "package review %s: read %s (%d chars)"
-                                   (plist-get info :name) rel (length out))
-                        (push rel reads)
-                        (push (efrit-api-build-tool-result (nth 0 use) out
-                                                           (string-prefix-p "Error" out))
-                              results)))
-                    (setq messages (append messages
-                                           (list `((role . "user") (content . ,(vconcat (nreverse results)))))))))
-                 (uses
-                  (setq result (list :verdict 'error
-                                     :summary (format "the reviewer asked to read more than %d files without answering"
-                                                      efrit-package-review-max-reads))))
-                 (t
-                  (efrit-log 'debug "package review %s: reviewer said: %s" (plist-get info :name)
-                             (truncate-string-to-width text 600 nil nil "…"))
-                  (setq result
-                        (or (efrit-package-review-parse text)
-                            (list :verdict 'error
-                                  :summary (format "the reviewer's answer was not a verdict (%d chars, stop reason %s)"
-                                                   (length text) (or (efrit-response-stop-reason response) "?"))
-                                  :raw text))))))))))
+          (let ((step (efrit-package-review--step
+                       state
+                       (efrit-api-request-sync
+                        (efrit-package-review--request (efrit-package-review-state-messages state))
+                        efrit-package-review-timeout))))
+            (when (eq (car step) 'done) (setq result (cdr step)))))
       (error (setq result (list :verdict 'error :summary (error-message-string err)))))
-    (append (list :reads (nreverse reads)) result)))
+    (efrit-package-review--finish state result)))
+
+(defun efrit-package-review-run-async (info callback)
+  "Review INFO without blocking; call CALLBACK with the verdict when done.
+The verdict has the shape `efrit-package-review-run' returns.  Returns
+the state; `efrit-package-review-cancel' on it stops the loop after
+the request in flight."
+  (let ((state (efrit-package-review--begin info)))
+    (efrit-package-review--send state callback)
+    state))
+
+(defvar efrit-package-review--cancelled (make-hash-table :test 'eq :weakness 'key)
+  "States whose async review was cancelled: the loop stops at the next step.")
+
+(defun efrit-package-review-cancel (state)
+  "Stop the async review STATE after the request in flight."
+  (puthash state t efrit-package-review--cancelled))
+
+(defun efrit-package-review--send (state callback)
+  "Send STATE's next request; on the answer, step and send again or finish."
+  (let ((efrit-api-request-purpose (efrit-package-review--purpose (efrit-package-review-state-info state))))
+    (efrit-api-request-async
+     (efrit-package-review--request (efrit-package-review-state-messages state))
+     (lambda (response)
+       (let ((step (condition-case err
+                       (efrit-package-review--step state response)
+                     (error (cons 'done (list :verdict 'error :summary (error-message-string err)))))))
+         (cond
+          ((eq (car step) 'done)
+           (funcall callback (efrit-package-review--finish state (cdr step))))
+          ((gethash state efrit-package-review--cancelled)
+           (funcall callback (efrit-package-review--finish
+                              state (list :verdict 'error :cancelled t :summary "cancelled"))))
+          (t (efrit-package-review--send state callback)))))
+     (lambda (message)
+       (funcall callback (efrit-package-review--finish
+                          state (list :verdict 'error :summary message)))))))
 
 (defun efrit-package-review--response-text (response)
   (let ((content (efrit-response-content response)) (texts nil))
@@ -455,58 +528,238 @@ the parse, or the read budget failed."
 
 (defun efrit-package-review-verdict-line (verdict)
   "One line: the verdict and the count of findings by severity."
-  (let ((counts (mapcar (lambda (sev)
-                          (cons sev (cl-count sev (plist-get verdict :findings)
-                                              :key (lambda (f) (plist-get f :severity)))))
-                        efrit-package-review-severities)))
-    (pcase (plist-get verdict :verdict)
-      ('error (format "efrit review failed: %s" (plist-get verdict :summary)))
-      (v (format "efrit: %s%s%s"
-                 (if (eq v 'approve) "approve" "REJECT")
-                 (let ((parts (cl-remove-if (lambda (c) (zerop (cdr c))) counts)))
-                   (if parts
-                       (concat " · " (mapconcat (lambda (c) (format "%d %s" (cdr c) (car c))) parts ", "))
-                     " · no findings"))
-                 (if (plist-get verdict :saw-everything) "" " · did not see everything"))))))
+  (pcase (plist-get verdict :verdict)
+    ('error (format "efrit review failed: %s" (plist-get verdict :summary)))
+    (v (format "efrit: %s · %s%s"
+               (if (eq v 'approve) "approve" "REJECT")
+               (efrit-package-review--counts-text verdict)
+               (if (plist-get verdict :saw-everything) "" " · did not see everything")))))
+
+(defgroup efrit-package-review-faces nil
+  "Faces of the package review report."
+  :group 'efrit-package-review)
+
+(defface efrit-package-review-title
+  '((t :inherit bold :height 1.2))
+  "The package name and version at the top of a report."
+  :group 'efrit-package-review-faces)
+
+(defface efrit-package-review-approve
+  '((((background dark)) :foreground "#1b1b1b" :background "#8fbc8f")
+    (t :foreground "white" :background "#2e8b57"))
+  "Badge of an approving verdict."
+  :group 'efrit-package-review-faces)
+
+(defface efrit-package-review-reject
+  '((((background dark)) :foreground "#1b1b1b" :background "#e57373")
+    (t :foreground "white" :background "#b22222"))
+  "Badge of a rejecting verdict."
+  :group 'efrit-package-review-faces)
+
+(defface efrit-package-review-failed
+  '((((background dark)) :foreground "#1b1b1b" :background "#b0b0b0")
+    (t :foreground "white" :background "#6e6e6e"))
+  "Badge of a review that did not produce a verdict."
+  :group 'efrit-package-review-faces)
+
+(defface efrit-package-review-high
+  '((t :inherit efrit-package-review-reject))
+  "Badge of a high severity finding."
+  :group 'efrit-package-review-faces)
+
+(defface efrit-package-review-medium
+  '((((background dark)) :foreground "#1b1b1b" :background "#e6b422")
+    (t :foreground "#1b1b1b" :background "#f0c040"))
+  "Badge of a medium severity finding."
+  :group 'efrit-package-review-faces)
+
+(defface efrit-package-review-low
+  '((((background dark)) :foreground "#1b1b1b" :background "#8ab4f8")
+    (t :foreground "white" :background "#3b6ea5"))
+  "Badge of a low severity finding."
+  :group 'efrit-package-review-faces)
+
+(defface efrit-package-review-info
+  '((t :inherit efrit-package-review-failed))
+  "Badge of an informational finding."
+  :group 'efrit-package-review-faces)
+
+(defface efrit-package-review-note
+  '((t :inherit default))
+  "The text of a finding."
+  :group 'efrit-package-review-faces)
+
+(defface efrit-package-review-meta
+  '((t :inherit shadow))
+  "The footer: reviewer model, what it was given, what it opened."
+  :group 'efrit-package-review-faces)
+
+(defcustom efrit-package-review-fill-column 78
+  "Width the report's prose is filled to, bounded by the window width."
+  :type 'integer
+  :group 'efrit-package-review)
+
+(defun efrit-package-review--verdict-face (verdict)
+  "The badge face for VERDICT's verdict."
+  (pcase (plist-get verdict :verdict)
+    ('approve 'efrit-package-review-approve)
+    ('error 'efrit-package-review-failed)
+    (_ 'efrit-package-review-reject)))
+
+(defun efrit-package-review--verdict-word (verdict)
+  "The word on VERDICT's badge."
+  (pcase (plist-get verdict :verdict)
+    ('approve "APPROVE")
+    ('error "NO VERDICT")
+    (_ "REJECT")))
+
+(defun efrit-package-review--severity-face (severity)
+  "The badge face for SEVERITY."
+  (intern (format "efrit-package-review-%s" severity)))
+
+(defun efrit-package-review--sorted-findings (verdict)
+  "VERDICT's findings, most serious first, order within a severity kept."
+  (sort (copy-sequence (plist-get verdict :findings))
+        (lambda (a b) (< (cl-position (plist-get a :severity) efrit-package-review-severities)
+                         (cl-position (plist-get b :severity) efrit-package-review-severities)))))
+
+(defun efrit-package-review--counts-text (verdict)
+  "\"2 high, 1 low\" for VERDICT, or \"no findings\"."
+  (let ((parts (delq nil
+                     (mapcar (lambda (sev)
+                               (let ((n (cl-count sev (plist-get verdict :findings)
+                                                  :key (lambda (f) (plist-get f :severity)))))
+                                 (and (> n 0) (format "%d %s" n sev))))
+                             efrit-package-review-severities))))
+    (if parts (mapconcat #'identity parts ", ") "no findings")))
+
+(defun efrit-package-review--footer (info verdict)
+  "The footer line: reviewer, what it was given, what it opened."
+  (format "Reviewer: %s.  Given: %d file(s) listed%s%s.  Opened: %s."
+          (efrit-package-review-model)
+          (length (plist-get info :files))
+          (if (plist-get info :diff) ", diff against installed" "")
+          (if (plist-get info :news) ", changelog" "")
+          (let ((reads (delete-dups (copy-sequence (plist-get verdict :reads)))))
+            (if reads (mapconcat #'identity reads ", ") "nothing"))))
+
+(defun efrit-package-review--location (finding)
+  "\"file.el:12\" for FINDING, or nil when it names no file."
+  (when-let* ((file (plist-get finding :file)))
+    (if (plist-get finding :line)
+        (format "%s:%s" file (plist-get finding :line))
+      file)))
 
 (defun efrit-package-review-report (info verdict)
-  "The full report text for INFO and VERDICT."
-  (concat
-   (format "%s %s%s\n%s\n\n"
-           (plist-get info :name) (plist-get info :version)
-           (if (plist-get info :old-version) (format "  (from %s)" (plist-get info :old-version)) "")
-           (efrit-package-review-verdict-line verdict))
-   (plist-get verdict :summary) "\n"
-   (when-let* ((fs (plist-get verdict :findings)))
-     (concat "\n"
-             (mapconcat (lambda (f)
-                          (format "  %-6s %s%s\n         %s"
-                                  (upcase (symbol-name (plist-get f :severity)))
-                                  (or (plist-get f :file) "")
-                                  (if (plist-get f :line) (format ":%s" (plist-get f :line)) "")
-                                  (plist-get f :note)))
-                        (sort (copy-sequence fs)
-                              (lambda (a b) (< (cl-position (plist-get a :severity) efrit-package-review-severities)
-                                               (cl-position (plist-get b :severity) efrit-package-review-severities))))
-                        "\n")
-             "\n"))
-   (when-let* ((raw (plist-get verdict :raw)))
-     (concat "\nThe reviewer's answer, verbatim:\n\n"
-             (mapconcat (lambda (l) (concat "  | " l)) (split-string raw "\n") "\n")
-             "\n"))
-   (format "\nReviewer: %s.  Given: %d file(s) listed%s%s.  Opened: %s."
-           (efrit-package-review-model)
-           (length (plist-get info :files))
-           (if (plist-get info :diff) ", diff against installed" "")
-           (if (plist-get info :news) ", changelog" "")
-           (let ((reads (delete-dups (copy-sequence (plist-get verdict :reads)))))
-             (if reads (mapconcat #'identity reads ", ") "nothing")))))
+  "The report for INFO and VERDICT as plain text: logs, tests, the kill ring.
+`efrit-package-review-render' is the same report with faces and
+badges, inserted into a buffer."
+  (with-temp-buffer
+    (efrit-package-review-render info verdict t)
+    (buffer-substring-no-properties (point-min) (point-max))))
+
+(defun efrit-package-review--fill-paragraphs (start end fill-width)
+  "Fill each paragraph between START and END to FILL-WIDTH.
+Indentation of the first line is kept for every line of the paragraph."
+  (let ((fill-column fill-width) (adaptive-fill-mode nil))
+    (save-excursion
+      (goto-char start)
+      (while (< (point) end)
+        (skip-chars-forward " \t\n" end)
+        (when (< (point) end)
+          (let* ((indent (current-indentation))
+                 (fill-prefix (make-string indent ?\s))
+                 (para-start (line-beginning-position))
+                 (para-end (save-excursion (forward-paragraph) (point))))
+            (fill-region-as-paragraph para-start (min para-end end) nil t)
+            (goto-char (min (save-excursion (forward-paragraph) (point)) end))))))))
+
+(defun efrit-package-review--visit (info location)
+  "Open LOCATION (\"file[:line]\") of the package described by INFO."
+  (let* ((parts (split-string location ":"))
+         (file (expand-file-name (car parts) (plist-get info :dir)))
+         (line (and (cadr parts) (string-to-number (cadr parts)))))
+    (if (not (file-exists-p file))
+        (message "%s is not there any more (the package directory was %s)" (car parts) (plist-get info :dir))
+      (pop-to-buffer (find-file-noselect file))
+      (when (and line (> line 0))
+        (goto-char (point-min)) (forward-line (1- line))))))
+
+(defun efrit-package-review-render (info verdict &optional plain)
+  "Insert the report for INFO and VERDICT at point.
+Badges and buttons are used when the display can show them; PLAIN
+forces text only (the same words, no images or faces).  The prose is
+filled to `efrit-package-review-fill-column' or the window, whichever
+is narrower."
+  (let* ((badge (if plain
+                    (lambda (text _face) text)
+                  #'efrit-ui-badge))
+         (width (min efrit-package-review-fill-column
+                     (max 40 (- (window-body-width) 2))))
+         (start (point)))
+    ;; title line
+    (insert (funcall badge (efrit-package-review--verdict-word verdict)
+                     (efrit-package-review--verdict-face verdict))
+            "  "
+            (propertize (format "%s %s" (plist-get info :name) (plist-get info :version))
+                        'face (unless plain 'efrit-package-review-title))
+            (if (plist-get info :old-version)
+                (propertize (format "  (from %s)" (plist-get info :old-version))
+                            'face (unless plain 'efrit-package-review-meta))
+              "")
+            "\n")
+    (insert (propertize
+             (concat (efrit-package-review--counts-text verdict)
+                     (if (or (plist-get verdict :saw-everything)
+                             (eq (plist-get verdict :verdict) 'error))
+                         ""
+                       " · the reviewer did not see everything"))
+             'face (unless plain 'efrit-package-review-meta))
+            "\n\n")
+    ;; summary, filled
+    (let ((from (point)))
+      (insert (string-trim (or (plist-get verdict :summary) "")) "\n")
+      (efrit-package-review--fill-paragraphs from (point) width))
+    ;; findings: badge, location button, then the note as an indented paragraph
+    (when-let* ((findings (efrit-package-review--sorted-findings verdict)))
+      (dolist (f findings)
+        (insert "\n")
+        (let ((sev (plist-get f :severity))
+              (location (efrit-package-review--location f)))
+          (insert (funcall badge (upcase (symbol-name sev))
+                           (efrit-package-review--severity-face sev)))
+          (when location
+            (insert " ")
+            (if plain
+                (insert location)
+              (insert-text-button location
+                                  'action (lambda (_b) (efrit-package-review--visit info location))
+                                  'follow-link t
+                                  'help-echo "Open this file at the line the reviewer named")))
+          (insert "\n")
+          (let ((from (point)))
+            (insert "    " (string-trim (plist-get f :note)) "\n")
+            (efrit-package-review--fill-paragraphs from (point) width)
+            (unless plain
+              (add-face-text-property from (point) 'efrit-package-review-note))))))
+    ;; a non-verdict answer, verbatim
+    (when-let* ((raw (plist-get verdict :raw)))
+      (insert "\nThe reviewer's answer, verbatim:\n\n")
+      (let ((from (point)))
+        (insert (mapconcat (lambda (l) (concat "  | " l)) (split-string raw "\n") "\n") "\n")
+        (unless plain (add-face-text-property from (point) 'font-lock-comment-face))))
+    ;; footer
+    (let ((from (point)))
+      (insert "\n" (efrit-package-review--footer info verdict) "\n")
+      (efrit-package-review--fill-paragraphs from (point) width)
+      (unless plain (add-face-text-property from (point) 'efrit-package-review-meta)))
+    (buffer-substring start (point))))
 
 (defun efrit-package-review-show (info verdict)
-  "Show the report in a popup and return it."
-  (let ((text (efrit-package-review-report info verdict)))
-    (efrit-show-preview efrit-package-review--buffer text)
-    text))
+  "Show the report in a popup; return its plain text."
+  (efrit-show-preview efrit-package-review--buffer
+                      (lambda () (efrit-package-review-render info verdict)))
+  (efrit-package-review-report info verdict))
 
 ;;; Install-time hook (Emacs 31's package-review)
 

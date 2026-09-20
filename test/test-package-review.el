@@ -5,56 +5,9 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'efrit-package-review)
+(require 'efrit-test-package-review-helpers)
 
 (defvar efrit-project-root)
-
-(defun test-pr--fake-package (dir name version files)
-  "Write FILES ((NAME . TEXT)...) under DIR/NAME-VERSION and return (PKG-DIR . DESC)."
-  (let ((pkg-dir (expand-file-name (format "%s-%s" name version) dir)))
-    (make-directory pkg-dir t)
-    (dolist (f files)
-      (with-temp-file (expand-file-name (car f) pkg-dir) (insert (cdr f))))
-    (cons pkg-dir
-          (package-desc-create :name (intern name)
-                               :version (version-to-list version)
-                               :summary "test" :kind 'tar :archive "test-archive"
-                               :dir pkg-dir))))
-
-(defun test-pr--text-response (text)
-  (let ((r (make-hash-table :test 'equal)) (item (make-hash-table :test 'equal))
-        (u (make-hash-table :test 'equal)))
-    (puthash "type" "text" item) (puthash "text" text item)
-    (puthash "content" (vector item) r) (puthash "stop_reason" "end_turn" r)
-    (puthash "input_tokens" 1 u) (puthash "usage" u r)
-    r))
-
-(defun test-pr--tool-response (id path &optional start end)
-  (let ((r (make-hash-table :test 'equal)) (item (make-hash-table :test 'equal))
-        (input (make-hash-table :test 'equal)))
-    (puthash "path" path input)
-    (when start (puthash "start_line" start input))
-    (when end (puthash "end_line" end input))
-    (puthash "type" "tool_use" item) (puthash "id" id item)
-    (puthash "name" "read_package_file" item) (puthash "input" input item)
-    (puthash "content" (vector item) r) (puthash "stop_reason" "tool_use" r)
-    r))
-
-(defmacro test-pr--with-responses (responses &rest body)
-  "Run BODY with `efrit-api-request-sync' answering RESPONSES in order and
-recording each request's messages in `test-pr--requests'."
-  (declare (indent 1))
-  `(let ((test-pr--queue ,responses) (test-pr--requests nil))
-     (cl-letf (((symbol-function 'efrit-api-request-sync)
-                (lambda (req &rest _)
-                  (push (append (alist-get "messages" req nil nil #'equal) nil) test-pr--requests)
-                  (or (pop test-pr--queue) (error "no more canned responses")))))
-       ,@body)))
-
-(defvar test-pr--queue nil)
-(defvar test-pr--requests nil)
-
-(defconst test-pr--approve
-  "{\"verdict\":\"approve\",\"summary\":\"ok\",\"findings\":[],\"files_read\":[\"foo.el\"],\"saw_everything\":true}")
 
 (ert-deftest test-package-review-first-request-is-diff-and-changelog-not-sources ()
   (let* ((root (file-name-as-directory (make-temp-file "efrit-pr-" t)))
@@ -248,6 +201,59 @@ auto-approve-clean skips the prompt only for a clean verdict."
   (require 'efrit-sandbox-eval)
   (should (efrit-sandbox-eval-inspect '(setq efrit-package-review-action 'auto-approve-clean)))
   (should (efrit-sandbox-eval-inspect '(efrit-package-review-run nil))))
+
+(ert-deftest test-package-review-report-layout ()
+  "The report: verdict word first, counts, filled summary, findings most
+serious first with a location and an indented note, footer.  The plain
+text form and the rendered form carry the same words."
+  (let* ((long (mapconcat #'identity (make-list 30 "word") " "))
+         (v (list :verdict 'reject :summary long :saw-everything t
+                  :findings (list (list :severity 'low :file "b.el" :line 2 :note "minor")
+                                  (list :severity 'high :file "a.el" :line 10 :note long)
+                                  (list :severity 'medium :file nil :line nil :note "no file"))
+                  :reads '("a.el" "a.el" "b.el")))
+         (info (list :name "pkg" :version "2.0" :old-version "1.0" :dir "/nonexistent/"
+                     :files '("a.el" "b.el") :diff "d" :news nil))
+         (efrit-package-review-model "rev")
+         (efrit-package-review-fill-column 60)
+         (plain (efrit-package-review-report info v)))
+    (should (string-prefix-p "REJECT  pkg 2.0  (from 1.0)\n" plain))
+    (should (string-match-p "^1 high, 1 medium, 1 low$" plain))
+    ;; the long summary was filled
+    (should (cl-every (lambda (l) (<= (length l) 60)) (split-string plain "\n")))
+    (should (< 1 (cl-count-if (lambda (l) (string-match-p "\\`word word" l)) (split-string plain "\n"))))
+    ;; most serious first, location on the badge line, note indented
+    (should (string-match-p "HIGH a.el:10\n    word" plain))
+    (should (string-match-p "MEDIUM\n    no file\n" plain))
+    (should (string-match-p "LOW b.el:2\n    minor\n" plain))
+    (should (< (string-match "HIGH" plain) (string-match "MEDIUM" plain) (string-match "LOW" plain)))
+    (should (string-match-p "Opened: a.el, b.el\\." plain))
+    (should-not (string-match-p "did not see everything" plain))
+    ;; the rendered form: a button per location, a badge per severity;
+    ;; stripped of properties it is the plain text
+    (with-temp-buffer
+      (efrit-package-review-render info v)
+      (should (equal (buffer-substring-no-properties (point-min) (point-max)) plain))
+      (goto-char (point-min))
+      (should (search-forward "a.el:10" nil t))
+      (should (button-at (1- (point))))
+      (goto-char (point-min))
+      (search-forward "\nHIGH a.el")
+      (should (memq 'efrit-package-review-high
+                    (let ((f (get-text-property (1+ (match-beginning 0)) 'face))) (if (listp f) f (list f)))))))
+  ;; no verdict: NO VERDICT badge, no severity counts of note, the raw answer shown
+  (let* ((v (list :verdict 'error :summary "not a verdict" :raw "I cannot."))
+         (info (list :name "pkg" :version "1" :files nil))
+         (plain (efrit-package-review-report info v)))
+    (should (string-prefix-p "NO VERDICT  pkg 1\nno findings\n" plain))
+    (should (string-match-p "verbatim:\n\n  | I cannot\\." plain))))
+
+(ert-deftest test-package-review-badge-degrades-to-text ()
+  "Without SVG the badge is the word in the face; the word is always there."
+  (let ((b (efrit-ui-badge "HIGH" 'efrit-package-review-high)))
+    (should (equal (substring-no-properties b) "HIGH"))
+    (should (or (get-text-property 0 'display b)
+                (eq (get-text-property 0 'face b) 'efrit-package-review-high)))))
 
 (provide 'test-package-review)
 ;;; test-package-review.el ends here

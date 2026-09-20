@@ -132,7 +132,7 @@ requiring an active efrit-do session (ef-dcn).")
 
 ;;; Public API
 
-(defun efrit-repl-continue (session user-input &optional on-turn-complete)
+(defun efrit-repl-continue (session user-input &optional on-turn-complete api-input)
   "Continue REPL SESSION with USER-INPUT.
 Adds the user message to the session and runs the agentic loop.
 Optional ON-TURN-COMPLETE callback is called when Claude finishes the turn.
@@ -140,7 +140,11 @@ Optional ON-TURN-COMPLETE callback is called when Claude finishes the turn.
 An editor-context snapshot (`efrit-context-sources') of the buffer
 the user is working in is taken now, at submit time, and prepended to
 the copy of USER-INPUT sent to the API; the conversation shows the
-plain input.
+plain input.  A caller that has already prepared what the model
+should see passes it as API-INPUT (a string); then USER-INPUT is only
+what the conversation shows and the snapshot is prepended to API-INPUT
+instead.  That is how a package hands efrit a prompt over data it
+gathered itself (see `efrit-submit').
 
 Unlike \\='efrit-do-async-loop\\=', this does not complete the session.
 Instead, it transitions to idle state, preserving conversation context
@@ -158,11 +162,11 @@ Returns the session ID."
       (efrit-repl-session-add-user-message
        session user-input
        (condition-case err
-           (efrit-context-wrap-user-input user-input)
+           (efrit-context-wrap-user-input (or api-input user-input))
          (error
           (efrit-log 'warn "REPL session %s: context snapshot failed: %s"
                      session-id (error-message-string err))
-          nil)))
+          api-input)))
 
       ;; Begin the turn.  The per-turn tool counters live in
       ;; efrit-tools and were never reset, so after ~100 tool calls in

@@ -272,7 +272,7 @@ Records each dispatched tool name in `test-review--dispatched'."
                     (if response
                         (funcall callback response nil)
                       (funcall callback nil "mock response queue empty")))))
-               ((symbol-function 'efrit-do--execute-tool)
+               ((symbol-function 'efrit-do--execute-tool-string)
                 (lambda (tool-item)
                   (push (gethash "name" tool-item) test-review--dispatched)
                   ,tool-result))

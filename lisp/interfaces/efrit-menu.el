@@ -38,6 +38,8 @@
 (declare-function efrit-doctor--redact-url "efrit-doctor")
 (declare-function efrit-permissions "efrit-permissions-ui")
 (declare-function efrit-review-package "efrit-package-review")
+(declare-function efrit-review-all-packages "efrit-package-review-ui")
+(declare-function efrit-testdrive "efrit-testdrive")
 (declare-function efrit-log-toggle-debug "efrit-log")
 (defvar efrit-log-level)
 (declare-function efrit-sandbox-reset-session "efrit-sandbox")
@@ -128,6 +130,7 @@
        ("b" efrit-menu-toggle-sandbox :transient t :description efrit-menu--desc-permissions)
        ("x" "Permissions editor (grants, review, limits)" efrit-permissions)
        ("P" "Review an installed package" efrit-review-package)
+       ("V" "Review all installed packages" efrit-review-all-packages)
        ("X" "Forget session sandbox grants" efrit-sandbox-reset-session :transient t)
        ("h" efrit-agent-cycle-header-style :transient t :description efrit-menu--desc-header)]]
      [["Diagnostics"
@@ -137,6 +140,7 @@
        ("G" efrit-log-toggle-debug :transient t
         :description (lambda () (format "Debug logging [%s]" (if (eq efrit-log-level 'debug) "on" "off"))))
        ("R" "Reload efrit from source" efrit-reload)
+       ("T" "Test drive (live, costs tokens)" efrit-testdrive)
        ("u" "Usage / endpoint" (lambda () (interactive) (message "%s" (efrit-menu--desc-endpoint))))]
       ["View"
        ("TAB" "Toggle tool call at point" efrit-agent-toggle-expand)
