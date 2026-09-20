@@ -283,6 +283,9 @@ Executes all ERT tests and displays results in a buffer."
 (autoload 'efrit-package-review-mode "efrit-package-review"
   "Have efrit review packages before package-review asks." t)
 ;;;###autoload
+(autoload 'efrit-package-review-probe "efrit-package-review"
+  "Send shrinking variants of a package review request to find what the API refuses." t)
+;;;###autoload
 (autoload 'efrit-permissions "efrit-permissions-ui"
   "Edit grants, review policy and limits for every known project." t)
 ;;;###autoload

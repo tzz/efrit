@@ -617,6 +617,7 @@ mode turns it on (t) when it is nil and says so."
       ('msg-news (funcall summarise (efrit-package-review--message-part info 'news)))
       ('msg-diff (funcall summarise msg)))))
 
+;;;###autoload
 (defun efrit-package-review-probe (name)
   "Send shrinking variants of the review request for installed package NAME.
 Reports, per variant, whether the API answered or refused, in a

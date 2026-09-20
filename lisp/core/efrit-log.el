@@ -95,6 +95,7 @@ Levels in order: debug, info, warn, error, none"
   (setq header-line-format
         (format " efrit log · level %s · ? keys" efrit-log-level)))
 
+;;;###autoload
 (defun efrit-log-toggle-debug ()
   "Switch `efrit-log-level' between debug and info.
 Debug records every bus event, each API request and response, every
