@@ -360,8 +360,26 @@ whole header at twice the body text.  (The spinner already did this.)"
 (defvar-local efrit-agent-svg--cache nil
   "Hash of model -> rendered header, cleared when it grows past a few dozen.")
 
+(defvar efrit-agent-svg--last-error nil
+  "The last error the header value function caught, for `efrit-doctor'.")
+
 (defun efrit-agent-svg-header ()
-  "Return the header-line string per `efrit-agent-header-style'."
+  "Return the header-line string per `efrit-agent-header-style'.
+Never signals: an error inside a `header-line-format' :eval makes
+redisplay blank the header and set the format to nil for the buffer,
+which showed up as no logo until the next open.  Errors are logged
+and the plain text header is returned instead."
+  (condition-case err
+      (efrit-agent-svg--header-1)
+    (error
+     (setq efrit-agent-svg--last-error (error-message-string err))
+     (efrit-log 'warn "header: %s" efrit-agent-svg--last-error)
+     (condition-case nil
+         (efrit-agent--format-header-line)
+       (error " efrit")))))
+
+(defun efrit-agent-svg--header-1 ()
+  "The header string; may signal (see `efrit-agent-svg-header')."
   (pcase efrit-agent-header-style
     ('none nil)
     ('graphical

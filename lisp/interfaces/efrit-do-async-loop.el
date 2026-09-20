@@ -66,7 +66,8 @@ Each entry contains: (session callback iteration-count)")
 
 ;;; Engine Adapter
 
-(defvar efrit-do-async--adapter
+;; defconst, see efrit-repl-loop--adapter
+(defconst efrit-do-async--adapter
   (efrit-loop-adapter-create
    :name "Session"
    :state-hash efrit-do-async--loops

@@ -76,7 +76,13 @@ requiring an active efrit-do session (ef-dcn).")
   "The command system prompt for SESSION-ID."
   (efrit-do--command-system-prompt nil nil nil session-id nil))
 
-(defvar efrit-repl-loop--adapter
+;; A defconst, not a defvar: the adapter is an instance of the
+;; `efrit-loop-adapter' struct, and when a reload adds a slot to the
+;; struct a defvar would keep the old, shorter instance while the new
+;; accessors index past it (an efrit-reload after adding
+;; system-prompt-fn produced "wrong number of arguments" from the
+;; wrong slot).  A defconst is re-evaluated on every load.
+(defconst efrit-repl-loop--adapter
   (efrit-loop-adapter-create
    :name "REPL session"
    :state-hash efrit-repl-loop--active
