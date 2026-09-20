@@ -55,6 +55,7 @@
 (defvar efrit-agent--spinner-index)
 (declare-function efrit-agent--format-header-line "efrit-agent-render")
 (declare-function efrit-agent--usage-segment "efrit-agent-render")
+(declare-function efrit-agent-input-hint "efrit-agent-render")
 (declare-function efrit-repl-session-id "efrit-repl-session")
 (declare-function efrit-tool--get-project-root "efrit-tool-utils")
 
@@ -89,6 +90,11 @@ propertized string; `none' hides the header."
 (defface efrit-agent-header-directory
   '((t :inherit font-lock-comment-face))
   "Face for the project directory in the graphical header."
+  :group 'efrit-agent-header)
+
+(defface efrit-agent-header-hint
+  '((t :inherit shadow))
+  "Face for the key hint (RET sends, S-RET newline) in the header."
   :group 'efrit-agent-header)
 
 (defface efrit-agent-header-border
@@ -183,6 +189,9 @@ The glyph is one token, then whitespace, in both display styles."
       (:model . ,(and (boundp 'efrit-default-model) efrit-default-model))
       (:usage . ,(and usage (substring-no-properties usage)))
       (:usage-face . ,(and usage (get-text-property 0 'face usage)))
+      ;; Key hint while nothing is running: the chat-client convention
+      ;; is not the Emacs one, so say it where the eye lands
+      (:hint . ,(and (not efrit-agent--thinking-label) (efrit-agent-input-hint)))
       (:directory . ,(and root (abbreviate-file-name root)))
       (:status . ,(substring-no-properties status))
       (:status-face . ,(or (get-text-property 0 'face status) 'default))
@@ -308,7 +317,8 @@ square centred on the letters beside it (baseline minus ~0.35em)."
                       text-x y1 fs family
                       `((,(alist-get :name model) . efrit-agent-header-name)
                         (,(alist-get :model model) . efrit-agent-header-model)
-                        (,(alist-get :usage model) . ,(or (alist-get :usage-face model) 'default)))))
+                        (,(alist-get :usage model) . ,(or (alist-get :usage-face model) 'default))
+                        (,(alist-get :hint model) . efrit-agent-header-hint))))
     ;; Row 2: directory ➤ status/spinner ➤ elapsed ➤ tools ➤ mode ➤ session
     (svg--append svg (efrit-agent-svg--row
                       text-x y2 fs family

@@ -444,18 +444,21 @@ carries a cache_control block, which is the caching probe."
                                                                (let ((tg (plist-get g :target)))
                                                                  (if (eq tg t) "" (efrit-sandbox--target-label tg)))))
                                            grants "\n")
-                              "M-x efrit-sandbox to review or add grants."))
+                              "M-x efrit-permissions to review, add or edit grants."))
         (when (and (file-exists-p file) (/= (logand (file-modes file) #o077) 0))
           (efrit-doctor--warn (format "%s is group/world readable" (abbreviate-file-name file))
                               "It lists what the model may touch; keep it private." "chmod 600"
                               (lambda () (set-file-modes file #o600))))
         (dolist (g project)
+          (when (and (eq (plist-get g :cap) 'shell) (eq (plist-get g :target) t))
+            (efrit-doctor--warn "Project grant: any shell command"
+                                "Every shell line runs without asking (always-ask lines excepted).  Replace it with per-command grants in M-x efrit-permissions."))
           (when (and (memq (plist-get g :cap) '(read write))
                      (stringp (plist-get g :target))
                      (member (plist-get g :target)
                              (list "/" (efrit-sandbox-canonical "~"))))
             (efrit-doctor--warn (format "Project grant: %s under %s" (plist-get g :cap) (plist-get g :target))
-                                "That is the whole filesystem / home directory.  Narrow it in M-x efrit-sandbox.")))
+                                "That is the whole filesystem / home directory.  Narrow it in M-x efrit-permissions.")))
         (unless (or (null efrit-sandbox-request-function)
                     (functionp efrit-sandbox-request-function))
           (efrit-doctor--fail "efrit-sandbox-request-function is not a function"
@@ -469,20 +472,33 @@ carries a cache_control block, which is the caching probe."
 
 (defun efrit-doctor--check-review ()
   (efrit-doctor--layer "Review"
-    (if (not efrit-review-enabled)
-        (efrit-doctor--warn "Second-model review is off"
-                            "Write/exec tool calls run without a reviewer call judging them against your request first.  On by default; you turned it off."
-                            "Enable review" (lambda () (setq efrit-review-enabled t)))
+    (if (not (efrit-review-enabled-p))
+        (let ((project-off (not (eq (plist-get (efrit-review-project-override) :enabled) 'unset))))
+          (efrit-doctor--warn (if project-off
+                                  "Second-model review is off for this project"
+                                "Second-model review is off")
+                              (if project-off
+                                  "The project's .efrit/settings.json turns it off.  Change it in M-x efrit-permissions."
+                                "Write/exec tool calls run without a reviewer call judging them against your request first.  On by default; you turned it off.")
+                              "Enable review"
+                              (if project-off
+                                  (lambda () (efrit-review-set-project-override
+                                              'unset (plist-get (efrit-review-project-override) :classes)))
+                                (lambda () (setq efrit-review-enabled t)))))
       (let ((model (or efrit-review-model efrit-default-model)))
-        (efrit-doctor--ok (format "Review on: %s judges %s tool calls"
+        (efrit-doctor--ok (format "Review on: %s judges %s tool calls%s"
                                   model
-                                  (mapconcat #'symbol-name efrit-review-classes "/")))
+                                  (mapconcat #'symbol-name (efrit-review-effective-classes) "/")
+                                  (if (plist-get (efrit-review-project-override) :classes)
+                                      " (project override)" "")))
         (when (equal model efrit-default-model)
           (efrit-doctor--info "Reviewer is the same model as the proposer"
                               "It catches slips and misread intent, not shared misjudgement.  Set efrit-review-model to a different model for a more independent second opinion."))
-        (when (eq efrit-review-on-failure 'approve)
-          (efrit-doctor--info "A failed review call approves the turn"
-                              "efrit-review-on-failure is `approve': a review outage lets work continue under the sandbox alone.  Set it to `reject' where a missed review is worse than a stalled turn."))
+        (when (eq (efrit-review-failure-policy '(exec)) 'approve)
+          (efrit-doctor--warn "A failed review call approves shell and eval calls"
+                              "efrit-review-on-failure approves exec on a review outage: a shell command nobody reviewed runs anyway.  The default rejects exec and approves the rest."
+                              "Reject exec on failure"
+                              (lambda () (setq efrit-review-on-failure '((exec . reject) (t . approve))))))
         (when (< efrit-review-max-rejections 1)
           (efrit-doctor--fail "efrit-review-max-rejections is below 1"
                               "Every rejection would hand the turn to you at once; the proposer never gets to revise."

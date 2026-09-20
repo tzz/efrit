@@ -308,7 +308,9 @@ Returns nil if no options or N is out of range."
   (let ((map (make-sparse-keymap)))
     ;; Sending input
     (define-key map (kbd "RET") #'efrit-agent-input-send-or-newline)
-    (define-key map (kbd "S-<return>") #'newline)
+    (define-key map (kbd "S-<return>") #'efrit-agent-input-newline)
+    (define-key map (kbd "M-<return>") #'efrit-agent-input-newline)
+    (define-key map (kbd "C-j") #'efrit-agent-input-newline)
     (define-key map (kbd "C-c C-c") #'efrit-agent-input-send)
     (define-key map (kbd "C-c C-s") #'efrit-agent-input-send)
     (define-key map (kbd "C-c C-k") #'efrit-agent-input-clear)
@@ -359,18 +361,18 @@ Key bindings:
 (defun efrit-agent-input-send-or-newline ()
   "RET, context-sensitive.
 In the conversation region: toggle the tool call at point, as the
-help text has always promised.  In the input region: send the input
-if it is a single line, otherwise insert a newline.  Use S-RET to
-always insert a newline."
+help text has always promised.  In the input region: send the input,
+from any line of it.  S-RET, M-RET and C-j insert a newline
+\(`efrit-agent-input-newline'), the convention of chat clients."
   (interactive)
-  (if (not (efrit-agent--in-input-region-p))
-      (efrit-agent-toggle-expand)
-    (let ((input (efrit-agent--get-input)))
-      (if (and input (not (string-match-p "\n" input)))
-          ;; Single line - send it
-          (efrit-agent-input-send)
-        ;; Multi-line or empty - insert newline
-        (newline)))))
+  (if (efrit-agent--in-input-region-p)
+      (efrit-agent-input-send)
+    (efrit-agent-toggle-expand)))
+
+(defun efrit-agent-input-newline ()
+  "Insert a newline in the input without sending."
+  (interactive "*")
+  (newline))
 
 (defun efrit-agent-input-send ()
   "Send the current input using the persistent REPL session model.
@@ -492,7 +494,7 @@ Saves asynchronously to avoid blocking the UI."
 On the prompt line that is just after the prompt (like `comint-bol');
 on a continuation line of a multi-line input it is the line start.
 A second press goes to the real beginning of line."
-  (interactive)
+  (interactive "^")
   (let* ((true-bol (let ((inhibit-field-text-motion t)) (line-beginning-position)))
          (field-start (field-beginning (point) t)))
     (if (and (> field-start true-bol) (/= (point) field-start))
@@ -511,16 +513,21 @@ A second press goes to the real beginning of line."
 (defun efrit-agent-input-up ()
   "Previous history entry on the first input line; otherwise the previous line.
 The shell convention: an up arrow in a one-line input recalls history,
-in a multi-line input it moves up until it reaches the top."
-  (interactive)
-  (if (efrit-agent--input-first-line-p)
+in a multi-line input it moves up until it reaches the top.  With
+shift held (S-<up>) it only moves, extending the selection: history
+recall would destroy the text being selected."
+  (interactive "^")
+  (if (and (efrit-agent--input-first-line-p)
+           (not this-command-keys-shift-translated))
       (efrit-agent-input-history-prev)
     (let ((line-move-visual nil)) (line-move -1 t))))
 
 (defun efrit-agent-input-down ()
-  "Next history entry on the last input line; otherwise the next line."
-  (interactive)
-  (if (efrit-agent--input-last-line-p)
+  "Next history entry on the last input line; otherwise the next line.
+With shift held it only moves, like `efrit-agent-input-up'."
+  (interactive "^")
+  (if (and (efrit-agent--input-last-line-p)
+           (not this-command-keys-shift-translated))
       (efrit-agent-input-history-next)
     (let ((line-move-visual nil)) (line-move 1 t))))
 

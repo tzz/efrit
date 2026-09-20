@@ -42,10 +42,11 @@
 ;; `.efrit/' itself is a hard write deny for every path, including
 ;; eval_sexp.
 ;;
-;; shell is deliberately a single grant: any shell command can escalate
-;; to any other, so pretending to restrict "git" but not "sh" is
-;; theatre.  Most of what an agent wants from a shell is available
-;; through Emacs primitives, which *are* checked.
+;; A shell grant names commands (git, make, ...), not a blanket
+;; permission; see "Shell commands" below.  That is a boundary
+;; against accidents, not against a hostile model: any command can
+;; escalate to any other.  Most of what an agent wants from a shell is
+;; available through Emacs primitives, which *are* checked.
 ;;
 ;; Pure Executor: this is security filtering, which ARCHITECTURE.md
 ;; allows.  No task logic lives here.
@@ -56,6 +57,7 @@
 (require 'subr-x)
 (require 'efrit-log)
 (require 'efrit-tool-utils)   ; efrit-project-root, efrit-tool--get-project-root
+(require 'efrit-settings)
 
 (declare-function efrit-sandbox-store-save "efrit-sandbox-store")
 (declare-function efrit-sandbox-store-ensure-loaded "efrit-sandbox-store")
@@ -88,6 +90,169 @@ anything else asks."
 model-writable."
   :type '(repeat regexp)
   :group 'efrit-sandbox)
+
+(defconst efrit-sandbox-capabilities '(read write elisp shell net buffer)
+  "Every capability the sandbox knows, in display order.")
+
+;;; Shell commands
+;;
+;; A shell grant names commands, not a blanket permission.  The
+;; grant's target is one of
+;;
+;;   t                      any command (the old single grant; still
+;;                          offered, behind a separate key)
+;;   (shell "git" "sed")    these command names, in any pipeline
+;;   (command . "LINE")     this exact command line; never persisted,
+;;                          the shape of a once-grant on a dangerous line
+;;
+;; A request for "git log | sed s/x//" needs git and sed both covered.
+;; The command names are found by a shell-agnostic split on |, ||, &&,
+;; ;, &, newlines and command substitution; wrappers (env, xargs,
+;; nohup, time, ...) expose the command they run.  The split errs
+;; toward finding *more* command words, so an unusual construct asks
+;; rather than slips through.
+;;
+;; Any command can still write a shell script and run it, so this is
+;; not a security boundary against a hostile model.  It is a boundary
+;; against accidents: the model that was granted "git" does not get
+;; "rm -rf" for free, and the user sees what is being run under which
+;; grant.  `efrit-sandbox-shell-always-ask' handles the lines where an
+;; accident is expensive: they are asked every time, once only, and
+;; no standing grant covers them.
+
+(defcustom efrit-sandbox-shell-always-ask
+  '("\\brm\\s-+-[a-zA-Z]*\\(?:r[a-zA-Z]*f\\|f[a-zA-Z]*r\\)"   ; rm -rf, rm -fr
+    "\\bsudo\\b" "\\bdoas\\b" "\\bsu\\b"
+    "\\bgit\\s-+push\\b.*\\(?:--force\\|-f\\b\\|\\+[a-zA-Z]\\)"
+    "\\bgit\\s-+reset\\s-+--hard"
+    "\\bgit\\s-+clean\\s-+-[a-zA-Z]*[fdx]"
+    "\\bgit\\s-+branch\\s-+-D\\b"
+    "\\bgit\\s-+checkout\\s-+\\(?:--\\|\\.\\)"
+    "\\bdd\\s-+.*of="
+    "\\bmkfs\\b" "\\bfdisk\\b" "\\bparted\\b"
+    "\\bchmod\\s-+\\(?:-R\\s-+\\)?[0-7]*777\\b"
+    "\\bchown\\s-+-R\\b"
+    "\\(?:curl\\|wget\\)\\b.*|\\s-*\\(?:ba\\|z\\)?sh\\b"
+    ">\\s-*/dev/\\(?:sd\\|nvme\\|disk\\)"
+    "\\bshutdown\\b" "\\breboot\\b" "\\bhalt\\b" "\\bkill\\s-+-9\\s-+-1\\b"
+    ":()\\s-*{")
+  "Regexps for shell lines that are asked about every time they run.
+A match is never covered by a standing grant (not even a project-wide
+\"any command\" grant or a `shell' default grant): the prompt offers
+only \"once\", and asks for confirmation.  The list is about the
+cost of an accident, not about malice; add the commands that would
+ruin your day."
+  :type '(repeat regexp)
+  :group 'efrit-sandbox)
+
+(defconst efrit-sandbox-shell--separators
+  "\\(?:||\\|&&\\||&?\\|;\\|&\\|\n\\|\\$(\\|`\\|(\\|)\\)"
+  "Where one command ends and the next may begin.")
+
+(defun efrit-sandbox-shell--strip-noise (line)
+  "LINE without quoted strings and redirections, which are not commands.
+Quoted text may hold separators (git commit -m \"a; b\"); `2>&1' holds
+an ampersand.  Escaped quotes are not understood: a line that still
+confuses the split asks for more than it needs, never less."
+  (let ((s line))
+    (setq s (replace-regexp-in-string "\"[^\"]*\"" "\"\"" s))
+    (setq s (replace-regexp-in-string "'[^']*'" "''" s))
+    (setq s (replace-regexp-in-string "[0-9]*>&[0-9-]+" "" s))
+    (setq s (replace-regexp-in-string "[0-9]*[<>]\\{1,2\\}[ \t]*[^ \t|;&]+" "" s))
+    s))
+
+(defconst efrit-sandbox-shell--wrappers
+  '("env" "nohup" "time" "timeout" "nice" "ionice" "exec" "command" "builtin"
+    "xargs" "watch" "sudo" "doas" "strace" "ltrace" "caffeinate" "stdbuf" "unbuffer")
+  "Commands whose first non-option argument is itself a command to run.
+Both names are reported: the wrapper needs a grant too.")
+
+(defun efrit-sandbox-shell--word-command (word)
+  "WORD stripped of quotes and directory, or nil if it is not a command word."
+  (let ((w (replace-regexp-in-string "\\`[\"']+\\|[\"']+\\'" "" word)))
+    (cond
+     ((string-empty-p w) nil)
+     ((string-match-p "\\`[A-Za-z_][A-Za-z0-9_]*=" w) nil)   ; VAR=value
+     ((string-match-p "\\`[!\\[]\\'" w) nil)                 ; ! and [ are syntax
+     (t (file-name-nondirectory w)))))
+
+(defun efrit-sandbox-shell--segment-commands (segment)
+  "Command names in one pipeline SEGMENT (no separators inside)."
+  (let ((words (split-string segment "[ \t]+" t)) (out nil) (want-command t))
+    (while (and words want-command)
+      (let* ((word (pop words))
+             (name (efrit-sandbox-shell--word-command word)))
+        (cond
+         ((null name))                              ; assignment/redirect: keep looking
+         ((string-prefix-p "-" name)                ; an option of a wrapper: skip
+          nil)
+         (t
+          (push name out)
+          (setq want-command (member name efrit-sandbox-shell--wrappers))
+          ;; `timeout 5 cmd' and `nice -n 5 cmd': skip the numeric argument
+          (when (and want-command words (string-match-p "\\`[0-9]+[smhd]?\\'" (car words)))
+            (pop words))))))
+    (nreverse out)))
+
+(defun efrit-sandbox-shell-commands (line)
+  "The distinct command names a shell LINE would run, in order.
+Nil for an empty line."
+  (let ((out nil))
+    (dolist (segment (split-string (efrit-sandbox-shell--strip-noise line)
+                                   efrit-sandbox-shell--separators t))
+      (dolist (name (efrit-sandbox-shell--segment-commands segment))
+        (unless (member name out) (push name out))))
+    (nreverse out)))
+
+(defun efrit-sandbox-shell-always-ask-match (line)
+  "The first regexp in `efrit-sandbox-shell-always-ask' that matches LINE, or nil."
+  (cl-some (lambda (re) (and (string-match-p re line) re)) efrit-sandbox-shell-always-ask))
+
+(defun efrit-sandbox-shell-target-p (target)
+  "Non-nil if TARGET is a command-list shell target (shell NAME...)."
+  (and (consp target) (eq (car target) 'shell)
+       (listp (cdr target)) (cl-every #'stringp (cdr target))))
+
+(defun efrit-sandbox-shell-target-commands (target)
+  "The command names of a shell TARGET, or nil for t / exact-line targets."
+  (and (efrit-sandbox-shell-target-p target) (cdr target)))
+
+;;; Per-project default grants (the "sandbox" section of .efrit/settings.json)
+;;
+;;   "sandbox": {"default-grants": ["read", "write"]}
+;;
+;; Overrides `efrit-sandbox-default-project-grants' for that project.
+;; An empty list is a valid override (nothing by default, not even
+;; read), so presence of the key decides, not its truthiness.
+
+(defconst efrit-sandbox-settings-section "sandbox"
+  "The section of the project settings file this module owns.")
+
+(defun efrit-sandbox-project-default-grants (&optional root)
+  "ROOT's own default-grants override: a list of capabilities, or `unset'.
+An invalid list in the file counts as unset."
+  (let ((section (efrit-settings-get (or root (efrit-sandbox-project-root))
+                                     efrit-sandbox-settings-section)))
+    (if (and (hash-table-p section) (listp (gethash "default-grants" section 'unset))
+             (not (eq (gethash "default-grants" section 'unset) 'unset)))
+        (let ((raw (gethash "default-grants" section)))
+          (if (null raw) nil
+            (or (efrit-settings-symbol-list raw efrit-sandbox-capabilities) 'unset)))
+      'unset)))
+
+(defun efrit-sandbox-effective-default-grants (&optional root)
+  "Capabilities granted on ROOT without asking: the project override, else the option."
+  (let ((project (efrit-sandbox-project-default-grants root)))
+    (if (eq project 'unset) efrit-sandbox-default-project-grants project)))
+
+(defun efrit-sandbox-set-project-default-grants (grants &optional root)
+  "Write GRANTS (a list of capabilities, possibly empty) as ROOT's default grants.
+GRANTS `unset' removes the override."
+  (efrit-settings-put (or root (efrit-sandbox-project-root)) efrit-sandbox-settings-section
+                      (unless (eq grants 'unset)
+                        (let ((h (make-hash-table :test 'equal)))
+                          (puthash "default-grants" (mapcar #'symbol-name grants) h)
+                          h))))
 
 ;;; Errors
 
@@ -194,27 +359,57 @@ trailing slash.  Remote identity is preserved."
     (append (gethash root efrit-sandbox--project-grants)
             (gethash root efrit-sandbox--session-grants))))
 
+(defun efrit-sandbox--shell-grant-covers-p (gt line)
+  "Non-nil if shell grant target GT covers the command LINE.
+An always-ask LINE is covered only by an exact (command . LINE) grant."
+  (let ((always (and (stringp line) (efrit-sandbox-shell-always-ask-match line))))
+    (cond
+     ((and (consp gt) (eq (car gt) 'command)) (equal (cdr gt) line))
+     (always nil)
+     ((eq gt t) t)
+     ((eq line t) nil)                  ; a blanket request needs a blanket grant
+     ((efrit-sandbox-shell-target-p gt)
+      (let ((names (efrit-sandbox-shell-commands line)))
+        (and names (cl-subsetp names (cdr gt) :test #'equal))))
+     (t nil))))
+
 (defun efrit-sandbox--grant-covers-p (grant cap target)
   (and (eq (plist-get grant :cap) cap)
        (let ((gt (plist-get grant :target)))
-         (or (eq gt t)
-             ;; a fileless-buffer target: (buffer . NAME), matched exactly
-             (and (consp target) (consp gt) (equal target gt))
-             (and (stringp target) (stringp gt)
-                  (efrit-sandbox--under-p target gt))))))
+         (if (eq cap 'shell)
+             (efrit-sandbox--shell-grant-covers-p gt target)
+           (or (eq gt t)
+               ;; a fileless-buffer target: (buffer . NAME), matched exactly
+               (and (consp target) (consp gt) (equal target gt))
+               (and (stringp target) (stringp gt)
+                    (efrit-sandbox--under-p target gt)))))))
 
 (defun efrit-sandbox--always-denied-p (target)
   (and (stringp target)
        (cl-some (lambda (re) (string-match-p re target)) efrit-sandbox-always-deny)))
 
+(defun efrit-sandbox--canonical-target (cap target)
+  "TARGET in the form grants are matched against: paths canonical, shell lines trimmed."
+  (cond
+   ((eq cap 'shell) (if (stringp target) (string-trim target) target))
+   ((stringp target) (efrit-sandbox-canonical target))
+   (t target)))
+
 (defun efrit-sandbox-allowed-p (cap &optional target root)
-  "Non-nil if CAP on TARGET is covered by the scope for ROOT, without asking."
+  "Non-nil if CAP on TARGET is covered by the scope for ROOT, without asking.
+For `shell', TARGET is the command line (or t for \"any command\")."
   (let* ((root (or root (efrit-sandbox-project-root)))
-         (target (if (stringp target) (efrit-sandbox-canonical target) target)))
+         (target (efrit-sandbox--canonical-target cap target)))
     (cond
-     ((efrit-sandbox--always-denied-p target) nil)
+     ((and (not (eq cap 'shell)) (efrit-sandbox--always-denied-p target)) nil)
+     ;; an always-ask shell line: only its own once-grant applies
+     ((and (eq cap 'shell) (stringp target) (efrit-sandbox-shell-always-ask-match target))
+      (when (and efrit-sandbox--once-grant
+                 (efrit-sandbox--grant-covers-p efrit-sandbox--once-grant cap target))
+        (setq efrit-sandbox--once-grant nil)
+        t))
      ;; default project grants
-     ((and (memq cap efrit-sandbox-default-project-grants)
+     ((and (memq cap (efrit-sandbox-effective-default-grants root))
            (or (memq cap '(elisp shell net))
                (and (stringp target) (efrit-sandbox--under-p target root))))
       t)
@@ -259,7 +454,15 @@ For a path outside the root, suggest its directory (so the next file
 alongside is covered) but never anything above the user's home for
 write."
   (cond
-   ((memq cap '(elisp shell net)) t)
+   ((memq cap '(elisp net)) t)
+   ;; shell: the commands on the line; an always-ask line is granted
+   ;; exactly, once (see `efrit-sandbox-shell-always-ask')
+   ((eq cap 'shell)
+    (cond
+     ((not (stringp target)) t)
+     ((efrit-sandbox-shell-always-ask-match target) (cons 'command target))
+     (t (let ((names (efrit-sandbox-shell-commands target)))
+          (if names (cons 'shell names) (cons 'command target))))))
    ;; a fileless buffer: grant exactly that buffer, never wider
    ((and (eq cap 'buffer) (consp target)) target)
    ((not (stringp target)) t)
@@ -342,10 +545,10 @@ With `efrit-sandbox-enabled' nil this is a no-op that returns t."
   (if (not efrit-sandbox-enabled)
       t
     (let* ((root (efrit-sandbox-project-root))
-           (ctarget (if (stringp target) (efrit-sandbox-canonical target) target)))
+           (ctarget (efrit-sandbox--canonical-target cap target)))
       (efrit-sandbox-store-ensure-loaded root)
       (cond
-       ((efrit-sandbox--always-denied-p ctarget)
+       ((and (not (eq cap 'shell)) (efrit-sandbox--always-denied-p ctarget))
         (efrit-log 'warn "sandbox: %s on %s is always denied" cap ctarget)
         (signal 'efrit-sandbox-denied
                 (list (efrit-sandbox-request-create
@@ -359,6 +562,11 @@ With `efrit-sandbox-enabled' nil this is a no-op that returns t."
                      :tool tool :detail detail))
                (scope (and efrit-sandbox-request-function
                            (efrit-sandbox--ask-without-clock req))))
+          ;; an exact-line shell grant is never standing: whatever the
+          ;; prompt returned, it applies to this run only
+          (when (and (memq scope '(session project))
+                     (efrit-sandbox-request-once-only-p req))
+            (setq scope 'once))
           (if (memq scope '(once session project))
               (progn
                 (efrit-sandbox-grant cap (efrit-sandbox-request-target req) scope root)
@@ -372,11 +580,22 @@ With `efrit-sandbox-enabled' nil this is a no-op that returns t."
               (efrit-publish 'sandbox-denied `((:cap . ,cap) (:target . ,ctarget) (:tool . ,tool))))
             (signal 'efrit-sandbox-denied (list req)))))))))
 
+(defun efrit-sandbox-request-once-only-p (req)
+  "Non-nil if REQ can only ever be granted once: an always-ask shell line."
+  (let ((target (efrit-sandbox-request-target req)))
+    (and (eq (efrit-sandbox-request-cap req) 'shell)
+         (consp target) (eq (car target) 'command))))
+
 (defun efrit-sandbox--target-label (target)
-  "A short human label for a grant TARGET (path or (buffer . NAME))."
+  "A short human label for a grant TARGET (path, (buffer . NAME), or a shell target)."
   (cond ((and (consp target) (eq (car target) 'buffer))
          (format "buffer %s" (cdr target)))
+        ((efrit-sandbox-shell-target-p target)
+         (mapconcat #'identity (cdr target) ", "))
+        ((and (consp target) (eq (car target) 'command))
+         (format "exactly: %s" (cdr target)))
         ((stringp target) (abbreviate-file-name target))
+        ((eq target t) "any")
         (t (format "%s" target))))
 
 (defun efrit-sandbox-check-buffer (buffer &optional tool detail)
@@ -409,7 +628,11 @@ buffers visiting a file inside the project are allowed without asking."
       ('read (format "read %s" target))
       ('write (format "write under %s" target))
       ('elisp "evaluate Emacs Lisp")
-      ('shell "run shell commands")
+      ('shell (cond ((efrit-sandbox-shell-target-p target)
+                     (format "run %s" (efrit-sandbox--target-label target)))
+                    ((and (consp target) (eq (car target) 'command))
+                     (format "run the command %s" (cdr target)))
+                    (t "run shell commands")))
       ('net "access the network")
       ('buffer (format "touch %s" (efrit-sandbox--target-label target)))
       (_ (format "%s %s" cap target)))))

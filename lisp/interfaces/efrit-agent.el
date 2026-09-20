@@ -734,8 +734,9 @@ Display Style:
   Set `efrit-agent-display-style' to 'ascii for terminal compatibility
 
 Input (when in input region):
-  RET            Send single-line input (or newline for multi-line)
-  S-RET          Insert newline (for multi-line input)
+  RET            Send the input (from any line of it)
+  S-RET          Insert a newline (also M-RET, C-j)
+  S-<arrows>     Extend the selection (shift-select works in the input)
   C-c C-c        Send input
   C-c C-s        Send input
   C-c C-k        Clear input

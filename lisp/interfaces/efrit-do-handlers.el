@@ -393,12 +393,13 @@ blocks inside `call-process'.  This loop checks the clock between
 (defun efrit-do--handle-shell-exec (input-str)
   "Handle shell_exec tool to execute a shell command.
 INPUT-STR is the shell command to execute.
-With the scope sandbox on, running any shell command needs the single
-`shell' grant (any command can escalate to any other, so a per-command
-whitelist is not a boundary).  Without it the legacy whitelist applies.
+With the scope sandbox on, the command names on the line need a
+`shell' grant (`efrit-sandbox-shell-commands'); a line matching
+`efrit-sandbox-shell-always-ask' is asked about every time.  Without
+the sandbox the legacy whitelist applies.
 Returns output or security error."
   (when (bound-and-true-p efrit-sandbox-enabled)
-    (efrit-sandbox-check 'shell t "shell_exec" input-str))
+    (efrit-sandbox-check 'shell input-str "shell_exec" input-str))
   (let ((validation (if (bound-and-true-p efrit-sandbox-enabled)
                         (cons t nil)
                       (efrit-do--validate-shell-command input-str))))
