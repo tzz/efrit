@@ -55,6 +55,7 @@
 (require 'efrit-common)
 (require 'efrit-todo)
 (require 'efrit-sandbox)
+(require 'efrit-events)
 
 ;; Forward declarations
 (declare-function efrit-tool-emacs-apropos "efrit-tool-emacs-apropos")
@@ -468,6 +469,7 @@ Claude sends without validation or state machine logic."
     ;; Replace the entire TODO list (nreverse is destructive, so capture result)
     (setq efrit-do--current-todos (nreverse new-todos))
     (setq efrit-do--todo-counter (length efrit-do--current-todos))
+    (efrit-publish 'todos-changed `((:todos . ,efrit-do--current-todos)))
 
     ;; Return a summary
     (let* ((total (length efrit-do--current-todos))

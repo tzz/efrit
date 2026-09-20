@@ -51,15 +51,6 @@
 (require 'efrit-limits)
 (require 'efrit-events)
 
-(declare-function efrit-do--execute-tool "efrit-do-dispatch")
-(declare-function efrit-do--command-system-prompt "efrit-do-prompt")
-(declare-function efrit-do--get-current-tools-schema "efrit-do-schema")
-(declare-function efrit-agent-show-thinking "efrit-agent")
-(declare-function efrit-agent-hide-thinking "efrit-agent")
-(declare-function efrit-agent-stream-content "efrit-agent")
-(declare-function efrit-agent-stream-end "efrit-agent")
-(declare-function efrit-agent-show-tool-start "efrit-agent")
-(declare-function efrit-agent-show-tool-result "efrit-agent")
 (declare-function efrit-api-stream-request "efrit-api-stream")
 (defvar efrit-api-streaming)
 (defvar efrit-default-model)
@@ -96,6 +87,9 @@ CALLBACK and does the remhash)."
   thinking-p          ; Non-nil to drive the agent thinking indicator.
   handles-waiting-p   ; Non-nil if WAITING-FOR-USER pauses the turn.
   on-end-turn-fn      ; (session content) called on end_turn before finish, or nil.
+  system-prompt-fn    ; (session-id) -> system prompt string.
+  tools-fn            ; () -> tools schema for the request.
+  dispatch-fn         ; (tool-item) -> result string; runs one tool.
   api-call-fn         ; Symbol: (session messages callback) async API call.
   continue-fn         ; Symbol: (session) re-enter the iteration loop.
   execute-tools-fn    ; Symbol: (session content) execute requested tools.
@@ -188,9 +182,10 @@ the next API request."
   "Send the next API request for SESSION via ADAPTER's api-call function."
   (let ((messages (funcall (efrit-loop-adapter-messages-fn adapter) session)))
     ;; Animated indicator while the API call is in flight
-    (when (and (efrit-loop-adapter-thinking-p adapter)
-               (fboundp 'efrit-agent-show-thinking))
-      (efrit-agent-show-thinking "waiting for Claude..."))
+    (when (efrit-loop-adapter-thinking-p adapter)
+      (efrit-publish 'thinking-start
+                     `((:session-id . ,(funcall (efrit-loop-adapter-id-fn adapter) session))
+                       (:label . "waiting for Claude..."))))
     (funcall (efrit-loop-adapter-api-call-fn adapter)
      session
      messages
@@ -213,26 +208,24 @@ the next API request."
                          msg)
               (efrit-loop--finish session adapter "elisp-error" msg)))))))))
 
-(defun efrit-loop-api-call (session-id messages callback)
+(defun efrit-loop-api-call (session-id messages callback adapter)
   "Make the canonical async Claude API call for SESSION-ID with MESSAGES.
 CALLBACK is (lambda (response error) ...) called when complete.
-Builds the request from the shared command system prompt and the
-current tools schema."
+The system prompt and the tools schema come from ADAPTER, so this
+engine has no view of which interface owns them."
   (efrit-log 'debug "API call sending %d messages" (length messages))
-  (require 'efrit-do)
   (let* ((efrit-api-request-purpose
           (format "the model's next turn (session %s, %d messages)"
                   (truncate-string-to-width (format "%s" session-id) 12 nil nil "…")
                   (length messages)))
-         (system-prompt (efrit-do--command-system-prompt nil nil nil
-                                                         session-id nil))
+         (system-prompt (funcall (efrit-loop-adapter-system-prompt-fn adapter) session-id))
          (request-data
           `(("model" . ,efrit-default-model)
             ("max_tokens" . 8192)
             ("messages" . ,(efrit-api-cacheable-messages messages))
             ("system" . ,(efrit-api-cacheable-system system-prompt))
             ("tools" . ,(efrit-api-cacheable-tools
-                         (efrit-do--get-current-tools-schema))))))
+                         (funcall (efrit-loop-adapter-tools-fn adapter)))))))
     ;; Call efrit-api-request-async directly rather than via
     ;; efrit-executor--api-request: the executor's error handler ends
     ;; the progress session generically and invokes the success
@@ -257,9 +250,8 @@ current tools schema."
                (funcall callback response error)))
            (lambda (text)
              (setq shown t)
-             (when (fboundp 'efrit-agent-hide-thinking) (efrit-agent-hide-thinking))
-             (when (fboundp 'efrit-agent-stream-content)
-               (efrit-agent-stream-content text)))))
+             (efrit-publish 'thinking-stop `((:session-id . ,session-id)))
+             (efrit-publish 'text-delta `((:session-id . ,session-id) (:text . ,text))))))
       (efrit-api-request-async
        request-data
        (lambda (response)
@@ -279,9 +271,8 @@ response's stop_reason."
          (session-id (funcall (efrit-loop-adapter-id-fn adapter) session)))
     (efrit-log 'debug "%s %s: received response" name session-id)
     ;; Content has arrived; stop the thinking indicator
-    (when (and (efrit-loop-adapter-thinking-p adapter)
-               (fboundp 'efrit-agent-hide-thinking))
-      (efrit-agent-hide-thinking))
+    (when (efrit-loop-adapter-thinking-p adapter)
+      (efrit-publish 'thinking-stop `((:session-id . ,session-id))))
     (when-let* ((usage (efrit-response-usage response)))
       (efrit-log 'debug "%s %s: usage in=%s out=%s cache_write=%s cache_read=%s"
                  name session-id
@@ -306,10 +297,9 @@ response's stop_reason."
             (let ((item (aref content i)))
               (when (and (hash-table-p item)
                          (string= (gethash "type" item) "text"))
-                (when (fboundp 'efrit-agent-stream-content)
-                  (efrit-agent-stream-content (gethash "text" item)))))))
-        (when (fboundp 'efrit-agent-stream-end)
-          (efrit-agent-stream-end)))
+                (efrit-publish 'text-delta `((:session-id . ,session-id)
+                                             (:text . ,(gethash "text" item))))))))
+        (efrit-publish 'text-end `((:session-id . ,session-id))))
       (pcase stop-reason
         ("tool_use"
          (if (efrit-review-applies-p content)
@@ -344,15 +334,13 @@ the turn is handed to the user instead."
   (let* ((name (efrit-loop-adapter-name adapter))
          (session-id (funcall (efrit-loop-adapter-id-fn adapter) session))
          (messages (funcall (efrit-loop-adapter-messages-fn adapter) session)))
-    (when (and (efrit-loop-adapter-thinking-p adapter)
-               (fboundp 'efrit-agent-show-thinking))
-      (efrit-agent-show-thinking))
+    (when (efrit-loop-adapter-thinking-p adapter)
+      (efrit-publish 'thinking-start `((:session-id . ,session-id) (:label . "reviewing..."))))
     (efrit-review-turn
      session-id messages content
      (lambda (verdict)
-       (when (and (efrit-loop-adapter-thinking-p adapter)
-                  (fboundp 'efrit-agent-hide-thinking))
-         (efrit-agent-hide-thinking))
+       (when (efrit-loop-adapter-thinking-p adapter)
+         (efrit-publish 'thinking-stop `((:session-id . ,session-id))))
        (let ((count (efrit-review-note-verdict session-id (car verdict))))
          (pcase (car verdict)
            ('approve
@@ -372,10 +360,14 @@ the turn is handed to the user instead."
                     (efrit-loop--event adapter session-id 'tool_result
                                        `((:tool . ,(nth 1 use)) (:result . ,text)
                                          (:success . nil)))
-                    (when (fboundp 'efrit-agent-show-tool-start)
-                      (let ((row (efrit-agent-show-tool-start (nth 1 use) (nth 2 use))))
-                        (when (and row (fboundp 'efrit-agent-show-tool-result))
-                          (efrit-agent-show-tool-result row text nil 0))))
+                    ;; the rejected call shows as a failed tool row
+                    (efrit-publish 'tool-start `((:session-id . ,session-id)
+                                                 (:tool-id . ,(nth 0 use))
+                                                 (:tool . ,(nth 1 use)) (:input . ,(nth 2 use))))
+                    (efrit-publish 'tool-result `((:session-id . ,session-id)
+                                                  (:tool-id . ,(nth 0 use))
+                                                  (:tool . ,(nth 1 use)) (:result . ,text)
+                                                  (:success . nil) (:elapsed . 0)))
                     (push (efrit-api-build-tool-result (nth 0 use) text t) results))))
               (funcall (efrit-loop-adapter-add-tool-results-fn adapter)
                        session (nreverse results))
@@ -434,11 +426,9 @@ continues the loop."
             (efrit-loop--event adapter session-id 'tool_started
                                `((:tool . ,tool-name) (:input . ,input)))
             (efrit-publish 'tool-start `((:session-id . ,session-id)
+                                         (:tool-id . ,tool-id)
                                          (:tool . ,tool-name) (:input . ,input)))
-            ;; Show tool start in agent buffer and track time
-            (let ((agent-tool-id (when (fboundp 'efrit-agent-show-tool-start)
-                                   (efrit-agent-show-tool-start tool-name input)))
-                  (tool-start-time (current-time)))
+            (let ((tool-start-time (current-time)))
               (let* ((tool-result (efrit-loop--execute-single-tool
                                    session adapter tool-id tool-name input))
                      ;; Check if result contains session_complete signal
@@ -456,13 +446,11 @@ continues the loop."
                                      (:result . ,tool-result)
                                      (:success . ,(not is-error))))
                 (efrit-publish 'tool-result `((:session-id . ,session-id)
+                                              (:tool-id . ,tool-id)
                                               (:tool . ,tool-name)
                                               (:result . ,tool-result)
                                               (:success . ,(not is-error))
                                               (:elapsed . ,elapsed-secs)))
-                (when (and agent-tool-id (fboundp 'efrit-agent-show-tool-result))
-                  (efrit-agent-show-tool-result agent-tool-id tool-result
-                                                (not is-error) elapsed-secs))
                 ;; Successful dispatches are already work-logged with
                 ;; their full input by efrit-do--execute-tool; logging
                 ;; here too double-counted every step (ef-c1h).  Only
@@ -524,7 +512,6 @@ with error handling and validation.  Returns the tool result string.
 Error messages start with `Error ' for easy detection by callers."
   (let ((name (efrit-loop-adapter-name adapter))
         (session-id (funcall (efrit-loop-adapter-id-fn adapter) session)))
-    (require 'efrit-do)
     (condition-case err
         (progn
           ;; Validate input structure
@@ -537,7 +524,8 @@ Error messages start with `Error ' for easy detection by callers."
             ;; Execute the tool, letting the adapter establish dynamic
             ;; context around dispatch (e.g. the REPL tool session)
             (let* ((wrap (efrit-loop-adapter-wrap-dispatch-fn adapter))
-                   (dispatch (lambda () (efrit-do--execute-tool tool-item)))
+                   (run (efrit-loop-adapter-dispatch-fn adapter))
+                   (dispatch (lambda () (funcall run tool-item)))
                    (result (if wrap
                                (funcall wrap session dispatch)
                              (funcall dispatch))))

@@ -40,6 +40,7 @@
 (require 'svg)
 (require 'dom)
 (require 'color)
+(require 'efrit-log)
 
 (defvar efrit-agent--status)
 (defvar efrit-agent--thinking-label)
@@ -372,13 +373,16 @@ whole header at twice the body text.  (The spinner already did this.)"
          (when (> (hash-table-count efrit-agent-svg--cache) 64)
            (clrhash efrit-agent-svg--cache))
          (or (gethash model efrit-agent-svg--cache)
-             (puthash model
-                      (condition-case err
-                          (efrit-agent-svg--render model)
-                        (error
-                         (message "efrit svg header: %s" (error-message-string err))
-                         (efrit-agent--format-header-line)))
-                      efrit-agent-svg--cache)))))
+             ;; A failed render is shown as the text header but NOT
+             ;; cached: caching it pinned the fallback to this model
+             ;; key until something in the header changed, which is
+             ;; why a transient error at startup left a blank header
+             ;; until the first RET.
+             (condition-case err
+                 (puthash model (efrit-agent-svg--render model) efrit-agent-svg--cache)
+               (error
+                (efrit-log 'warn "svg header: %s" (error-message-string err))
+                (efrit-agent--format-header-line)))))))
     (_ (efrit-agent--format-header-line))))
 
 (defun efrit-agent-svg--resize ()

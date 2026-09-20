@@ -55,12 +55,11 @@
 (require 'seq)
 (require 'efrit-sandbox)
 (require 'efrit-sandbox-store)
+(require 'efrit-events)
 
 (defvar transient-post-exit-hook)
 (declare-function efrit-sandbox-ask "efrit-sandbox-ui")
-(declare-function efrit-agent--append-to-conversation "efrit-agent-core")
 (declare-function efrit-show-preview "efrit-ui-helpers")
-(defvar efrit-agent-buffer-name)
 
 (defgroup efrit-sandbox-ui nil
   "Sandbox prompts and listing."
@@ -85,14 +84,8 @@
 ;;; Transcript notes
 
 (defun efrit-sandbox-ui--note (text face)
-  "Append a one-line TEXT in FACE to the agent conversation, if it exists."
-  (when (and (boundp 'efrit-agent-buffer-name)
-             (get-buffer efrit-agent-buffer-name)
-             (fboundp 'efrit-agent--append-to-conversation))
-    (with-current-buffer efrit-agent-buffer-name
-      (efrit-agent--append-to-conversation
-       (concat (propertize (concat "  ⛨ " text) 'face face) "\n")
-       (list 'efrit-type 'sandbox-note)))))
+  "Publish a one-line TEXT in FACE as a transcript note."
+  (efrit-publish 'note `((:text . ,(concat "⛨ " text)) (:face . ,face) (:kind . sandbox))))
 
 ;;; The prompt
 

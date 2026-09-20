@@ -32,6 +32,9 @@
 (require 'efrit-progress)
 (require 'efrit-progress-buffer)
 (require 'efrit-api)
+(require 'efrit-do-prompt)
+(require 'efrit-do-schema)
+(require 'efrit-do-dispatch)
 (require 'efrit-agent)
 
 ;;; Customization
@@ -94,6 +97,10 @@ Each entry contains: (session callback iteration-count)")
                                                nil
                                                tool-name))
    :event-fn #'efrit-progress-insert-event
+   :system-prompt-fn (lambda (session-id)
+                       (efrit-do--command-system-prompt nil nil nil session-id nil))
+   :tools-fn #'efrit-do--get-current-tools-schema
+   :dispatch-fn #'efrit-do--execute-tool
    :thinking-p t
    :handles-waiting-p nil
    :api-call-fn 'efrit-do-async--api-call
@@ -141,7 +148,8 @@ Returns the session ID."
 (defun efrit-do-async--api-call (session messages callback)
   "Make async API call to Claude with MESSAGES for SESSION.
 CALLBACK is (lambda (response error) ...) called when complete."
-  (efrit-loop-api-call (efrit-session-id session) messages callback))
+  (efrit-loop-api-call (efrit-session-id session) messages callback
+                       efrit-do-async--adapter))
 
 (defun efrit-do-async--execute-tools (session content)
   "Execute tools requested in Claude's CONTENT for SESSION.
@@ -152,8 +160,7 @@ CONTENT is a vector of content blocks."
   "Handle API ERROR for SESSION."
   (let ((session-id (efrit-session-id session)))
     (efrit-log 'error "Session %s: API error: %s" session-id error)
-    (when (fboundp 'efrit-agent-hide-thinking)
-      (efrit-agent-hide-thinking))
+    (efrit-publish 'thinking-stop `((:session-id . ,(efrit-session-id session))))
 
     ;; Fire error event
     (efrit-progress-insert-event session-id 'error

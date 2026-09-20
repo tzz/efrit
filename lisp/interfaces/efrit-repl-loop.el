@@ -35,13 +35,15 @@
 (require 'efrit-loop)
 (require 'efrit-tools)   ; efrit-tools--reset-rate-limits
 (require 'efrit-do-circuit-breaker)   ; efrit-do--circuit-breaker-reset
+(require 'efrit-do-prompt)            ; efrit-do--command-system-prompt
+(require 'efrit-do-schema)            ; efrit-do--get-current-tools-schema
+(require 'efrit-do-dispatch)          ; efrit-do--execute-tool
+(require 'efrit-do-handlers)          ; the handlers efrit-do-dispatch declares
 (require 'efrit-context-sources)
 (require 'efrit-events)
 (require 'efrit-models)
 
-(declare-function efrit-agent-set-status "efrit-agent")
 (defvar efrit-default-model)
-(declare-function efrit-agent--add-error-message "efrit-agent-render")
 
 ;;; Customization
 
@@ -69,6 +71,10 @@ Dynamically bound around tool dispatch so session-aware tool handlers
 requiring an active efrit-do session (ef-dcn).")
 
 ;;; Engine Adapter
+
+(defun efrit-repl-loop--system-prompt (session-id)
+  "The command system prompt for SESSION-ID."
+  (efrit-do--command-system-prompt nil nil nil session-id nil))
 
 (defvar efrit-repl-loop--adapter
   (efrit-loop-adapter-create
@@ -98,6 +104,11 @@ requiring an active efrit-do session (ef-dcn).")
    :wrap-dispatch-fn (lambda (session thunk)
                        (let ((efrit-repl-loop--tool-session session))
                          (funcall thunk)))
+   ;; The prompt, the schema and the dispatcher are the efrit-do
+   ;; interface's; the engine only sees these three functions
+   :system-prompt-fn #'efrit-repl-loop--system-prompt
+   :tools-fn #'efrit-do--get-current-tools-schema
+   :dispatch-fn #'efrit-do--execute-tool
    ;; The agent buffer is this loop's surface: show the activity
    ;; indicator while a request is in flight.
    :thinking-p t
@@ -158,9 +169,7 @@ Returns the session ID."
       (efrit-publish 'turn-start `((:session-id . ,session-id)
                                    (:input . ,user-input)))
 
-      ;; Update agent buffer status
-      (when (fboundp 'efrit-agent-set-status)
-        (efrit-agent-set-status 'working))
+      (efrit-publish 'status `((:session-id . ,session-id) (:status . working)))
 
       ;; Store loop state
       (puthash session-id
@@ -184,7 +193,8 @@ Returns the session ID."
 (defun efrit-repl-loop--api-call (session messages callback)
   "Make async API call to Claude with MESSAGES for REPL SESSION.
 CALLBACK is (lambda (response error) ...) called when complete."
-  (efrit-loop-api-call (efrit-repl-session-id session) messages callback))
+  (efrit-loop-api-call (efrit-repl-session-id session) messages callback
+                       efrit-repl-loop--adapter))
 
 (defun efrit-repl-loop--execute-tools (session content)
   "Execute tools requested in Claude's CONTENT for REPL SESSION."
@@ -197,13 +207,8 @@ CALLBACK is (lambda (response error) ...) called when complete."
     (when buffer
       (if (buffer-live-p buffer)
           ;; Buffer exists and is live - try to display error
-          (with-current-buffer buffer
-            (when (fboundp 'efrit-agent--add-error-message)
-              (condition-case err
-                  (efrit-agent--add-error-message message)
-                (error
-                 (efrit-log 'error "REPL session %s: Error displaying error message: %s"
-                            session-id (error-message-string err))))))
+          (efrit-publish 'error `((:session-id . ,session-id) (:message . ,message)
+                                  (:buffer . ,buffer)))
         ;; Buffer reference is stale - clear it
         (setf (efrit-repl-session-buffer session) nil)))))
 
@@ -272,13 +277,13 @@ Unlike efrit-do-async--stop-loop, this transitions to idle, not complete."
     ;; Update agent buffer status
     ;; Note: "unknown" means Claude finished but with unrecognized stop_reason
     ;; This is normal - treat it as idle, not failed.
-    (when (fboundp 'efrit-agent-set-status)
-      (efrit-agent-set-status
-       (cond
-        ((equal stop-reason "waiting-for-user") 'waiting)
-        ((member stop-reason '("end_turn" "session-complete" "unknown")) 'idle)
-        ((equal stop-reason "interrupted") 'interrupted)
-        (t 'failed))))
+    (efrit-publish 'status
+                   `((:session-id . ,session-id)
+                     (:status . ,(cond
+                                  ((equal stop-reason "waiting-for-user") 'waiting)
+                                  ((member stop-reason '("end_turn" "session-complete" "unknown")) 'idle)
+                                  ((equal stop-reason "interrupted") 'interrupted)
+                                  (t 'failed)))))
 
     ;; Remove from active loops
     (remhash session-id efrit-repl-loop--active)

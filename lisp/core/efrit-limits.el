@@ -39,6 +39,7 @@
 (require 'cl-lib)
 (require 'efrit-log)
 (require 'efrit-settings)
+(require 'efrit-events)
 
 (defvar transient-post-exit-hook)
 (declare-function efrit-limits-menu "efrit-limits")
@@ -359,14 +360,8 @@ A VALUE of nil at `session' or `project' scope removes that override."
     (?c 'once) (?s 'session) (?p 'project) (_ nil)))
 
 (defun efrit-limits--note (text face)
-  "Append TEXT in FACE to the agent transcript, like the sandbox notes."
-  (when (and (boundp 'efrit-agent-buffer-name)
-             (get-buffer (symbol-value 'efrit-agent-buffer-name))
-             (fboundp 'efrit-agent--append-to-conversation))
-    (with-current-buffer (symbol-value 'efrit-agent-buffer-name)
-      (funcall 'efrit-agent--append-to-conversation
-               (concat (propertize (concat "  ⏱ " text) 'face face) "\n")
-               (list 'efrit-type 'limits-note)))))
+  "Publish TEXT in FACE as a transcript note (the agent buffer shows it)."
+  (efrit-publish 'note `((:text . ,(concat "⏱ " text)) (:face . ,face) (:kind . limits))))
 
 (defun efrit-limits-ask-to-raise (name current &optional root)
   "Ask whether to go past limit NAME, currently CURRENT, for ROOT.
