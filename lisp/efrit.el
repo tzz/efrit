@@ -277,6 +277,12 @@ Executes all ERT tests and displays results in a buffer."
 ;;;###autoload
 (autoload 'efrit-sandbox "efrit-permissions-ui" "Show and edit sandbox grants for the project." t)
 ;;;###autoload
+(autoload 'efrit-review-package "efrit-package-review"
+  "Review an installed package with efrit and show the report." t)
+;;;###autoload
+(autoload 'efrit-package-review-mode "efrit-package-review"
+  "Have efrit review packages before package-review asks." t)
+;;;###autoload
 (autoload 'efrit-permissions "efrit-permissions-ui"
   "Edit grants, review policy and limits for every known project." t)
 ;;;###autoload

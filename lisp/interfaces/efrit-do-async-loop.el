@@ -28,7 +28,8 @@
 (require 'efrit-common)
 (require 'efrit-session)
 (require 'efrit-loop)
-(require 'efrit-tools)   ; efrit-tools--reset-rate-limits
+(require 'efrit-tools)
+(require 'efrit-sandbox)   ; efrit-tools--reset-rate-limits
 (require 'efrit-progress)
 (require 'efrit-progress-buffer)
 (require 'efrit-api)
@@ -131,6 +132,7 @@ Returns the session ID."
     (efrit-agent-start-session session-id (efrit-session-command session))
     ;; Per-session tool counters (see efrit-repl-continue)
     (efrit-tools--reset-rate-limits)
+    (efrit-sandbox-begin-turn)
 
     ;; Store loop state
     (puthash session-id

@@ -37,6 +37,7 @@
 (declare-function efrit-repl-session-id "efrit-repl-session")
 (declare-function efrit-doctor--redact-url "efrit-doctor")
 (declare-function efrit-permissions "efrit-permissions-ui")
+(declare-function efrit-review-package "efrit-package-review")
 (declare-function efrit-sandbox-reset-session "efrit-sandbox")
 
 ;;; Description helpers (all pure, all safe with modules unloaded)
@@ -124,6 +125,7 @@
         :description (lambda () (efrit-menu--desc-toggle "Prompt caching" 'efrit-api-prompt-caching)))
        ("b" efrit-menu-toggle-sandbox :transient t :description efrit-menu--desc-permissions)
        ("x" "Permissions editor (grants, review, limits)" efrit-permissions)
+       ("P" "Review an installed package" efrit-review-package)
        ("X" "Forget session sandbox grants" efrit-sandbox-reset-session :transient t)
        ("h" efrit-agent-cycle-header-style :transient t :description efrit-menu--desc-header)]]
      [["Diagnostics"

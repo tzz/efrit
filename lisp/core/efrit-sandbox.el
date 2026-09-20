@@ -146,8 +146,24 @@ ruin your day."
   :group 'efrit-sandbox)
 
 (defconst efrit-sandbox-shell--separators
-  "\\(?:||\\|&&\\||&?\\|;\\|&\\|\n\\|\\$(\\|`\\|(\\|)\\)"
-  "Where one command ends and the next may begin.")
+  "\\(?:||\\|&&\\||&?\\|;\\|&\\|\n\\|`\\)"
+  "Where one command ends and the next may begin, outside substitutions.")
+
+(defun efrit-sandbox-shell--lift-substitutions (line)
+  "LINE with every $(...) and (...) group moved out into its own segment.
+The inner text is a command line of its own.  The group is removed
+from the outer word, since the rest of that word is a path fragment,
+not a command: ls dir/$(date)/f is ls and date, nothing else.
+Nested groups are handled by repeating until none is left; an
+unbalanced paren leaves the rest as is."
+  (let ((out line) (lifted nil) (guard 0))
+    (while (and (< guard 20)
+                (string-match "\\$?(\\([^()]*\\))" out))
+      (cl-incf guard)
+      (push (match-string 1 out) lifted)
+      (setq out (concat (substring out 0 (match-beginning 0))
+                        (substring out (match-end 0)))))
+    (mapconcat #'identity (cons out (nreverse lifted)) " ; ")))
 
 (defun efrit-sandbox-shell--strip-noise (line)
   "LINE without quoted strings and redirections, which are not commands.
@@ -198,7 +214,8 @@ Both names are reported: the wrapper needs a grant too.")
   "The distinct command names a shell LINE would run, in order.
 Nil for an empty line."
   (let ((out nil))
-    (dolist (segment (split-string (efrit-sandbox-shell--strip-noise line)
+    (dolist (segment (split-string (efrit-sandbox-shell--lift-substitutions
+                                    (efrit-sandbox-shell--strip-noise line))
                                    efrit-sandbox-shell--separators t))
       (dolist (name (efrit-sandbox-shell--segment-commands segment))
         (unless (member name out) (push name out))))
@@ -572,6 +589,26 @@ prefixes are absorbed; shell lists, buffers and t are left alone."
 
 ;;; The check
 
+(defvar efrit-sandbox--turn-answer nil
+  "A standing answer for the rest of the turn: `deny-all' or `abort', or nil.
+Set by the prompt's N (deny every further request this turn) and q
+\(abort the turn); cleared by `efrit-sandbox-begin-turn'.")
+
+(defun efrit-sandbox-begin-turn ()
+  "Forget the standing answer of the previous turn.  Loops call this per turn."
+  (setq efrit-sandbox--turn-answer nil))
+
+(defun efrit-sandbox-deny-rest-of-turn ()
+  "Answer no to this request and to every further request this turn.
+The model keeps running; each denied tool gets the usual result."
+  (setq efrit-sandbox--turn-answer 'deny-all))
+
+(defun efrit-sandbox-abort-turn ()
+  "Answer no and stop the turn: the tool is interrupted as C-g would.
+The loop records an interrupted tool result and ends the turn; the
+conversation stays and the next input continues it."
+  (setq efrit-sandbox--turn-answer 'abort))
+
 (defun efrit-sandbox--ask-without-clock (req)
   "Call `efrit-sandbox-request-function' on REQ with tool timeouts paused.
 The check runs inside the tool's `with-timeout'; the time the user
@@ -616,7 +653,19 @@ With `efrit-sandbox-enabled' nil this is a no-op that returns t."
                      :target (efrit-sandbox--suggest-target cap ctarget root)
                      :tool tool :detail detail))
                (scope (and efrit-sandbox-request-function
+                           ;; a standing N from earlier this turn: no prompt
+                           (not (eq efrit-sandbox--turn-answer 'deny-all))
                            (efrit-sandbox--ask-without-clock req))))
+          ;; q in the prompt: this tool is interrupted, the loop ends
+          ;; the turn the way it does for C-g
+          (when (eq efrit-sandbox--turn-answer 'abort)
+            ;; one quit ends the turn; do not keep quitting into the next
+            (setq efrit-sandbox--turn-answer nil)
+            (efrit-log 'info "sandbox: turn aborted by the user at %s %s (%s)" cap ctarget tool)
+            (when (fboundp 'efrit-publish)
+              (efrit-publish 'sandbox-denied `((:cap . ,cap) (:target . ,ctarget) (:tool . ,tool)
+                                               (:abort . t))))
+            (signal 'quit nil))
           ;; an exact-line shell grant is never standing: whatever the
           ;; prompt returned, it applies to this run only
           (when (and (memq scope '(session project))

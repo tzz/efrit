@@ -34,6 +34,7 @@
 (require 'efrit-repl-session)
 (require 'efrit-loop)
 (require 'efrit-tools)   ; efrit-tools--reset-rate-limits
+(require 'efrit-sandbox)
 (require 'efrit-do-circuit-breaker)   ; efrit-do--circuit-breaker-reset
 (require 'efrit-do-prompt)            ; efrit-do--command-system-prompt
 (require 'efrit-do-schema)            ; efrit-do--get-current-tools-schema
@@ -171,6 +172,7 @@ Returns the session ID."
       ;; Same for the circuit breaker's counters (30 tool calls per
       ;; *turn*, not per Emacs session)
       (efrit-do--circuit-breaker-reset)
+      (efrit-sandbox-begin-turn)
       (efrit-repl-session-begin-turn session)
       (efrit-publish 'turn-start `((:session-id . ,session-id)
                                    (:input . ,user-input)))

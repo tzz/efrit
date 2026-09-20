@@ -69,6 +69,42 @@
       (setq test-sb--answers '(nil))
       (should-error (efrit-sandbox-check 'shell t) :type 'efrit-sandbox-denied))))
 
+(ert-deftest test-sb-prompt-N-denies-rest-of-turn-and-q-aborts ()
+  "N: this and every further request this turn is denied without a prompt.
+q: the tool is interrupted (quit), which the loop turns into an ended turn.
+Both are forgotten when the next turn begins."
+  (test-sb--in-project
+    (let ((asked 0))
+      ;; N
+      (let ((efrit-sandbox-request-function
+             (lambda (_req) (cl-incf asked) (efrit-sandbox-deny-rest-of-turn) nil)))
+        (efrit-sandbox-begin-turn)
+        (should-error (efrit-sandbox-check 'write (expand-file-name "a" root)) :type 'efrit-sandbox-denied)
+        (should-error (efrit-sandbox-check 'shell "ls") :type 'efrit-sandbox-denied)
+        (should-error (efrit-sandbox-check 'elisp t) :type 'efrit-sandbox-denied)
+        (should (= asked 1))
+        ;; what is already allowed still is
+        (should (efrit-sandbox-check 'read (expand-file-name "a" root)))
+        ;; next turn asks again
+        (efrit-sandbox-begin-turn)
+        (should-error (efrit-sandbox-check 'write (expand-file-name "a" root)) :type 'efrit-sandbox-denied)
+        (should (= asked 2)))
+      ;; q
+      (let* ((aborts 1)
+             (efrit-sandbox-request-function
+              (lambda (_req) (when (> aborts 0) (cl-decf aborts) (efrit-sandbox-abort-turn)) nil)))
+        (efrit-sandbox-begin-turn)
+        ;; `quit' is not an `error': catch it as the loop does
+        (should (eq 'quit (condition-case nil
+                              (progn (efrit-sandbox-check 'write (expand-file-name "a" root)) 'ran)
+                            (quit 'quit))))
+        ;; the abort is consumed: the next check asks again (and is denied)
+        (should (eq 'denied (condition-case nil
+                                (progn (efrit-sandbox-check 'write (expand-file-name "b" root)) 'ran)
+                              (efrit-sandbox-denied 'denied)
+                              (quit 'quit))))
+        (efrit-sandbox-begin-turn)))))
+
 (ert-deftest test-sb-outside-target-suggestion-is-narrow ()
   (test-sb--in-project
     (defvar test-sb--seen nil)
@@ -161,7 +197,11 @@ a tree at $HOME is not widened."
   (should (equal (efrit-sandbox-shell-commands "make && ./run.sh; echo done") '("make" "run.sh" "echo")))
   (should (equal (efrit-sandbox-shell-commands "cd /tmp && FOO=1 env BAR=2 python3 x.py")
                  '("cd" "env" "python3")))
-  (should (equal (efrit-sandbox-shell-commands "echo $(whoami) `date`") '("echo" "whoami" "date")))
+  (should (equal (sort (efrit-sandbox-shell-commands "echo $(whoami) `date`") #'string<) '("date" "echo" "whoami")))
+  ;; a substitution inside a path is not a command boundary for the rest of the word
+  (should (equal (efrit-sandbox-shell-commands "date +%F; ls ~/work/$(date +%F)/claude.org 2>&1; test -w ~/work && echo writable")
+                 '("date" "ls" "test" "echo")))
+  (should (equal (efrit-sandbox-shell-commands "cat $(git rev-parse --show-toplevel)/README.md") '("cat" "git")))
   (should (equal (efrit-sandbox-shell-commands "find . -name '*.el' | xargs grep -l foo")
                  '("find" "xargs" "grep")))
   (should (equal (efrit-sandbox-shell-commands "nohup make test > out.log 2>&1 &") '("nohup" "make")))

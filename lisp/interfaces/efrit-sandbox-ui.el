@@ -21,7 +21,9 @@
 ;;       s  session   until this Emacs exits
 ;;       p  project   saved in <project>/.efrit/sandbox.json
 ;;       a  any       (shell only) any command, this session
-;;       n  no        deny (C-g and q do the same)
+;;       n  no        deny this one; the model continues
+;;       N  no to all deny this and every request for the rest of the turn
+;;       q  abort     stop the turn (as C-g in a tool); the chat stays
 ;;
 ;;   A shell request names the commands on the line ("run git, sed");
 ;;   a line in `efrit-sandbox-shell-always-ask' (rm -rf, sudo, force
@@ -229,7 +231,11 @@ always-ask lines stay excluded from it."
              :if efrit-sandbox-ui--shell-list-p)]
            ["Refuse"
             ("n" "no, the model continues without it"
-             (lambda () (interactive) (efrit-sandbox-ui--choose nil)))]
+             (lambda () (interactive) (efrit-sandbox-ui--choose nil)))
+            ("N" "no to this and every request for the rest of the turn"
+             (lambda () (interactive) (efrit-sandbox-deny-rest-of-turn) (efrit-sandbox-ui--choose nil)))
+            ("q" "abort the turn (like C-g; the conversation stays)"
+             (lambda () (interactive) (efrit-sandbox-abort-turn) (efrit-sandbox-ui--choose nil)))]
            ["Details"
             ("?" efrit-sandbox-ui-toggle-details
              :description efrit-sandbox-ui--toggle-label :transient t)
@@ -270,10 +276,10 @@ Returns once/session/project or nil.  Closing the menu any other way
          (once-only (efrit-sandbox-request-once-only-p req))
          (header (format "Efrit (%s) wants to %s\n" tool (efrit-sandbox-ui--scope-word req)))
          (legend (if once-only
-                     "[o]nce (this line is always asked)  [n]o  [?]details "
-                   (format "[o]nce  [s]ession  [p]roject %s  [n]o  [?]details "
+                     "[o]nce (this line is always asked)  [n]o  [N]o to all this turn  [q]abort turn  [?]details "
+                   (format "[o]nce  [s]ession  [p]roject %s  [n]o  [N]o to all this turn  [q]abort turn  [?]details "
                            (abbreviate-file-name (efrit-sandbox-project-root)))))
-         (keys (if once-only '(?o ?n ??) '(?o ?s ?p ?n ??))))
+         (keys (if once-only '(?o ?n ?N ?q ??) '(?o ?s ?p ?n ?N ?q ??))))
     (unwind-protect
         (catch 'decided
           (while t
@@ -286,6 +292,8 @@ Returns once/session/project or nil.  Closing the menu any other way
               (?s (throw 'decided 'session))
               (?p (throw 'decided 'project))
               (?n (throw 'decided nil))
+              (?N (efrit-sandbox-deny-rest-of-turn) (throw 'decided nil))
+              (?q (efrit-sandbox-abort-turn) (throw 'decided nil))
               (?? (efrit-sandbox-ui--show-details req)))))
       (efrit-sandbox-ui--hide-details))))
 
@@ -307,7 +315,10 @@ Returns once/session/project or nil.  Closing the menu any other way
          ('once (format "granted once: %s" what))
          ('session (format "granted for this session: %s" what))
          ('project (format "granted for this project (saved): %s" what))
-         (_ (format "denied: %s" what)))
+         (_ (pcase efrit-sandbox--turn-answer
+              ('abort (format "denied, turn aborted: %s" what))
+              ('deny-all (format "denied, and everything else this turn: %s" what))
+              (_ (format "denied: %s" what)))))
        (if answer 'efrit-sandbox-grant-face 'efrit-sandbox-deny-face))
       answer)))
 

@@ -77,6 +77,11 @@
 (defvar efrit-api-prompt-caching)
 (defvar efrit-default-model)
 (defvar efrit-agent-header-style)
+(defvar efrit-package-review-mode)
+(defvar efrit-package-review-action)
+(defvar package-review-policy)
+(declare-function efrit-package-review-model "efrit-package-review")
+(declare-function efrit-package-review-mode "efrit-package-review")
 
 (defgroup efrit-doctor nil
   "Configuration verifier."
@@ -503,7 +508,28 @@ carries a cache_control block, which is the caching probe."
         (when (< efrit-review-max-rejections 1)
           (efrit-doctor--fail "efrit-review-max-rejections is below 1"
                               "Every rejection would hand the turn to you at once; the proposer never gets to revise."
-                              "Set to 2" (lambda () (setq efrit-review-max-rejections 2))))))))
+                              "Set to 2" (lambda () (setq efrit-review-max-rejections 2))))))
+    ;; package review (Emacs 31's package-review, or on demand)
+    (cond
+     ((not (fboundp 'package-review))
+      (efrit-doctor--info "Package review: this Emacs has no package-review (needs 31)"
+                          "M-x efrit-review-package still reviews an installed package on demand."))
+     ((not (bound-and-true-p efrit-package-review-mode))
+      (efrit-doctor--warn "Package review off"
+                          "M-x efrit-package-review-mode has a model read each incoming package (source, diff, changelog) and report risks before package.el asks you."
+                          "Turn on" (lambda () (require 'efrit-package-review) (efrit-package-review-mode 1))))
+     ((null (bound-and-true-p package-review-policy))
+      (efrit-doctor--warn "Package review mode is on but package-review-policy is nil"
+                          "package.el never calls the review, so efrit never sees a package."
+                          "Review all packages" (lambda () (setq package-review-policy t))))
+     (t
+      (efrit-doctor--ok (format "Package review on: %s reviews packages matching %S"
+                                (if (fboundp 'efrit-package-review-model) (efrit-package-review-model) "?")
+                                package-review-policy))
+      (when (and (boundp 'efrit-package-review-action)
+                 (eq efrit-package-review-action 'auto-approve-clean))
+        (efrit-doctor--info "A clean verdict installs without asking"
+                            "efrit-package-review-action is auto-approve-clean; flagged packages still ask."))))))
 
 (defun efrit-doctor--check-permissions ()
   (efrit-doctor--layer "Permissions"
