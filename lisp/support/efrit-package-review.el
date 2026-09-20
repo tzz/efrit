@@ -559,7 +559,8 @@ mode turns it on (t) when it is nil and says so."
 ;; A refusal (stop_reason "refusal", no output) is decided before the
 ;; model runs and gives no reason.  When a review is refused, the
 ;; probe sends the same package in shrinking variants and logs which
-;; pass, so the trigger is measured instead of guessed.
+;; pass, so the trigger is measured instead of guessed.  The msg-*
+;; variants bisect the user message itself, section by section.
 
 (defconst efrit-package-review--probe-variants
   '((full          "the review request as sent")
@@ -568,14 +569,31 @@ mode turns it on (t) when it is nil and says so."
     (system-hello  "system prompt is one neutral sentence, user says hello")
     (inline-system "no system field; the rubric is the first paragraph of the user message")
     (plain         "no system prompt, one sentence asking to summarise the diff")
-    (tiny          "no system prompt, the first 2000 chars of the diff, summarise"))
+    (tiny          "no system prompt, the first 2000 chars of the diff, summarise")
+    (msg-meta      "summarise: metadata lines only")
+    (msg-files     "summarise: metadata + file list")
+    (msg-news      "summarise: metadata + file list + changelog")
+    (msg-diff      "summarise: the whole user message"))
   "Probe variants, most like the real request first.")
+
+(defun efrit-package-review--message-part (info upto)
+  "The user message for INFO built only UPTO a section: meta, files, news, diff."
+  (let ((full (efrit-package-review--user-message info)))
+    (pcase upto
+      ('meta (car (split-string full "\n=== FILES")))
+      ('files (car (split-string full "\n=== CHANGELOG\\|\n=== DIFF\\|\n(New install")))
+      ('news (car (split-string full "\n=== DIFF\\|\n(New install")))
+      (_ full))))
 
 (defun efrit-package-review--probe-request (variant info)
   "The request for probe VARIANT of INFO."
   (let* ((msg (efrit-package-review--user-message info))
          (diff (or (plist-get info :diff) ""))
-         (base `(("model" . ,(efrit-package-review-model)) ("max_tokens" . 300))))
+         (base `(("model" . ,(efrit-package-review-model)) ("max_tokens" . 300)))
+         (summarise (lambda (text)
+                      (append base
+                              `(("messages" . [(("role" . "user")
+                                                ("content" . ,(concat "Summarise the following in two sentences.\n\n" text)))]))))))
     (pcase variant
       ('full (efrit-package-review--request
               (list `((role . "user") (content . ,msg)))))
@@ -592,24 +610,25 @@ mode turns it on (t) when it is nil and says so."
                               `(("messages" . [(("role" . "user")
                                                 ("content" . ,(concat efrit-package-review--system-prompt
                                                                       "\n\n---\n\n" msg)))]))))
-      ('plain (append base
-                      `(("messages" . [(("role" . "user")
-                                        ("content" . ,(concat "Summarise this diff of an Emacs Lisp package in three sentences.\n\n" diff)))]))))
-      ('tiny (append base
-                     `(("messages" . [(("role" . "user")
-                                       ("content" . ,(concat "Summarise this diff in one sentence.\n\n"
-                                                             (substring diff 0 (min 2000 (length diff))))))])))))))
+      ('plain (funcall summarise diff))
+      ('tiny (funcall summarise (substring diff 0 (min 2000 (length diff)))))
+      ('msg-meta (funcall summarise (efrit-package-review--message-part info 'meta)))
+      ('msg-files (funcall summarise (efrit-package-review--message-part info 'files)))
+      ('msg-news (funcall summarise (efrit-package-review--message-part info 'news)))
+      ('msg-diff (funcall summarise msg)))))
 
 (defun efrit-package-review-probe (name)
   "Send shrinking variants of the review request for installed package NAME.
 Reports, per variant, whether the API answered or refused, in a
-buffer and the log.  For working out what a refusal is reacting to."
+buffer and the log, and names the message section whose addition
+first drew a refusal.  For working out what a refusal reacts to."
   (interactive
    (list (intern (completing-read "Probe package: "
                                   (mapcar (lambda (p) (symbol-name (car p))) package-alist) nil t))))
   (let* ((desc (or (cadr (assq name package-alist)) (user-error "%s is not installed" name)))
          (info (efrit-package-review-gather desc (package-desc-dir desc) nil))
-         (lines nil))
+         (efrit-api-inline-system-on-refusal nil)
+         (lines nil) (first-refused-stage nil))
     (dolist (v efrit-package-review--probe-variants)
       (let* ((efrit-api-request-purpose (format "probe %s for %s" (car v) name))
              (outcome
@@ -621,17 +640,30 @@ buffer and the log.  For working out what a refusal is reacting to."
                     (format "%s (in=%s out=%s)" (or stop "?")
                             (and u (gethash "input_tokens" u)) (and u (gethash "output_tokens" u))))
                 (error (format "error: %s" (error-message-string err))))))
+        (when (and (not first-refused-stage)
+                   (memq (car v) '(msg-meta msg-files msg-news msg-diff))
+                   (string-prefix-p "refusal" outcome))
+          (setq first-refused-stage (car v)))
         (efrit-log 'info "probe %s %s: %s" name (car v) outcome)
-        (push (format "  %-10s %-45s %s" (car v) (cadr v) outcome) lines)))
-    (efrit-show-preview "*efrit-package-review-probe*"
-                        (concat (format "Refusal probe for %s with %s
-
-" name (efrit-package-review-model))
-                                (mapconcat #'identity (nreverse lines) "
-")
-                                "
-
-The first variant that is not refused names the trigger: what the variant above it still had."))
+        (push (format "  %-14s %-52s %s" (car v) (cadr v) outcome) lines)))
+    (setq lines (nreverse lines))
+    (let ((culprit
+           (pcase first-refused-stage
+             ('msg-meta (efrit-package-review--message-part info 'meta))
+             ('msg-files (string-remove-prefix (efrit-package-review--message-part info 'meta)
+                                               (efrit-package-review--message-part info 'files)))
+             ('msg-news (string-remove-prefix (efrit-package-review--message-part info 'files)
+                                              (efrit-package-review--message-part info 'news)))
+             ('msg-diff (string-remove-prefix (efrit-package-review--message-part info 'news)
+                                              (efrit-package-review--user-message info))))))
+      (efrit-show-preview "*efrit-package-review-probe*"
+                          (concat (format "Refusal probe for %s with %s\n\n" name (efrit-package-review-model))
+                                  (mapconcat #'identity lines "\n")
+                                  "\n\nThe first variant that is not refused names the trigger: what the variant above it still had."
+                                  (if culprit
+                                      (format "\n\nFirst refused message stage: %s.  The text that stage added:\n\n%s"
+                                              first-refused-stage culprit)
+                                    "\n\nNo message stage was refused."))))
     lines))
 
 ;;; On demand
