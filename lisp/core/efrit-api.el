@@ -23,6 +23,7 @@
 
 (require 'json)
 (require 'url)
+(defvar url-show-status)
 (require 'cl-lib)
 (require 'efrit-common)
 (require 'efrit-log)
@@ -405,6 +406,62 @@ the prompt inlined (`efrit-api-inline-system-on-refusal')."
             r2))
       response)))
 
+(defcustom efrit-api-sync-status t
+  "When non-nil, a synchronous request shows its progress in the echo area.
+A spinner, the purpose of the request and the seconds elapsed, redrawn
+while the request is in flight.  The Contacting host message of
+url.el is suppressed either way: it named the endpoint and then sat
+there for the whole request."
+  :type 'boolean
+  :group 'efrit)
+
+(defconst efrit-api--sync-spinner-frames ["⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏"]
+  "Text spinner frames for the synchronous request status.")
+
+(defun efrit-api--sync-status (purpose started timeout frame)
+  "The echo-area line for a synchronous request: spinner, PURPOSE, elapsed."
+  (let ((elapsed (- (float-time) started)))
+    (format "%s %s… %ds%s  (C-g stops the wait)"
+            (aref efrit-api--sync-spinner-frames (mod frame (length efrit-api--sync-spinner-frames)))
+            (or purpose "waiting for the API")
+            (round elapsed)
+            (if (and timeout (> timeout 0)) (format "/%ds" timeout) ""))))
+
+(defun efrit-api--retrieve-and-wait (url timeout purpose started)
+  "Fetch URL with `url-retrieve', waiting up to TIMEOUT seconds.
+Returns the response buffer, or nil on timeout.  Unlike
+`url-retrieve-synchronously' the wait lets timers and redisplay run,
+so the mode-line spinner turns and the status line is redrawn (with
+PURPOSE and the seconds since STARTED) instead of Emacs looking hung.
+The process is deleted on timeout or C-g so no callback fires later."
+  (let* ((done nil)
+         (result nil)
+         (buffer (url-retrieve url (lambda (_status) (setq done t result (current-buffer)))
+                               nil t t))
+         (deadline (and timeout (> timeout 0) (+ (float-time) timeout)))
+         (frame 0)
+         (message-log-max nil))
+    (unwind-protect
+        (progn
+          (while (and (not done) (or (null deadline) (< (float-time) deadline)))
+            (when efrit-api-sync-status
+              (message "%s" (efrit-api--sync-status purpose started timeout frame))
+              (cl-incf frame))
+            (accept-process-output nil 0.2)
+            (sit-for 0.05 t))
+          (when efrit-api-sync-status (message nil))
+          (and done result))
+      (unless done
+        ;; timeout or quit: stop the transfer, and its callback with it
+        (when (and buffer (buffer-live-p buffer))
+          (when-let* ((proc (get-buffer-process buffer)))
+            (set-process-query-on-exit-flag proc nil)
+            (set-process-sentinel proc nil)
+            (set-process-filter proc nil)
+            (delete-process proc))
+          (let ((kill-buffer-query-functions nil))
+            (kill-buffer buffer)))))))
+
 (defun efrit-api--request-sync-1 (request-data &optional timeout)
   "One synchronous request; see `efrit-api-request-sync'."
   (let* ((api-key (efrit-common-get-api-key))
@@ -415,10 +472,11 @@ the prompt inlined (`efrit-api-inline-system-on-refusal')."
          (url-request-method "POST")
          (url-request-extra-headers (plist-get req :headers))
          (url-request-data (efrit-api-encode-request (plist-get req :body)))
+         (url-show-status nil)
          (started (efrit-api--log-request request-data "url-retrieve (sync)"))
-         (response-buffer (url-retrieve-synchronously
-                           (plist-get req :url)
-                           nil t (or timeout 60))))
+         (response-buffer (efrit-api--retrieve-and-wait
+                           (plist-get req :url) (or timeout 60)
+                           efrit-api-request-purpose started)))
     (unless response-buffer
       (error "%s" (efrit-api-describe-failure
                    (format "No response within %ds (timeout or connection error)" (or timeout 60))

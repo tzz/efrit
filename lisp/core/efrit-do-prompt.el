@@ -17,11 +17,11 @@
 (require 'cl-lib)
 (require 'efrit-log)
 (require 'efrit-instructions)
+(require 'efrit-todo)
 
 ;; Forward declarations for functions used from efrit-do.el
 (declare-function efrit-do--get-context-items "efrit-do")
 (declare-function efrit-do--build-error-context "efrit-do")
-(declare-function efrit-do--format-todos-for-prompt "efrit-do")
 (declare-function efrit-tool--get-project-root "efrit-tools")
 (declare-function efrit-context-item-command "efrit-context")
 (declare-function efrit-context-item-result "efrit-context")
@@ -546,7 +546,7 @@ If SESSION-ID is provided, include session continuation protocol with WORK-LOG."
           "Remember: Generate safe, valid Elisp and execute immediately."
           (or context-info "")
           (or retry-info "")
-          (efrit-do--format-todos-for-prompt))))
+          (efrit-todo-format-for-prompt))))
 
 (provide 'efrit-do-prompt)
 

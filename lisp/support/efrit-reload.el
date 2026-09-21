@@ -256,6 +256,7 @@ re-run either)."
   (let ((load-prefer-newer t)
         (loaded 0)
         (failed nil)
+        (gone nil)
         (start (float-time)))
     ;; Let keymap defvars re-run (see Commentary)
     (let ((maps (efrit-reload--unbind-keymaps))
@@ -267,32 +268,41 @@ re-run either)."
       (unwind-protect
           (dolist (feature (efrit-reload-features))
             (let ((file (efrit-reload--library-file feature)))
-              (if (null file)
-                  (push (cons feature "no file found") failed)
+              (cond
+               ;; a feature whose file is gone (deleted from the tree
+               ;; since it was loaded) is not a failure: drop it from
+               ;; `features' so the next reload does not see it either
+               ((or (null file)
+                    (not (or (file-exists-p (concat file ".el"))
+                             (file-exists-p (concat file ".elc")))))
+                (setq features (delq feature features))
+                (push feature gone))
+               (t
                 (condition-case err
                     (progn
                       (load file nil (not verbose))
                       (cl-incf loaded))
                   (error
-                   (push (cons feature (error-message-string err)) failed))))))
+                   (push (cons feature (error-message-string err)) failed)))))))
         (efrit-reload--rebind-keymaps maps)
         (setq reset (efrit-reload--refresh-changed-defaults defaults))
         (setq modes-on (efrit-reload--restore-global-minor-modes modes)))
-      (efrit-reload--report loaded failed reset modes-on start))))
+      (efrit-reload--report loaded failed reset modes-on start gone))))
 
-(defun efrit-reload--report (loaded failed reset modes-on start)
+(defun efrit-reload--report (loaded failed reset modes-on start &optional gone)
   "Revert visiting buffers, then message and log the reload summary.
 LOADED is the library count, FAILED an alist of (FEATURE . ERROR),
 RESET the options whose changed default was adopted, MODES-ON the
 global minor modes turned back on, START the `float-time' the reload
-began.  Returns LOADED."
+began, GONE the features whose file no longer exists.  Returns LOADED."
   (let* ((reverted (efrit-reload--revert-visiting-buffers))
-         (summary (format "efrit: reloaded %d librar%s in %.1fs%s%s%s%s"
+         (summary (format "efrit: reloaded %d librar%s in %.1fs%s%s%s%s%s"
                           loaded (if (= loaded 1) "y" "ies")
                           (- (float-time) start)
                           (if (> reverted 0) (format ", reverted %d buffer%s" reverted (if (= reverted 1) "" "s")) "")
                           (if reset (format ", new default for %s" (mapconcat #'symbol-name reset ", ")) "")
                           (if modes-on (format ", re-enabled %s" (mapconcat #'symbol-name modes-on ", ")) "")
+                          (if gone (format ", dropped %s (file removed)" (mapconcat #'symbol-name gone ", ")) "")
                           (if failed
                               (format "; %d failed: %s" (length failed)
                                       (mapconcat (lambda (f) (format "%s (%s)" (car f) (cdr f)))

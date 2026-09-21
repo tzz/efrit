@@ -755,10 +755,13 @@ is narrower."
       (unless plain (add-face-text-property from (point) 'efrit-package-review-meta)))
     (buffer-substring start (point))))
 
-(defun efrit-package-review-show (info verdict)
-  "Show the report in a popup; return its plain text."
-  (efrit-show-preview efrit-package-review--buffer
-                      (lambda () (efrit-package-review-render info verdict)))
+(defun efrit-package-review-show (info verdict &optional select)
+  "Show the report in a popup; return its plain text.
+With SELECT the popup takes focus, so `q' closes it at once; without,
+it stays beside the prompt that is still reading keys (install time)."
+  (funcall (if select #'efrit-show-popup #'efrit-show-preview)
+           efrit-package-review--buffer
+           (lambda () (efrit-package-review-render info verdict)))
   (efrit-package-review-report info verdict))
 
 ;;; Install-time hook (Emacs 31's package-review)
@@ -915,7 +918,7 @@ first drew a refusal.  For working out what a refusal reacts to."
                                               (efrit-package-review--message-part info 'news)))
              ('msg-diff (string-remove-prefix (efrit-package-review--message-part info 'news)
                                               (efrit-package-review--user-message info))))))
-      (efrit-show-preview "*efrit-package-review-probe*"
+      (efrit-show-popup "*efrit-package-review-probe*"
                           (concat (format "Refusal probe for %s with %s\n\n" name (efrit-package-review-model))
                                   (mapconcat #'identity lines "\n")
                                   "\n\nThe first variant that is not refused names the trigger: what the variant above it still had."
@@ -941,7 +944,7 @@ still what is reviewed: this command judges what is on disk."
          (dir (package-desc-dir desc))
          (info (efrit-package-review-gather desc dir nil))
          (verdict (efrit-package-review-run info)))
-    (efrit-package-review-show info verdict)
+    (efrit-package-review-show info verdict t)
     (message "%s" (efrit-package-review-verdict-line verdict))
     verdict))
 

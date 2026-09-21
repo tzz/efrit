@@ -187,7 +187,22 @@ the next API request."
       (efrit-publish 'thinking-start
                      `((:session-id . ,(funcall (efrit-loop-adapter-id-fn adapter) session))
                        (:label . "waiting for Claude..."))))
-    (funcall (efrit-loop-adapter-api-call-fn adapter)
+    ;; An error while building the request (system prompt, tools
+    ;; schema) used to escape here after thinking-start was published:
+    ;; the buffer showed a frozen spinner and the session stayed
+    ;; `working' for good.  Fail the turn visibly instead.
+    (condition-case err
+        (efrit-loop--call-api session adapter messages)
+      (error
+       (let ((msg (format "Internal error building the request (efrit bug, not an API failure): %s"
+                          (error-message-string err))))
+         (efrit-log 'error "%s %s: %s" (efrit-loop-adapter-name adapter)
+                    (funcall (efrit-loop-adapter-id-fn adapter) session) msg)
+         (efrit-loop--finish session adapter "elisp-error" msg))))))
+
+(defun efrit-loop--call-api (session adapter messages)
+  "Call ADAPTER's api-call function for SESSION with MESSAGES."
+  (funcall (efrit-loop-adapter-api-call-fn adapter)
      session
      messages
      (lambda (response error)
@@ -207,7 +222,7 @@ the next API request."
                          (efrit-loop-adapter-name adapter)
                          (funcall (efrit-loop-adapter-id-fn adapter) session)
                          msg)
-              (efrit-loop--finish session adapter "elisp-error" msg)))))))))
+              (efrit-loop--finish session adapter "elisp-error" msg))))))))
 
 (defun efrit-loop-api-call (session-id messages callback adapter)
   "Make the canonical async Claude API call for SESSION-ID with MESSAGES.
