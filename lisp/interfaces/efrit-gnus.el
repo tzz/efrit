@@ -50,6 +50,11 @@
 ;; Reading an article in Gnus marks it read.  These commands do not go
 ;; through the summary's article display, so they leave marks alone.
 ;;
+;; Links: a backend that can fetch a linked document (a Google Doc a
+;; meeting recap points to, say) adds a function to
+;; `efrit-gnus-expand-link-functions'; the document's text then follows
+;; the article in everything the model sees, with no extra command.
+;;
 ;; Privacy: article text goes to the model efrit is configured for, as
 ;; anything you ask efrit does.  The first analysis in an Emacs session
 ;; says how many articles and characters it is about to send and asks;
@@ -148,6 +153,26 @@ nil never.  The prompt states how many articles and characters go out."
 (defcustom efrit-gnus-headers '("From" "To" "Cc" "Newsgroups" "Date" "Subject" "Message-ID")
   "Headers included above each article body, in this order."
   :type '(repeat string))
+
+(defcustom efrit-gnus-expand-link-functions nil
+  "Functions that turn a URL found in an article into text for the model.
+Each is called with one argument, the URL, and returns a string (the
+linked document's text, already trimmed to a sensible size) or nil to
+pass.  The first non-nil result is appended to the article under a
+\"Linked document: URL\" heading.  Errors are caught: a failing
+expander contributes a one-line note instead, so the analysis still
+runs.  Backends add expanders for documents they can fetch; nngmail
+adds one for Google Docs.  Only URLs matching
+`efrit-gnus-expand-link-regexp' are offered."
+  :type 'hook)
+
+(defcustom efrit-gnus-expand-link-regexp "https?://[^][<>\"'()\\ \t\n]+"
+  "URLs in an article body that are offered to `efrit-gnus-expand-link-functions'."
+  :type 'regexp)
+
+(defcustom efrit-gnus-expand-links-max 5
+  "Most links expanded per article; the rest are listed as URLs only."
+  :type 'integer)
 
 (defcustom efrit-gnus-summary-prefix-key "C-c g"
   "Prefix under which `efrit-gnus-map' is bound in Gnus summary and group buffers.
@@ -264,9 +289,44 @@ mark changes."
     (when (ignore-errors (gnus-request-article number group (current-buffer)))
       (buffer-string))))
 
+(defun efrit-gnus--article-links (body)
+  "Distinct URLs in BODY, in order of first appearance, trailing punctuation dropped."
+  (let (out (start 0))
+    (while (string-match efrit-gnus-expand-link-regexp body start)
+      (let ((url (string-trim-right (match-string 0 body) "[.,;:!?)]+")))
+        (unless (member url out) (push url out)))
+      (setq start (match-end 0)))
+    (nreverse out)))
+
+(defun efrit-gnus--expand-link (url)
+  "Text for URL from `efrit-gnus-expand-link-functions', or nil.
+An expander that signals contributes a note naming the error."
+  (catch 'done
+    (dolist (fn efrit-gnus-expand-link-functions)
+      (condition-case err
+          (when-let* ((text (funcall fn url)))
+            (throw 'done text))
+        (error
+         (throw 'done (format "[could not fetch: %s]" (error-message-string err))))))
+    nil))
+
+(defun efrit-gnus--expand-links (body)
+  "Linked documents of BODY as text blocks to append, or nil.
+At most `efrit-gnus-expand-links-max' links are fetched."
+  (when efrit-gnus-expand-link-functions
+    (let ((n 0) blocks)
+      (dolist (url (efrit-gnus--article-links body))
+        (when (< n efrit-gnus-expand-links-max)
+          (when-let* ((text (efrit-gnus--expand-link url)))
+            (cl-incf n)
+            (push (format "--- Linked document: %s ---\n%s" url text) blocks))))
+      (and blocks (string-join (nreverse blocks) "\n\n")))))
+
 (defun efrit-gnus--render (group number)
   "Article NUMBER of GROUP as plain text: headers, body, attachment list.
-Returns nil when the article cannot be fetched."
+Documents linked from the body that an `efrit-gnus-expand-link-functions'
+entry can fetch follow the body.  Returns nil when the article cannot
+be fetched."
   (when-let* ((raw (efrit-gnus--fetch-raw group number)))
     (with-temp-buffer
       (set-buffer-multibyte nil)
@@ -298,7 +358,9 @@ Returns nil when the article cannot be fetched."
                  "\n\n"
                  (if (string-empty-p body)
                      "[no text body]"
-                   (efrit-gnus--clip body efrit-gnus-article-max-chars)))))
+                   (efrit-gnus--clip body efrit-gnus-article-max-chars))
+                 (when-let* ((linked (efrit-gnus--expand-links body)))
+                   (concat "\n\n" linked)))))
           (when handles (mm-destroy-parts handles)))))))
 
 (defun efrit-gnus--header-line (group number)

@@ -131,5 +131,32 @@ tools register as read-only under package efrit-gnus."
   (when efrit-gnus-summary-prefix-key
     (should (eq efrit-gnus-map (lookup-key gnus-summary-mode-map (kbd efrit-gnus-summary-prefix-key))))))
 
+
+(ert-deftest test-efrit-gnus-expand-links ()
+  "Links in the body are offered to `efrit-gnus-expand-link-functions';
+the first non-nil result follows the article; a failing expander leaves
+a note; at most `efrit-gnus-expand-links-max' are expanded."
+  (test-gnus--with-articles
+      `((("nnml:mail" . 1)
+         . ,(test-gnus--raw "recap" "Notes at https://docs.example/d/AAA. Also https://other.example/x and https://docs.example/d/BBB")))
+    (let ((efrit-gnus-expand-link-functions
+           (list (lambda (url) (when (string-match-p "docs\\.example/d/AAA" url) "Doc A text"))
+                 (lambda (url) (when (string-match-p "docs\\.example/d/BBB" url) (error "no access")))))
+          (efrit-gnus-expand-links-max 5))
+      (let ((text (efrit-gnus--render "nnml:mail" 1)))
+        (should (string-match-p "--- Linked document: https://docs.example/d/AAA ---\nDoc A text" text))
+        (should (string-match-p "--- Linked document: https://docs.example/d/BBB ---\n\\[could not fetch: no access\\]" text))
+        (should-not (string-match-p "Linked document: https://other.example" text)))
+      ;; The link cap counts expansions, not URLs seen.
+      (let ((efrit-gnus-expand-links-max 1))
+        (let ((text (efrit-gnus--render "nnml:mail" 1)))
+          (should (string-match-p "Doc A text" text))
+          (should-not (string-match-p "could not fetch" text)))))
+    ;; No expanders: nothing appended.
+    (let ((efrit-gnus-expand-link-functions nil))
+      (should-not (string-match-p "Linked document" (efrit-gnus--render "nnml:mail" 1))))
+    (should (equal '("https://a.example/p" "https://b.example/q")
+                   (efrit-gnus--article-links "see https://a.example/p, and (https://b.example/q).")))))
+
 (provide 'test-efrit-gnus)
 ;;; test-efrit-gnus.el ends here
