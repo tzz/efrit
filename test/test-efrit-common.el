@@ -179,6 +179,19 @@ UTF-8; the API rejects the escape Emacs would print for them."
     (should (string-match-p "\\`[\x00-\x7F]*\\'" json))
     (should (json-parse-string json))))
 
+(ert-deftest test-common-escape-unicode-keeps-the-u-lower-case ()
+  "An upper-case match must not upcase the escape: \\u00D8, never \\U00D8.
+`replace-regexp-in-string' with FIXEDCASE nil case-converts the
+replacement to match the text it replaces; an O with a stroke in a
+docstring made every request carrying it invalid JSON."
+  (should (equal (efrit-common-escape-json-unicode "\u00D8") "\\u00D8"))
+  (should (equal (efrit-common-escape-json-unicode "\u00F8") "\\u00F8"))
+  (should (equal (efrit-common-escape-json-unicode "\u0391\U0001D400") "\\u0391\\uD835\\uDC00"))
+  (let ((json (efrit-common-escape-json-unicode (json-encode "\u00D8 \u00C9 \u0416")))
+        (case-fold-search nil))
+    (should-not (string-match-p "\\\\U" json))
+    (should (equal (json-parse-string json) "\u00D8 \u00C9 \u0416"))))
+
 ;;; URL and Header Building Tests
 
 (ert-deftest test-common-get-base-url-default ()

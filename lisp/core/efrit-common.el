@@ -355,7 +355,11 @@ The result is pure ASCII, so no transport can mis-encode it.  See
    (lambda (char)
      (efrit-common--json-escape-char (string-to-char char)))
    json-string
-   nil    ; FIXEDCASE - preserve case
+   ;; FIXEDCASE must be t: with nil, a match that is an upper-case
+   ;; letter (an O with a stroke, say) makes `replace-match' upcase
+   ;; the replacement, and \u00D8 goes out as \U00D8, which no JSON
+   ;; parser accepts.  Found by a package whose docstrings hold one.
+   t
    t))    ; LITERAL - don't interpret \& and \N in replacement
 
 ;;; Error Recovery
