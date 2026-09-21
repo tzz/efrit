@@ -181,12 +181,60 @@ Applies header customization from `efrit-api-custom-headers' and
 
 ;;; JSON Encoding
 
+(defvar efrit-api--last-body nil
+  "The bytes of the last request body, kept for `efrit-api-explain-invalid-json'.")
+
 (defun efrit-api-encode-request (data)
   "Encode DATA as JSON with proper Unicode escaping for HTTP transmission.
 Returns a UTF-8 encoded string suitable for url-request-data."
   (let* ((json-string (json-encode data))
          (escaped-json (efrit-common-escape-json-unicode json-string)))
-    (encode-coding-string escaped-json 'utf-8)))
+    (setq efrit-api--last-body (encode-coding-string escaped-json 'utf-8))))
+
+(defun efrit-api--invalid-json-p (message)
+  "Non-nil if the API's error MESSAGE says the request body was not JSON."
+  (and (stringp message) (string-match-p "Invalid JSON\\|invalid json\\|JSON parse" message)))
+
+(defun efrit-api-save-last-body ()
+  "Write the last request body to a file in `efrit-data-directory'; return its path.
+The file is what left this Emacs, byte for byte, so it can be checked
+with another parser: jq . FILE, or python3 -m json.tool FILE."
+  (interactive)
+  (unless efrit-api--last-body (user-error "No request has been sent yet"))
+  (let ((file (expand-file-name (format-time-string "request-body-%Y%m%d-%H%M%S.json")
+                                (if (boundp 'efrit-data-directory)
+                                    (symbol-value 'efrit-data-directory)
+                                  temporary-file-directory))))
+    (make-directory (file-name-directory file) t)
+    (with-file-modes #o600
+      (with-temp-file file
+        (set-buffer-multibyte nil)
+        (insert efrit-api--last-body)))
+    (when (called-interactively-p 'any) (message "Request body saved to %s" file))
+    file))
+
+(defun efrit-api-explain-invalid-json ()
+  "What is wrong with the last request body, as far as Emacs can tell.
+Parses the bytes that were sent with `json-parse-string' and reports
+the result, the size, and any escape or control character a stricter
+parser could object to.  Returns the report string."
+  (let* ((body (or efrit-api--last-body (user-error "No request has been sent yet")))
+         (text (decode-coding-string body 'utf-8))
+         (parse (condition-case e (and (json-parse-string text) "parses") (error (format "%S" e))))
+         (non-ascii (cl-count-if (lambda (c) (> c 127)) text))
+         (controls (cl-count-if (lambda (c) (and (< c 32) (not (memq c '(9 10 13))))) text))
+         (odd (let ((n 0) (i 0))
+                (while (string-match "\\\\u[0-9A-Fa-f]\\{4\\}[0-9A-Fa-f]" text i)
+                  (setq n (1+ n) i (match-end 0)))
+                n))
+         (lone (let ((n 0) (i 0))
+                 (while (string-match "\\\\u[dD][89abAB][0-9A-Fa-f]\\{2\\}\\(?:[^\\\\]\\|\\\\[^u]\\|\\\\u[^dD]\\|\\\\u[dD][0-7]\\)" text i)
+                   (setq n (1+ n) i (match-end 0)))
+                 n))
+         (report (format "last request body: %d bytes, %s by Emacs; non-ASCII %d, raw controls %d, 5+ digit escapes %d, lone high surrogates %d; saved to %s"
+                         (length body) parse non-ascii controls odd lone (efrit-api-save-last-body))))
+    (efrit-log 'warn "%s" report)
+    report))
 
 ;;; Response Parsing
 
@@ -210,6 +258,11 @@ Must be called with point in a url-retrieve response buffer."
         (if-let* ((error-obj (gethash "error" response)))
             (let ((error-type (gethash "type" error-obj))
                   (error-msg (gethash "message" error-obj)))
+              ;; the body we sent is the evidence; keep it and say where
+              (when (efrit-api--invalid-json-p error-msg)
+                (setq error-msg (format "%s -- %s" error-msg
+                                        (condition-case nil (efrit-api-explain-invalid-json)
+                                          (error "could not inspect the last body")))))
               (error "API Error (%s): %s" error-type error-msg))
           response)))))
 
@@ -225,9 +278,12 @@ response buffer."
                    (decode-coding-region (point) (point-max) 'utf-8 t)
                    :object-type 'hash-table)))
         (when-let* ((error-obj (gethash "error" body)))
-          (format "API Error (%s): %s"
-                  (or (gethash "type" error-obj) "unknown")
-                  (or (gethash "message" error-obj) "unknown error")))))))
+          (let ((msg (or (gethash "message" error-obj) "unknown error")))
+            (when (efrit-api--invalid-json-p msg)
+              (setq msg (format "%s -- %s" msg
+                                (condition-case nil (efrit-api-explain-invalid-json)
+                                  (error "could not inspect the last body")))))
+            (format "API Error (%s): %s" (or (gethash "type" error-obj) "unknown") msg)))))))
 
 (defun efrit-api-extract-content (response)
   "Extract content array from API RESPONSE hash-table."

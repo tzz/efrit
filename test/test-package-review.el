@@ -255,5 +255,20 @@ text form and the rendered form carry the same words."
     (should (or (get-text-property 0 'display b)
                 (eq (get-text-property 0 'face b) 'efrit-package-review-high)))))
 
+(ert-deftest test-package-review-fill-terminates-when-text-shrinks ()
+  "Filling that removes characters (trailing blanks, a long line joined)
+must not loop: the end bound is a marker, not a stale integer."
+  (with-temp-buffer
+    (insert "word   \nword   \n" (make-string 200 ?x) "   \n\n    note with   trailing   \n")
+    (with-timeout (5 (ert-fail "fill did not terminate"))
+      (efrit-package-review--fill-paragraphs (point-min) (point-max) 40))
+    (should (string-match-p "^word    word$" (buffer-string)))
+    (should (string-match-p "note with" (buffer-string))))
+  ;; a report whose summary is the API error line renders and returns
+  (let* ((v (list :verdict 'error :summary "API Error (api_error): Invalid JSON   " :reads nil))
+         (info (list :name "uniline" :version "1" :files '(("a" . 1)) :diff "d")))
+    (with-timeout (5 (ert-fail "render did not terminate"))
+      (should (string-match-p "NO VERDICT  uniline 1" (efrit-package-review-report info v))))))
+
 (provide 'test-package-review)
 ;;; test-package-review.el ends here

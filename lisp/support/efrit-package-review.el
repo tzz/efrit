@@ -661,7 +661,11 @@ badges, inserted into a buffer."
 (defun efrit-package-review--fill-paragraphs (start end fill-width)
   "Fill each paragraph between START and END to FILL-WIDTH.
 Indentation of the first line is kept for every line of the paragraph."
-  (let ((fill-column fill-width) (adaptive-fill-mode nil))
+  ;; END is a marker: filling changes the text length, and an integer
+  ;; end past `point-max' made the loop below spin forever (the first
+  ;; live report with a long note hung Emacs).
+  (let ((fill-column fill-width) (adaptive-fill-mode nil)
+        (end (copy-marker end t)))
     (save-excursion
       (goto-char start)
       (while (< (point) end)
@@ -670,9 +674,13 @@ Indentation of the first line is kept for every line of the paragraph."
           (let* ((indent (current-indentation))
                  (fill-prefix (make-string indent ?\s))
                  (para-start (line-beginning-position))
-                 (para-end (save-excursion (forward-paragraph) (point))))
-            (fill-region-as-paragraph para-start (min para-end end) nil t)
-            (goto-char (min (save-excursion (forward-paragraph) (point)) end))))))))
+                 (para-end (save-excursion (forward-paragraph) (min (point) end))))
+            (fill-region-as-paragraph para-start para-end nil t)
+            ;; always move: a paragraph that did not advance point ends
+            ;; the pass rather than the session
+            (let ((next (save-excursion (forward-paragraph) (point))))
+              (goto-char (if (> next (point)) (min next end) end)))))))
+    (set-marker end nil)))
 
 (defun efrit-package-review--visit (info location)
   "Open LOCATION (\"file[:line]\") of the package described by INFO."

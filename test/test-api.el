@@ -111,5 +111,31 @@ seconds, and the response buffer comes back."
                  "⠋ probe x… 12s/120s  (C-g stops the wait)"))
   (should (string-match-p "\\`⠙ waiting for the API… 0s  " (efrit-api--sync-status nil (float-time) nil 1))))
 
+(ert-deftest test-api-invalid-json-error-keeps-the-body ()
+  "An api_error about invalid JSON carries a report on the body that was
+sent and the file it was saved to, so the parser at the other end can
+be checked against the same bytes."
+  (let* ((root (file-name-as-directory (make-temp-file "efrit-api-" t)))
+         (efrit-data-directory root))
+    (unwind-protect
+        (progn
+          (efrit-api-encode-request '(("model" . "m") ("messages" . [(("role" . "user") ("content" . "hé \U0001F600"))])))
+          (with-temp-buffer
+            (insert "HTTP/1.1 400 Bad Request\nContent-Type: application/json\n\n"
+                    "{\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Invalid JSON\"}}")
+            (let ((err (should-error (efrit-api-parse-response))))
+              (should (string-match-p "API Error (api_error): Invalid JSON -- last request body: [0-9]+ bytes, parses by Emacs" (cadr err)))
+              (should (string-match-p "non-ASCII 0, raw controls 0, 5\\+ digit escapes 0, lone high surrogates 0" (cadr err)))
+              (should (string-match-p (regexp-quote root) (cadr err))))
+            (should (string-match-p "Invalid JSON -- last request body" (efrit-api--error-from-body))))
+          (let ((files (directory-files root nil "request-body-.*\\.json\\'")))
+            (should files)
+            (should (= 0 (logand (file-modes (expand-file-name (car files) root)) #o077)))
+            (with-temp-buffer
+              (set-buffer-multibyte nil)
+              (insert-file-contents-literally (expand-file-name (car files) root))
+              (should (equal (buffer-string) efrit-api--last-body)))))
+      (delete-directory root t))))
+
 (provide 'test-api)
 ;;; test-api.el ends here
