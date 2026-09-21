@@ -94,5 +94,28 @@
       (should (equal (efrit-settings-known-projects) (list a b)))
       (should (= 0 (logand (file-modes (efrit-settings-registry-file)) #o077))))))
 
+(ert-deftest test-settings-write-json-is-utf-8-without-prompt ()
+  "`json-serialize' returns unibyte UTF-8; the writer must not hand it to a
+multibyte buffer, where it becomes raw bytes and a coding prompt."
+  (let* ((dir (file-name-as-directory (make-temp-file "efrit-sj-" t)))
+         (file (expand-file-name "sub/x.json" dir))
+         (h (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          (puthash "t" "a \u2014 \u00D8 \U0001F600" h)
+          (cl-letf (((symbol-function 'select-safe-coding-system)
+                     (lambda (&rest _) (error "coding system prompt reached"))))
+            (efrit-settings-write-json file h))
+          (should (= 0 (logand (file-modes file) #o077)))
+          (with-temp-buffer
+            (set-buffer-multibyte nil)
+            (insert-file-contents-literally file)
+            ;; the em dash on disk is its three UTF-8 bytes
+            (should (string-match-p "a \xe2\x80\x94 " (buffer-string))))
+          (should (equal (gethash "t" (with-temp-buffer (insert-file-contents file)
+                                                       (json-parse-buffer)))
+                         "a \u2014 \u00D8 \U0001F600")))
+      (delete-directory dir t))))
+
 (provide 'test-settings)
 ;;; test-settings.el ends here

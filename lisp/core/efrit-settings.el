@@ -124,6 +124,21 @@ parser reads them (json.el's `json-encode' would write \"false\")."
    ((null value) [])
    (t value)))
 
+(defun efrit-settings-write-json (file obj)
+  "Write OBJ as JSON to FILE (mode 0600), UTF-8, no prompt.
+`json-serialize' returns a unibyte string of UTF-8 bytes; inserted
+into an ordinary (multibyte) buffer those bytes become raw-byte
+characters that no coding system can encode, and `with-temp-file'
+stops to ask which one to use.  The first verdict with an em dash in
+it hit that prompt.  So the buffer is unibyte and written as is."
+  (make-directory (file-name-directory file) t)
+  (with-file-modes #o600
+    (with-temp-file file
+      (set-buffer-multibyte nil)
+      (setq buffer-file-coding-system 'no-conversion)
+      (insert (json-serialize obj) "\n")))
+  file)
+
 (defun efrit-settings--write (root sections)
   "Write SECTIONS for ROOT (mode 0600); delete the file when empty.
 Bypasses the sandbox deliberately: this is efrit persisting the
@@ -134,10 +149,7 @@ user's own choice, never a tool acting."
       (let ((obj (make-hash-table :test 'equal)))
         (puthash "version" efrit-settings-version obj)
         (maphash (lambda (k v) (puthash k (efrit-settings--serializable v) obj)) sections)
-        (make-directory (file-name-directory file) t)
-        (with-file-modes #o600
-          (with-temp-file file
-            (insert (json-serialize obj) "\n")))))
+        (efrit-settings-write-json file obj)))
     (efrit-log 'info "settings: saved %s" file)
     file))
 

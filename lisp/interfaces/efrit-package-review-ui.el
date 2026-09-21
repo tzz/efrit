@@ -35,6 +35,7 @@
 (require 'tabulated-list)
 (require 'efrit-log)
 (require 'efrit-config)
+(require 'efrit-settings)
 (require 'efrit-package-review)
 (require 'efrit-ui-helpers)
 
@@ -132,9 +133,7 @@ A failed review (no verdict) is not kept: the next run tries again."
           (obj (make-hash-table :test 'equal)))
       (maphash (lambda (k v) (puthash k (efrit-package-review-ui--verdict->json v) obj))
                (efrit-package-review-ui--cache))
-      (make-directory (file-name-directory file) t)
-      (with-file-modes #o600
-        (with-temp-file file (insert (json-serialize obj) "\n"))))))
+      (efrit-settings-write-json file obj))))
 
 (defun efrit-package-review-ui--cached (name version)
   (gethash (efrit-package-review-ui--key name version) (efrit-package-review-ui--cache)))

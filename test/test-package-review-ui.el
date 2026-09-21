@@ -99,6 +99,13 @@ wants the reviews to progress; `test-pru--sent' counts the requests."
                                    (list :severity 'info :file nil :line nil :note "uses url")))))
       (efrit-package-review-ui--cache-put 'foo "1.0" v)
       (should (= 0 (logand (file-modes (efrit-package-review-ui--cache-file)) #o077)))
+      ;; non-ASCII in a verdict: written as UTF-8 without a coding
+      ;; prompt (json-serialize gives unibyte bytes), read back intact
+      (cl-letf (((symbol-function 'select-safe-coding-system)
+                 (lambda (&rest _) (error "coding system prompt reached"))))
+        (efrit-package-review-ui--cache-put 'dash "1.0" (list :verdict 'approve :summary "a \u2014 b \u00D8 \U0001F600" :saw-everything t)))
+      (setq efrit-package-review-ui--cache nil)
+      (should (equal (plist-get (efrit-package-review-ui--cached 'dash "1.0") :summary) "a \u2014 b \u00D8 \U0001F600"))
       (setq efrit-package-review-ui--cache nil)
       (let ((back (efrit-package-review-ui--cached 'foo "1.0")))
         (should (eq (plist-get back :verdict) 'reject))
