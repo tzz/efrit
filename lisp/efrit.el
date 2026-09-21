@@ -286,6 +286,18 @@ Executes all ERT tests and displays results in a buffer."
 (autoload 'efrit-list-registered-tools "efrit-tool-registry"
   "Show the tools other packages have registered with efrit." t)
 ;;;###autoload
+(autoload 'efrit-gnus-analyze "efrit-gnus"
+  "Ask efrit about the selected articles in a Gnus summary." t)
+;;;###autoload
+(autoload 'efrit-gnus-analyze-unread "efrit-gnus"
+  "Ask efrit about every unread article of a Gnus group." t)
+;;;###autoload
+(autoload 'efrit-gnus-analyze-search "efrit-gnus"
+  "Ask efrit about the results of a Gnus search." t)
+;;;###autoload
+(autoload 'efrit-gnus-ensure-tools "efrit-gnus"
+  "Register the Gnus tools (gnus_groups, gnus_search, gnus_articles) with efrit." t)
+;;;###autoload
 (autoload 'efrit-submit "efrit-agent-input"
   "Start a REPL turn from Lisp with a prepared prompt.")
 ;;;###autoload

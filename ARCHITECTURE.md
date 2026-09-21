@@ -76,9 +76,10 @@ efrit-list-registered-tools` shows what is registered.
 A package can also start a REPL turn with a prompt it prepared:
 `(efrit-submit SHOWN API-INPUT)` shows SHOWN as the user's line in the
 agent buffer and sends API-INPUT (with the editor-context block
-prepended, as for typed input) to the model.  First user: nngmail, which
-sends selected mail with an analysis prompt and registers Gmail search
-and message tools.
+prepended, as for typed input) to the model.  First user: `efrit-gnus.el` (lisp/interfaces), which sends selected
+Gnus articles with an analysis prompt and registers `gnus_groups`,
+`gnus_search` and `gnus_articles`; nngmail adds Gmail-specific tools on
+top of it from its own repository.
 
 ## 📦 **MODULE ORGANIZATION & LOAD ORDER**
 
