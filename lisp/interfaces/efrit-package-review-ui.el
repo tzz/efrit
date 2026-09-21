@@ -180,8 +180,18 @@ Status is one of pending, running, done, cached, skipped.")
         (unless (memq name efrit-package-review-ui--queue)
           (setq efrit-package-review-ui--queue (append efrit-package-review-ui--queue (list name)))))))
   (efrit-package-review-ui--redraw)
-  (unless efrit-package-review-ui--current
+  ;; a review is in flight only while its row says so; a `current'
+  ;; left behind by a callback that failed (or a reload) must not
+  ;; keep the queue from moving
+  (unless (efrit-package-review-ui--running-p)
+    (setq efrit-package-review-ui--current nil)
     (efrit-package-review-ui--next)))
+
+(defun efrit-package-review-ui--running-p ()
+  "Non-nil if a review is in flight: a state is held and a row is `running'."
+  (and efrit-package-review-ui--current
+       (cl-some (lambda (row) (eq (plist-get (cdr row) :status) 'running))
+                efrit-package-review-ui--rows)))
 
 (defun efrit-package-review-ui--next ()
   "Review the next queued package, or announce the end."
@@ -210,11 +220,15 @@ Status is one of pending, running, done, cached, skipped.")
                   (efrit-package-review-run-async
                    info
                    (lambda (verdict)
-                     (let ((verdict (plist-put verdict :model (efrit-package-review-model))))
-                       (efrit-log 'info "package review %s %s: %s" name (plist-get info :version)
-                                  (efrit-package-review-verdict-line verdict))
-                       (efrit-package-review-ui--set name :status 'done :verdict verdict)
-                       (efrit-package-review-ui--cache-put name (plist-get info :version) verdict)
+                     ;; whatever happens to this verdict, the queue moves on
+                     (unwind-protect
+                         (let ((verdict (plist-put verdict :model (efrit-package-review-model))))
+                           (efrit-log 'info "package review %s %s: %s" name (plist-get info :version)
+                                      (efrit-package-review-verdict-line verdict))
+                           (efrit-package-review-ui--set name :status 'done :verdict verdict)
+                           (condition-case err
+                               (efrit-package-review-ui--cache-put name (plist-get info :version) verdict)
+                             (error (efrit-log 'warn "package reviews cache: %s" (error-message-string err)))))
                        (setq efrit-package-review-ui--current nil)
                        (efrit-package-review-ui--next))))))))))))
 

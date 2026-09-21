@@ -177,6 +177,34 @@ wants the reviews to progress; `test-pru--sent' counts the requests."
         (should (eq (plist-get (efrit-package-review-ui--row 'bb) :status) 'pending))
         (should (equal efrit-package-review-ui--queue '(bb)))))))
 
+(ert-deftest test-package-review-ui-queue-survives-a-failed-callback ()
+  "A cache write that signals must not wedge the queue, and a stale
+`current' with no running row must not stop a new start."
+  (test-pru--fresh
+    (let* ((a (test-pr--fake-package root "aa" "1.0" '(("aa.el" . "1\n"))))
+           (b (test-pr--fake-package root "bb" "1.0" '(("bb.el" . "1\n"))))
+           (package-alist (list (list 'aa (cdr a)) (list 'bb (cdr b)))))
+      (cl-letf (((symbol-function 'pop-to-buffer) (lambda (buf &rest _) (set-buffer buf)))
+                ((symbol-function 'efrit-package-review-ui--cache-put)
+                 (lambda (&rest _) (error "disk full"))))
+        (test-pru--with-async (list (test-pr--text-response test-pr--approve)
+                                    (test-pr--text-response test-pr--approve))
+          (efrit-review-all-packages)
+          (test-pru--deliver)
+          (should (= test-pru--sent 2))))
+      (should (eq (plist-get (efrit-package-review-ui--row 'aa) :status) 'done))
+      (should (eq (plist-get (efrit-package-review-ui--row 'bb) :status) 'done))
+      (should-not efrit-package-review-ui--current)
+      ;; a leftover current (as after a reload mid-review) with no running row
+      (setq efrit-package-review-ui--current 'stale)
+      (cl-letf (((symbol-function 'pop-to-buffer) (lambda (buf &rest _) (set-buffer buf))))
+        (test-pru--with-async (list (test-pr--text-response test-pr--approve)
+                                    (test-pr--text-response test-pr--approve))
+          (efrit-review-all-packages t)
+          (should (eq (plist-get (efrit-package-review-ui--row 'aa) :status) 'running))
+          (test-pru--deliver)
+          (should (= test-pru--sent 2)))))))
+
 (ert-deftest test-package-review-ui-eval-cannot-run-it ()
   (require 'efrit-sandbox-eval)
   (should (efrit-sandbox-eval-inspect '(efrit-review-all-packages)))
