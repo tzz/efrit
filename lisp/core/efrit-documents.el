@@ -69,11 +69,12 @@
   :group 'efrit
   :prefix "efrit-documents-")
 
-(defcustom efrit-documents-sources-libraries '(efrit-documents-gdrive efrit-documents-confluence)
+(defcustom efrit-documents-sources-libraries '(efrit-documents-gdrive efrit-documents-gcalendar efrit-documents-confluence)
   "Libraries loaded by `efrit-documents-ensure-tools' so their sources register.
-Google Drive and Confluence come with efrit (Confluence registers
-nothing until `efrit-documents-confluence-sites' is set); add yours, or
-remove one you never use."
+Google Drive, Google Calendar (a related-documents provider, not a
+source) and Confluence come with efrit (Confluence registers nothing
+until `efrit-documents-confluence-sites' is set); add yours, or remove
+one you never use."
   :type '(repeat symbol))
 
 (defcustom efrit-documents-max-chars 40000
@@ -94,6 +95,18 @@ remove one you never use."
     "updated" "accepted" "declined" "canceled" "cancelled")
   "Words dropped from a title before searching for related documents."
   :type '(repeat string))
+
+(defcustom efrit-documents-related-functions nil
+  "Functions that know which documents belong with an item, beyond title search.
+Each is called with the ITEM plist (:title :date :urls) and returns a
+list of document plists (with :source and :id at least, no :text), or
+nil.  They run before the title search in `efrit-documents-related';
+what they return comes first and is not searched for again.  The
+Google Calendar provider (`efrit-documents-gcalendar') adds one: it
+finds the event the item is about by date and returns the event's
+attachments, whatever they are called now.  Errors are logged and
+skipped."
+  :type 'hook)
 
 (define-error 'efrit-documents-error "efrit-documents error")
 (define-error 'efrit-documents-not-found "efrit-documents: no source for this" 'efrit-documents-error)
@@ -291,25 +304,37 @@ the log; the others still answer."
 
 (defun efrit-documents-related (item)
   "Documents that belong with ITEM: a plist with :title, :date and optionally :urls.
-Searches each source for the title's words within
-`efrit-documents-related-days' of :date, and leaves out documents
-already among :urls.  Returns document plists without :text."
+Asks `efrit-documents-related-functions' first (a calendar knows the
+meeting's attachments by date, whatever they are called), then
+searches each source for the title's words within
+`efrit-documents-related-days' of :date.  Documents already among
+:urls, and duplicates, are left out.  Returns document plists without
+:text, providers' answers first."
   (let* ((words (efrit-documents-title-words (plist-get item :title)))
          (date (efrit-documents--time (plist-get item :date)))
          (linked (delq nil (mapcar (lambda (u) (ignore-errors (efrit-documents-resolve u)))
-                                   (plist-get item :urls)))))
-    (when words
-      (let* ((window (* efrit-documents-related-days 24 3600))
-             (query (list :title words
-                          :since (and date (time-subtract date window))
-                          :until (and date (time-add date window))
-                          :limit efrit-documents-related-limit))
-             (found (efrit-documents-search query)))
-        (seq-remove (lambda (doc)
-                      (seq-some (lambda (l) (and (equal (efrit-documents-source-name (car l)) (plist-get doc :source))
-                                                 (equal (cdr l) (plist-get doc :id))))
-                                linked))
-                    found)))))
+                                   (plist-get item :urls))))
+         (known (mapcar (lambda (l) (cons (efrit-documents-source-name (car l)) (cdr l))) linked))
+         (out nil))
+    (cl-flet ((keep (docs)
+                (dolist (doc docs)
+                  (let ((key (cons (plist-get doc :source) (plist-get doc :id))))
+                    (unless (member key known)
+                      (push key known)
+                      (push doc out))))))
+      (dolist (fn efrit-documents-related-functions)
+        (condition-case err
+            (keep (funcall fn item))
+          (error (efrit-log 'warn "documents: related provider %S failed: %s"
+                            fn (efrit-documents-explain err)))))
+      (when words
+        (let ((window (* efrit-documents-related-days 24 3600)))
+          (keep (efrit-documents-search
+                 (list :title words
+                       :since (and date (time-subtract date window))
+                       :until (and date (time-add date window))
+                       :limit efrit-documents-related-limit))))))
+    (nreverse out)))
 
 (defun efrit-documents-related-text (item)
   "The related documents of ITEM fetched and rendered as blocks for a model, or nil."

@@ -8,6 +8,7 @@
 (require 'efrit-documents)
 (require 'efrit-documents-gdrive)
 (require 'efrit-documents-confluence)
+(require 'efrit-documents-gcalendar)
 
 ;;;; efrit-auth
 
@@ -155,6 +156,7 @@ advice is installed, without it."
   (declare (indent 1))
   `(let ((efrit-documents--sources nil)
          (efrit-documents--cache (make-hash-table :test #'equal))
+         (efrit-documents-related-functions nil)
          (efrit-documents-max-chars 40000))
      (let ((source (efrit-documents-register (test-doc-source :name "fake" :description "a fake" :docs ,docs))))
        (ignore source)
@@ -377,6 +379,76 @@ date bounds; title: markers resolve by a lookup."
     (let ((efrit-documents-confluence-sites nil))
       (efrit-documents-confluence-register)
       (should-not (efrit-documents-sources)))))
+
+;;;; The Calendar provider
+
+(ert-deftest test-efrit-documents-related-functions-run-first ()
+  "A provider's documents come before the title search and are not duplicated by it."
+  (test-docs--with-source
+      (list (cons "n1" (list :title "Notes: Widget sync" :modified "2026-09-15T11:00:00Z" :text "notes")))
+    (let ((efrit-documents-related-functions
+           (list (lambda (item)
+                   (should (equal "Widget sync" (plist-get item :title)))
+                   (list (list :source "fake" :id "n1" :title "old name")
+                         (list :source "fake" :id "extra" :title "From the calendar")))
+                 (lambda (_item) (error "broken provider")))))
+      (let ((docs (efrit-documents-related '(:title "Widget sync" :date "2026-09-15T12:00:00Z"))))
+        (should (equal '("n1" "extra") (mapcar (lambda (d) (plist-get d :id)) docs)))
+        ;; The provider's title wins; the search did not add n1 again.
+        (should (equal "old name" (plist-get (car docs) :title)))))))
+
+(ert-deftest test-efrit-documents-gcalendar-finds-renamed-meeting ()
+  "The event is found by date, people and words even when the notes and the
+event were renamed; its Drive attachments come back as documents."
+  (let ((calls nil) (efrit-documents-gcalendar--host nil) (efrit-documents--sources nil)
+        (efrit-documents-gcalendar-calendars '("primary"))
+        (efrit-documents-related-days 3))
+    (efrit-documents-gdrive-register)
+    (cl-letf (((symbol-function 'efrit-auth-credentials)
+               (lambda (host &optional _user)
+                 (if (equal host "gmail")
+                     '(:host "gmail" :scope "https://mail.google.com/ https://www.googleapis.com/auth/calendar.readonly")
+                   (signal 'efrit-auth-no-credentials (list "none")))))
+              ((symbol-function 'efrit-auth-request)
+               (cl-function
+                (lambda (host _method url &key params &allow-other-keys)
+                  (push (list host url params) calls)
+                  (should (string-match-p "/calendars/primary/events\\'" url))
+                  '((items . (((id . "e1") (summary . "Widget platform weekly (was: bringup prep)")
+                               (htmlLink . "https://calendar.google.com/event?eid=e1")
+                               (start . ((dateTime . "2026-09-15T14:00:00Z")))
+                               (organizer . ((email . "Lead@example.com")))
+                               (attendees . (((email . "me@example.com"))))
+                               (attachments . (((fileId . "NOTES1") (title . "Notes: Old bringup name")
+                                                (fileUrl . "https://docs.google.com/document/d/NOTES1/edit")
+                                                (mimeType . "application/vnd.google-apps.document"))
+                                               ((fileUrl . "https://example.com/deck.pdf") (title . "deck")))))
+                              ((id . "e2") (summary . "Lunch")
+                               (start . ((dateTime . "2026-09-15T12:00:00Z")))
+                               (attachments . (((fileId . "LUNCH") (title . "menu")))))
+                              ((id . "e3") (summary . "Widget retro") (start . ((dateTime . "2026-09-16T10:00:00Z")))))))))))
+      (let ((docs (efrit-documents-gcalendar-related
+                   '(:title "Recap: Widget platform weekly" :date "2026-09-15T15:00:00Z"
+                     :from "recap-bot@example.com" :participants ("lead@example.com, me@example.com")))))
+        (should (equal "gmail" (car (car calls))))
+        (should (equal "2026-09-12T15:00:00Z" (cdr (assoc "timeMin" (nth 2 (car calls))))))
+        (should (equal "true" (cdr (assoc "singleEvents" (nth 2 (car calls))))))
+        ;; Only the Drive attachment of the matching event; the PDF link
+        ;; and the lunch menu are not.
+        (should (equal '("NOTES1") (mapcar (lambda (d) (plist-get d :id)) docs)))
+        (should (equal "gdrive" (plist-get (car docs) :source)))
+        (should (equal "Widget platform weekly (was: bringup prep)" (plist-get (car docs) :event))))
+      ;; Scoring: two shared words (weekly is a stopword), organizer named (2), same day (1).
+      (let ((event '((summary . "Widget platform weekly") (start . ((dateTime . "2026-09-15T14:00:00Z")))
+                     (organizer . ((email . "lead@example.com"))))))
+        (should (= 5 (efrit-documents-gcalendar-score
+                      event '(:title "Widget platform weekly" :from "lead@example.com") (date-to-time "2026-09-15T15:00:00Z"))))
+        (should (= 0 (efrit-documents-gcalendar-score
+                      event '(:title "Lunch" :from "x@example.com") (date-to-time "2026-09-14T15:00:00Z")))))
+      ;; No date: nothing to look at, no request.
+      (setq calls nil)
+      (should-not (efrit-documents-gcalendar-related '(:title "Widget")))
+      (should-not calls))))
 
 (provide 'test-efrit-documents)
 ;;; test-efrit-documents.el ends here

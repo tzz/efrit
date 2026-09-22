@@ -166,6 +166,7 @@ real event bus here."
 related document (same title words, near the date) follows it."
   (require 'efrit-documents-gdrive)
   (let ((efrit-documents--cache (make-hash-table :test #'equal))
+        (efrit-documents-related-functions nil)
         (efrit-gnus-related-documents t)
         (efrit-gnus-expand-link-functions nil))
     (cl-letf (((symbol-function 'efrit-documents-gdrive--find-host) (lambda (_s) "gmail"))
@@ -208,6 +209,7 @@ a render of an article carrying the footnote expands those URLs as
 links and does not search again."
   (require 'efrit-documents-gdrive)
   (let ((efrit-documents--cache (make-hash-table :test #'equal))
+        (efrit-documents-related-functions nil)
         (efrit-gnus-related-documents t)
         (efrit-gnus-expand-link-functions nil)
         (searches 0))

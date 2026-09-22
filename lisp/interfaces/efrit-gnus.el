@@ -401,6 +401,8 @@ sees the list."
     (efrit-documents-related-text
      (list :title (cdr (assoc "Subject" headers))
            :date (cdr (assoc "Date" headers))
+           :from (cdr (assoc "From" headers))
+           :participants (delq nil (list (cdr (assoc "To" headers)) (cdr (assoc "Cc" headers))))
            :urls (efrit-gnus--article-links body))))))
 
 (defun efrit-gnus--expand-links (body)
@@ -751,6 +753,9 @@ found; a failing source is a one-line note."
         (let* ((body (buffer-substring-no-properties (point-min) (point-max)))
                (item (list :title (efrit-gnus--article-header "Subject")
                            :date (efrit-gnus--article-header "Date")
+                           :from (efrit-gnus--article-header "From")
+                           :participants (delq nil (list (efrit-gnus--article-header "To")
+                                                         (efrit-gnus--article-header "Cc")))
                            :urls (efrit-gnus--article-links body)))
                (docs (condition-case err
                          (efrit-documents-related item)

@@ -95,7 +95,12 @@ related-documents lookup (title words near a date), and the
 `doc_fetch`/`doc_search`/`doc_sources` tools.  `efrit-documents-gdrive.el`
 is the Google Drive source and `efrit-documents-confluence.el` the
 Confluence one (Atlassian Cloud and self-hosted, one source per site in
-`efrit-documents-confluence-sites`).  Sources
+`efrit-documents-confluence-sites`).  `efrit-documents-gcalendar.el` is
+not a source but a related-documents provider
+(`efrit-documents-related-functions`): it finds the calendar event an
+item is about by date, title words and people, and returns the event's
+attachments as Drive documents, so a renamed meeting still yields its
+notes.  Sources
 talk to their APIs through `efrit-auth.el`: auth-source lookup by host
 (OAuth2 client fields → oauth2.el consent/refresh/plstore, otherwise a
 bearer or basic secret), and `efrit-auth-request` with retries and typed

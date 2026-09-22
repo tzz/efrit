@@ -295,6 +295,9 @@ Executes all ERT tests and displays results in a buffer."
 (autoload 'efrit-documents-gdrive-check "efrit-documents-gdrive"
   "Check that Google Drive is reachable as a document source." t)
 ;;;###autoload
+(autoload 'efrit-documents-gcalendar-check "efrit-documents-gcalendar"
+  "Check that Google Calendar is reachable as a related-documents provider." t)
+;;;###autoload
 (autoload 'efrit-documents-confluence-check "efrit-documents-confluence"
   "Check that each configured Confluence site is reachable as a document source." t)
 ;;;###autoload
