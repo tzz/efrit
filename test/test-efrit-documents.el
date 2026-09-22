@@ -78,6 +78,19 @@ advice is installed, without it."
             (should (advice-member-p 'auth-source-xoauth2-plugin--search-backends 'auth-source-search-backends)))
         (advice-remove 'auth-source-search-backends 'auth-source-xoauth2-plugin--search-backends)))))
 
+(ert-deftest test-efrit-auth-candidate-hosts-and-describe ()
+  "Hosts from `efrit-auth-host-functions' follow the given ones, deduplicated;
+`efrit-auth-describe' names the entries without secrets."
+  (let ((efrit-auth-host-functions (list (lambda () '("work-gmail" "gmail")) (lambda () (error "broken")))))
+    (should (equal '("gcalendar" "gdrive" "gmail" "work-gmail")
+                   (efrit-auth-candidate-hosts "gcalendar" '("gdrive" "gmail")))))
+  (test-auth--with-entries (list test-auth--oauth-entry)
+    (efrit-auth-describe "gdrive")
+    (with-current-buffer "*efrit-auth*"
+      (should (string-match-p "user \"me@example.com\"  oauth2 yes  scope \"https://www.googleapis.com/auth/drive.readonly\"" (buffer-string)))
+      (should-not (string-match-p "\\bsec\\b" (buffer-string))))
+    (kill-buffer "*efrit-auth*")))
+
 (defmacro test-auth--with-http (responses &rest body)
   "Run BODY with `efrit-auth--http' returning RESPONSES in turn and recording requests in REQUESTS."
   (declare (indent 1))

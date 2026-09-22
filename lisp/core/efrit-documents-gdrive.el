@@ -60,7 +60,8 @@
 
 (defcustom efrit-documents-gdrive-auth-hosts '("gmail" "gmail.com" "imap.gmail.com")
   "Hosts tried, in order, when `efrit-documents-gdrive-auth-host' has no entry.
-An entry counts only if its :scope names a Drive scope."
+An entry counts only if its :scope names a Drive scope.  Hosts from
+`efrit-auth-host-functions' (a mail backend's Google entries) follow."
   :type '(repeat string))
 
 (defcustom efrit-documents-gdrive-user nil
@@ -109,7 +110,7 @@ An entry counts only if its :scope names a Drive scope."
 Signals `efrit-auth-no-credentials' naming what was tried."
   (or (efrit-documents-gdrive-host source)
       (let ((tried nil) (found nil))
-        (dolist (host (cons efrit-documents-gdrive-auth-host efrit-documents-gdrive-auth-hosts))
+        (dolist (host (efrit-auth-candidate-hosts efrit-documents-gdrive-auth-host efrit-documents-gdrive-auth-hosts))
           (unless found
             (push host tried)
             (condition-case nil

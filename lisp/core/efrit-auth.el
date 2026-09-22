@@ -137,6 +137,39 @@ drops them."
                                   efrit-auth--oauth2-keys))))
           (puthash key entry efrit-auth--credentials)))))
 
+(defvar efrit-auth-host-functions nil
+  "Functions returning extra auth-source hosts worth trying for Google entries.
+Each is called with no arguments and returns a list of host strings.
+A mail backend that already holds a Google OAuth entry under its own
+server name adds one, so sources need not guess the name.")
+
+(defun efrit-auth-candidate-hosts (&rest hosts)
+  "HOSTS (strings or lists of strings) plus those from `efrit-auth-host-functions', deduplicated."
+  (delete-dups
+   (delq nil (append (flatten-tree hosts)
+                     (flatten-tree (mapcar (lambda (fn) (ignore-errors (funcall fn)))
+                                           efrit-auth-host-functions))))))
+
+;;;###autoload
+(defun efrit-auth-describe (host &optional user)
+  "Show what auth-source holds for HOST (and USER): every entry, secrets hidden.
+For finding out why a source cannot see the entry you mean: the host
+name, the user, whether the OAuth2 fields are there, the scope."
+  (interactive (list (read-string "auth-source host: ") nil))
+  (let ((entries (efrit-auth--search host user)))
+    (if (null entries)
+        (message "efrit-auth: no auth-source entry has host %S%s (auth-sources: %S)"
+                 host (if user (format " user %S" user) "") auth-sources)
+      (with-output-to-temp-buffer "*efrit-auth*"
+        (princ (format "auth-source entries for host %S%s:\n\n" host (if user (format " user %S" user) "")))
+        (dolist (e entries)
+          (princ (format "- user %S  oauth2 %s  scope %S\n  keys: %s\n"
+                         (plist-get e :user)
+                         (if (efrit-auth-oauth2-p e) "yes" "no")
+                         (efrit-auth-get e :scope)
+                         (mapconcat (lambda (k) (substring (symbol-name k) 1))
+                                    (seq-filter #'keywordp e) " "))))))))
+
 (defun efrit-auth-forget (host &optional user)
   "Drop the credentials and token held in memory for HOST (and USER)."
   (let ((key (cons host user)))

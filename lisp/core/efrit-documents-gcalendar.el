@@ -61,7 +61,8 @@
 
 (defcustom efrit-documents-gcalendar-auth-hosts '("gdrive" "gmail" "gmail.com" "imap.gmail.com")
   "Hosts tried, in order, when `efrit-documents-gcalendar-auth-host' has no entry.
-An entry counts only if its :scope names a Calendar scope."
+An entry counts only if its :scope names a Calendar scope.  Hosts from
+`efrit-auth-host-functions' (a mail backend's Google entries) follow."
   :type '(repeat string))
 
 (defcustom efrit-documents-gcalendar-user nil
@@ -91,7 +92,7 @@ An entry counts only if its :scope names a Calendar scope."
   "The auth-source host to use, finding and remembering it on first call."
   (or efrit-documents-gcalendar--host
       (let ((tried nil) (found nil))
-        (dolist (host (cons efrit-documents-gcalendar-auth-host efrit-documents-gcalendar-auth-hosts))
+        (dolist (host (efrit-auth-candidate-hosts efrit-documents-gcalendar-auth-host efrit-documents-gcalendar-auth-hosts))
           (unless found
             (push host tried)
             (condition-case nil
