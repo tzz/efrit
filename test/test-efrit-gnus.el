@@ -58,20 +58,83 @@ long bodies are cut with a marker."
     (should-not (efrit-gnus--render "nnml:mail" 99))))
 
 (ert-deftest test-efrit-gnus-payload-budget ()
-  "The payload keeps whole articles up to the budget and lists the rest by header."
+  "The payload keeps whole articles up to the budget and hands back the rest
+as the next batch; numbering runs over the whole selection."
   (test-gnus--with-articles
       (mapcar (lambda (n) (cons (cons "nnml:mail" n) (test-gnus--raw (format "m%d" n) (make-string 300 ?y))))
               '(1 2 3))
     (pcase-let* ((efrit-gnus-max-chars 900)
-                 (`(,text ,sent ,chars)
+                 (`(,text ,sent ,chars ,rest)
                   (efrit-gnus--payload '(("nnml:mail" . 1) ("nnml:mail" . 2) ("nnml:mail" . 3)))))
       (should (= 2 sent))
       (should (<= chars 900))
       (should (string-match-p "=== Article 1 of 3 ===" text))
       (should (string-match-p "=== Article 2 of 3 ===" text))
-      (should-not (string-match-p "=== Article 3 of 3 ===" text))
-      (should (string-match-p "1 more article not included" text))
-      (should (string-match-p "- nnml:mail#3 |" text)))))
+      (should-not (string-match-p "Article 3 of 3" text))
+      (should (equal '(("nnml:mail" . 3)) rest))
+      ;; The next batch continues the numbering.
+      (pcase-let ((`(,text2 ,sent2 ,_ ,rest2) (efrit-gnus--payload rest '(2 . 3))))
+        (should (= 1 sent2))
+        (should (string-match-p "=== Article 3 of 3 ===" text2))
+        (should-not rest2)))
+    ;; An article bigger than the budget still goes out, alone.
+    (pcase-let* ((efrit-gnus-max-chars 100)
+                 (`(,text ,sent ,_ ,rest) (efrit-gnus--payload '(("nnml:mail" . 1) ("nnml:mail" . 2)))))
+      (should (= 1 sent))
+      (should (string-match-p "Article 1 of 2" text))
+      (should (equal '(("nnml:mail" . 2)) rest)))))
+
+(ert-deftest test-efrit-gnus-batches-over-turns ()
+  "A selection over the budget is sent as consecutive turns: the first at
+once, each next one when the agent reports idle, then a closing message."
+  (test-gnus--with-articles
+      (mapcar (lambda (n) (cons (cons "nnml:mail" n) (test-gnus--raw (format "m%d" n) (make-string 300 ?y))))
+              '(1 2 3 4 5))
+    (let ((submitted nil) (subscribed nil) (timers nil))
+      (cl-letf (((symbol-function 'efrit-submit)
+                 (lambda (shown api) (push (cons shown api) submitted) t))
+                ((symbol-function 'efrit-gnus-ensure-tools) #'ignore)
+                ((symbol-function 'efrit-gnus--require) (lambda (&rest _) t))
+                ((symbol-function 'efrit-subscribe) (lambda (type fn) (push (cons type fn) subscribed) fn))
+                ((symbol-function 'run-at-time) (lambda (_s _r fn &rest _) (push fn timers) nil)))
+        (let ((efrit-gnus-max-chars 900) (efrit-gnus-confirm nil)
+              (efrit-gnus--queue nil) (efrit-gnus--closing nil) (efrit-gnus--watching nil))
+          (efrit-gnus--submit (mapcar (lambda (n) (cons "nnml:mail" n)) '(1 2 3 4 5))
+                              '("Triage." . "Overall triage.") "unread in mail")
+          ;; First batch went out: articles 1-2 of 5, and it says so.
+          (should (= 1 (length submitted)))
+          (should (equal "analyze articles 1-2 of 5 from unread in mail: Triage." (car (car submitted))))
+          (should (string-match-p "articles 1-2 here, the rest follow" (cdr (car submitted))))
+          (should (= 1 (length efrit-gnus--queue)))
+          (should subscribed)
+          ;; Agent goes idle: the next batch is scheduled and sent.
+          (efrit-gnus--send-next '((:status . idle)))
+          (should timers) (funcall (pop timers))
+          (should (= 2 (length submitted)))
+          (should (equal "analyze articles 3-4 of 5 from unread in mail: Triage." (car (car submitted))))
+          (efrit-gnus--send-next '((:status . idle)))
+          (funcall (pop timers))
+          (should (= 3 (length submitted)))
+          (should (equal "analyze articles 5-5 of 5 from unread in mail: Triage." (car (car submitted))))
+          (should-not efrit-gnus--queue)
+          (should (equal "Overall triage." efrit-gnus--closing))
+          ;; The closing does not fire while batches remain or on non-idle.
+          (efrit-gnus--send-closing '((:status . working)))
+          (should-not timers)
+          (efrit-gnus--send-closing '((:status . idle)))
+          (funcall (pop timers))
+          (should (= 4 (length submitted)))
+          (should (equal "over the whole selection" (car (car submitted))))
+          (should (string-match-p "That was the whole selection. Overall triage." (cdr (car submitted))))
+          (should-not efrit-gnus--closing))))))
+
+(ert-deftest test-efrit-gnus-prompts-are-pairs ()
+  "Every built-in prompt has a per-batch and an over-everything part."
+  (dolist (e efrit-gnus-prompts)
+    (should (stringp (car e)))
+    (should (stringp (cadr e)))
+    (should (stringp (cddr e))))
+  (should (assoc "trends, accomplishments, concerns" efrit-gnus-prompts)))
 
 (ert-deftest test-efrit-gnus-submit-builds-turn ()
   "The submission fills the prompt, confirms once, and hands efrit a short
@@ -95,12 +158,19 @@ shown line plus the full API text; a busy efrit is a user error."
           (should (string-match-p "=== Article 1 of 2 ===" (cadr submitted)))
           (should (string-match-p "Subject: m2" (cadr submitted)))
           (efrit-gnus--submit '(("nnml:mail" . 1)) (cdr (assoc "summarize" efrit-gnus-prompts)))
-          (should (equal "analyze 1 article from the selection: summarize" (car submitted)))))
+          (should (equal "analyze 1 article from the selection: summarize" (car submitted)))
+          ;; The summary prompt is armed for after the turn.
+          (should (string-match-p "main threads and themes" efrit-gnus--closing))
+          ;; A typed prompt gets a derived summary.
+          (efrit-gnus--submit '(("nnml:mail" . 1)) "Which ones mention budgets?")
+          (should (string-match-p "over the whole selection as one: Which ones mention budgets\\?" efrit-gnus--closing))))
       (cl-letf (((symbol-function 'efrit-submit) (lambda (&rest _) nil))
                 ((symbol-function 'efrit-gnus-ensure-tools) #'ignore)
                 ((symbol-function 'efrit-gnus--require) (lambda (&rest _) t)))
         (let ((efrit-gnus-confirm nil))
-          (should-error (efrit-gnus--submit '(("nnml:mail" . 1)) "x") :type 'user-error))))))
+          (should-error (efrit-gnus--submit '(("nnml:mail" . 1)) "x") :type 'user-error)))
+      ;; Default: no confirmation prompt at all.
+      (should-not efrit-gnus-confirm))))
 
 (ert-deftest test-efrit-gnus-tools ()
   "gnus_articles takes GROUP#NUMBER references; bad ones are reported; the
