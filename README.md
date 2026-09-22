@@ -74,6 +74,16 @@ Efrit provides Claude with 35+ tools:
 ### AI-to-AI Communication
 Other AI agents (Claude Code, Cursor, etc.) can interact with Efrit via file-based JSON queue for autonomous development.
 
+### Mail and documents (Gnus, Google Drive, Google Calendar, Confluence)
+`efrit-gnus` analyzes selected Gnus articles with a library of two-part
+prompts (`M-x efrit-prompts-manage`), and the model gets `gnus_search`
+and `gnus_articles`. Documents the articles link to, and documents
+related to them (the notes Calendar attached to the meeting, the
+Confluence page with the same title), are fetched through
+`efrit-documents` and its sources; `doc_search` and `doc_fetch` let the
+model look for more. Setup, including which Google APIs to enable in
+the Cloud console, is in [docs/DOCUMENTS.md](docs/DOCUMENTS.md).
+
 ## Installation
 
 ### Prerequisites

@@ -114,6 +114,10 @@ advice is installed, without it."
         (should (= 403 (nth 1 err)))
         (should (string-match-p "insufficient" (nth 2 err)))
         (should (string-match-p "lacks a scope" (efrit-auth-explain err)))))
+    (should (string-match-p "not enabled for the OAuth client's Cloud project"
+                            (efrit-auth-explain '(efrit-auth-http-error 403 "Google Calendar API has not been used in project 123 before or it is disabled." "u"))))
+    (should (string-match-p "Workspace administrator"
+                            (efrit-auth-explain '(efrit-auth-http-error 403 "admin_policy_enforced" "u"))))
     (test-auth--with-http (list (list 200 nil "raw bytes here"))
       (should (equal "raw bytes here" (efrit-auth-request "h" "GET" "https://x" :raw t)))
       (should (equal "*/*" (cdr (assoc "Accept" (nth 2 (car requests)))))))
@@ -147,7 +151,7 @@ advice is installed, without it."
   (let ((words (or (plist-get query :title) (plist-get query :text))))
     (delq nil (mapcar (lambda (e)
                         (let ((d (cdr e)))
-                          (and (seq-every-p (lambda (w) (string-match-p (regexp-quote w) (downcase (plist-get d :title)))) words)
+                          (and (seq-some (lambda (w) (string-match-p (regexp-quote w) (downcase (plist-get d :title)))) words)
                                (list :source "fake" :id (car e) :title (plist-get d :title)
                                      :modified (plist-get d :modified) :url (concat "https://fake/" (car e))))))
                       (oref s docs)))))
@@ -199,12 +203,19 @@ without the ones already linked; the tools list and fetch."
   (test-docs--with-source
       (list (cons "r1" (list :title "Widget bringup prep - recap" :modified "2026-09-15T10:00:00Z" :text "recap"))
             (cons "n1" (list :title "Notes: Widget bringup prep" :modified "2026-09-15T11:00:00Z" :text "notes"))
+            (cons "w1" (list :title "Widget budget" :modified "2026-09-16T11:00:00Z" :text "one word"))
             (cons "o1" (list :title "Other" :modified "2026-09-15T11:00:00Z" :text "other")))
     (should (equal '("widget" "bringup" "prep")
                    (efrit-documents-title-words "Recap: Widget bringup prep 2026-09-15")))
+    ;; Sources match any one word; the full match ranks above the
+    ;; one-word match even though the latter is newer.
     (let ((related (efrit-documents-related '(:title "Recap: Widget bringup prep" :date "2026-09-15T12:00:00Z"
                                                     :urls ("https://fake/r1")))))
-      (should (equal '("n1") (mapcar (lambda (d) (plist-get d :id)) related))))
+      (should (equal '("n1" "w1") (mapcar (lambda (d) (plist-get d :id)) related))))
+    ;; The title "Recap Bot: 2026-09-21 - The Overclockers" reduces to
+    ;; one word, and "Notes - The Overclockers" shares it.
+    (should (equal '("overclockers") (efrit-documents-title-words "Recap Bot: 2026-09-21 - The Overclockers")))
+    (should (= 1 (efrit-documents--overlap '("overclockers") "Notes - The Overclockers")))
     (should (string-match-p "Related document (fake): https://fake/n1 ---\nTitle: Notes"
                             (efrit-documents-related-text '(:title "Widget bringup prep" :date "2026-09-15"))))
     (should-not (efrit-documents-related '(:title "the of and" :date nil)))
@@ -233,9 +244,8 @@ carries words, dates and the type filter."
     (should (equal "OPEN" (efrit-documents-source-match s "https://drive.google.com/open?id=OPEN")))
     (should-not (efrit-documents-source-match s "https://example.com/d/x"))
     (let ((q (efrit-documents-gdrive--q '(:title ("widget" "o'brien") :since "2026-09-12T00:00:00Z" :until "2026-09-18T00:00:00Z"))))
-      (should (string-match-p (regexp-quote "name contains 'widget' and name contains 'o\\'brien'") q))
-      (should (string-match-p "modifiedTime >= '2026-09-12T00:00:00Z'" q))
-      (should (string-match-p "modifiedTime <= '2026-09-18T00:00:00Z'" q))
+      (should (string-match-p (regexp-quote "(name contains 'widget' or name contains 'o\\'brien')") q))
+      (should (string-search "((modifiedTime >= '2026-09-12T00:00:00Z' and modifiedTime <= '2026-09-18T00:00:00Z') or (createdTime >= '2026-09-12T00:00:00Z' and createdTime <= '2026-09-18T00:00:00Z'))" q))
       (should (string-match-p "trashed = false" q)))))
 
 (ert-deftest test-efrit-documents-gdrive-fetch-and-search ()
@@ -357,7 +367,7 @@ date bounds; title: markers resolve by a lookup."
           (should (equal "blogpost" (plist-get (cadr found) :kind)))
           (let ((cql (cdr (assoc "cql" (nth 2 (car calls))))))
             (should (string-match-p "type in (\"page\",\"blogpost\")" cql))
-            (should (string-match-p "title ~ \"design\" and title ~ \"o\\\\\"k\"" cql))
+            (should (string-match-p "(title ~ \"design\" or title ~ \"o\\\\\"k\")" cql))
             (should (string-match-p "lastmodified >= \"2026-09-12 00:00\"" cql))
             (should (string-suffix-p "order by lastmodified desc" cql))))))))
 

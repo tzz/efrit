@@ -32,9 +32,12 @@
 ;; `efrit-documents-gcalendar-auth-host' (default "gcalendar"), else the
 ;; Drive/Gmail entry when its :scope carries a Calendar scope.  Add
 ;; https://www.googleapis.com/auth/calendar.events.readonly (or
-;; calendar.readonly) to the scope and re-consent once
-;; (`efrit-auth-reauthorize').  `M-x efrit-documents-gcalendar-check'
-;; lists the calendars the token can read.
+;; calendar.readonly) to the scope, enable the Google Calendar API for
+;; the Cloud project that owns the OAuth client (console: APIs &
+;; Services > Library > Google Calendar API) and add the scope on the
+;; consent screen, then re-consent once (`efrit-auth-reauthorize').
+;; `M-x efrit-documents-gcalendar-check' lists the calendars the token
+;; can read.  docs/DOCUMENTS.md has the console walk-through.
 
 ;;; Code:
 
@@ -133,6 +136,10 @@ is 2; the same day is 1."
                        ("orderBy" . "startTime")
                        ("maxResults" . "250")
                        ("fields" . "items(id,summary,htmlLink,start,organizer,attendees,attachments)")))))
+        (efrit-log 'debug "documents: gcalendar %s %s..%s -> %d events, %d with attachments"
+                   calendar (format-time-string "%FT%TZ" since t) (format-time-string "%FT%TZ" until t)
+                   (length (alist-get 'items result))
+                   (cl-count-if (lambda (e) (alist-get 'attachments e)) (alist-get 'items result)))
         (dolist (event (alist-get 'items result))
           (when (alist-get 'attachments event)
             (push event out)))))
@@ -199,6 +206,11 @@ is 2; the same day is 1."
              (events (efrit-documents-gcalendar--events (time-subtract date window) (time-add date window)))
              (scored (delq nil (mapcar (lambda (e)
                                          (let ((score (efrit-documents-gcalendar-score e item date)))
+                                           (efrit-log 'debug "documents: gcalendar event %S at %s: score %d (min %d), %d attachment(s)"
+                                                      (alist-get 'summary e)
+                                                      (or (alist-get 'dateTime (alist-get 'start e)) (alist-get 'date (alist-get 'start e)))
+                                                      score efrit-documents-gcalendar-min-score
+                                                      (length (alist-get 'attachments e)))
                                            (and (>= score efrit-documents-gcalendar-min-score) (cons score e))))
                                        events)))
              (best (seq-take (sort scored (lambda (a b) (> (car a) (car b))))
@@ -206,8 +218,10 @@ is 2; the same day is 1."
              (out nil))
         (dolist (entry best)
           (dolist (attachment (alist-get 'attachments (cdr entry)))
-            (when-let* ((doc (efrit-documents-gcalendar--attachment-doc attachment (cdr entry))))
-              (push doc out))))
+            (if-let* ((doc (efrit-documents-gcalendar--attachment-doc attachment (cdr entry))))
+                (push doc out)
+              (efrit-log 'debug "documents: gcalendar attachment %S of %S is not a Drive file (%s); skipped"
+                         (alist-get 'title attachment) (alist-get 'summary (cdr entry)) (alist-get 'fileUrl attachment)))))
         (nreverse out)))))
 
 (add-hook 'efrit-documents-related-functions #'efrit-documents-gcalendar-related)

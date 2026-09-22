@@ -33,6 +33,11 @@
 ;; meeting, so `efrit-documents-related' finds them by title and date
 ;; with no Calendar API.
 ;;
+;; The Cloud project that owns the OAuth client must have the Google
+;; Drive API enabled (console: APIs & Services > Library > Google Drive
+;; API) and the scope added on its consent screen; then re-consent once
+;; with `efrit-auth-reauthorize'.  docs/DOCUMENTS.md walks through it.
+;;
 ;; The source registers itself when this file loads.  Whether it works
 ;; is decided at first use (credentials are looked up then); `M-x
 ;; efrit-documents-gdrive-check' tells you now.
@@ -182,22 +187,38 @@ Signals `efrit-auth-no-credentials' naming what was tried."
   "Drive's q= expression for QUERY."
   (let ((parts (list "trashed = false"))
         (quote (lambda (w) (string-replace "'" "\\'" w))))
-    (dolist (w (plist-get query :title))
-      (push (format "name contains '%s'" (funcall quote w)) parts))
+    ;; Any title word, not all: the document was named by someone else
+    ;; ("Notes - The Overclockers" for a mail titled "Recap Bot:
+    ;; 2026-09-21 - The Overclockers").  `efrit-documents-search' ranks
+    ;; the results by how many words they share.
+    (when-let* ((words (plist-get query :title)))
+      (push (concat "(" (mapconcat (lambda (w) (format "name contains '%s'" (funcall quote w)))
+                                   words " or ")
+                    ")")
+            parts))
     (dolist (w (plist-get query :text))
       (push (format "fullText contains '%s'" (funcall quote w)) parts))
-    (when-let* ((since (efrit-documents--time (plist-get query :since))))
-      (push (format "modifiedTime >= '%s'" (format-time-string "%FT%TZ" since t)) parts))
-    (when-let* ((until (efrit-documents--time (plist-get query :until))))
-      (push (format "modifiedTime <= '%s'" (format-time-string "%FT%TZ" until t)) parts))
+    ;; A document counts as in the window if it was modified in it, or
+    ;; created in it (notes made at the meeting and never touched since).
+    (let ((since (efrit-documents--time (plist-get query :since)))
+          (until (efrit-documents--time (plist-get query :until))))
+      (when (or since until)
+        (let ((bounds (lambda (field)
+                        (string-join
+                         (delq nil (list (and since (format "%s >= '%s'" field (format-time-string "%FT%TZ" since t)))
+                                         (and until (format "%s <= '%s'" field (format-time-string "%FT%TZ" until t)))))
+                         " and "))))
+          (push (format "((%s) or (%s))" (funcall bounds "modifiedTime") (funcall bounds "createdTime")) parts))))
     (push "(mimeType contains 'application/vnd.google-apps.document' or mimeType contains 'spreadsheet' or mimeType contains 'presentation' or mimeType contains 'text/')" parts)
     (string-join (nreverse parts) " and ")))
 
 (cl-defmethod efrit-documents-source-search ((source efrit-document-source-gdrive) query)
   (condition-case err
-      (let ((result (efrit-documents-gdrive--request
+      (let* ((q (efrit-documents-gdrive--q query))
+             (_ (efrit-log 'debug "documents: gdrive q=%s" q))
+             (result (efrit-documents-gdrive--request
                      source ""
-                     `(("q" . ,(efrit-documents-gdrive--q query))
+                     `(("q" . ,q)
                        ("orderBy" . "modifiedTime desc")
                        ("pageSize" . ,(number-to-string (min 100 (or (plist-get query :limit) 10))))
                        ("fields" . ,(concat "files(" efrit-documents-gdrive--fields ")"))

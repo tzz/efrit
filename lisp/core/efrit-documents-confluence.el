@@ -268,8 +268,12 @@ stay; shr renders the rest when libxml is available, else tags go."
   "The CQL for QUERY."
   (let ((parts (list (format "type in (%s)" (mapconcat (lambda (s) (concat "\"" s "\""))
                                                         efrit-documents-confluence-content-types ",")))))
-    (dolist (w (plist-get query :title))
-      (push (format "title ~ %s" (efrit-documents-confluence--cql-quote w)) parts))
+    ;; Any title word (ranked by overlap in `efrit-documents-search').
+    (when-let* ((words (plist-get query :title)))
+      (push (concat "(" (mapconcat (lambda (w) (format "title ~ %s" (efrit-documents-confluence--cql-quote w)))
+                                   words " or ")
+                    ")")
+            parts))
     (dolist (w (plist-get query :text))
       (push (format "text ~ %s" (efrit-documents-confluence--cql-quote w)) parts))
     (when-let* ((since (efrit-documents--time (plist-get query :since))))

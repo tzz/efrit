@@ -91,8 +91,9 @@ one you never use."
 
 (defcustom efrit-documents-related-stopwords
   '("the" "a" "an" "of" "for" "and" "or" "to" "in" "on" "with" "re" "fw" "fwd"
-    "notes" "recap" "meeting" "sync" "weekly" "monthly" "call" "invitation"
-    "updated" "accepted" "declined" "canceled" "cancelled")
+    "notes" "recap" "recaps" "bot" "summary" "minutes" "meeting" "sync"
+    "weekly" "monthly" "daily" "call" "invitation" "invite" "reminder"
+    "updated" "accepted" "declined" "canceled" "cancelled" "am" "pm")
   "Words dropped from a title before searching for related documents."
   :type '(repeat string))
 
@@ -231,6 +232,8 @@ when no source claims URL-OR-REF."
                (or (null meta)
                    (equal (plist-get meta :modified) (plist-get cached :modified)))))
         cached
+      (efrit-log 'debug "documents: fetch %s:%s as %s%s" (efrit-documents-source-name source) id format
+                 (if cached " (cache stale)" ""))
       (let* ((doc (efrit-documents-source-fetch source id format))
              (doc (if (eq format 'html)
                       doc
@@ -271,6 +274,11 @@ A fetch failure is a one-line note, so the analysis still runs."
 
 ;;;; Searching
 
+(defvar efrit-documents-related-problems nil
+  "Problems met by the last `efrit-documents-related' call: strings, newest last.
+A provider or source that failed is named here with the reason, so a
+caller that shows nothing can say why.")
+
 (defun efrit-documents-search (query &optional source-name)
   "Documents matching QUERY across the working sources, or in SOURCE-NAME only.
 Newest first.  A source that fails contributes nothing and a warning in
@@ -282,10 +290,39 @@ the log; the others still answer."
         (out nil))
     (dolist (source sources)
       (condition-case err
-          (setq out (append out (efrit-documents-source-search source query)))
-        (error (efrit-log 'warn "documents: search in %s failed: %s"
-                          (efrit-documents-source-name source) (efrit-documents-explain err)))))
-    (sort out (lambda (a b) (string> (or (plist-get a :modified) "") (or (plist-get b :modified) ""))))))
+          (let ((found (efrit-documents-source-search source query)))
+            (efrit-log 'debug "documents: %s search title=%S text=%S since=%s until=%s -> %d: %s"
+                       (efrit-documents-source-name source)
+                       (plist-get query :title) (plist-get query :text)
+                       (efrit-documents--iso (plist-get query :since)) (efrit-documents--iso (plist-get query :until))
+                       (length found)
+                       (mapconcat (lambda (d) (format "%S" (plist-get d :title))) (seq-take found 5) ", "))
+            (setq out (append out found)))
+        (error
+         (let ((why (format "%s: %s" (efrit-documents-source-name source) (efrit-documents-explain err))))
+           (push why efrit-documents-related-problems)
+           (efrit-log 'warn "documents: search failed: %s" why)))))
+    (let ((words (plist-get query :title)))
+      (sort out (lambda (a b)
+                  ;; Most title words shared first (the sources match any
+                  ;; one word), then newest.
+                  (let ((oa (efrit-documents--overlap words (plist-get a :title)))
+                        (ob (efrit-documents--overlap words (plist-get b :title))))
+                    (if (= oa ob)
+                        (string> (or (plist-get a :modified) "") (or (plist-get b :modified) ""))
+                      (> oa ob))))))))
+
+(defun efrit-documents--provider-name (fn)
+  "A short name for provider FN: its feature-ish prefix, or the symbol."
+  (if (symbolp fn)
+      (let ((name (symbol-name fn)))
+        (if (string-match "\\`efrit-documents-\\([a-z0-9]+\\)" name) (match-string 1 name) name))
+    "provider"))
+
+(defun efrit-documents--overlap (words title)
+  "How many of WORDS appear among TITLE's words."
+  (if (null words) 0
+    (length (cl-intersection words (efrit-documents-title-words title) :test #'equal))))
 
 (defun efrit-documents-title-words (title)
   "The words of TITLE worth searching for: no stopwords, no dates, no one-letter words."
@@ -295,6 +332,12 @@ the log; the others still answer."
                       (string-match-p "\\`[0-9]+\\'" w)
                       (member w efrit-documents-related-stopwords)))
                 words)))
+
+(defun efrit-documents--iso (value)
+  "VALUE (a time or date string or nil) as an ISO string for the log."
+  (if-let* ((time (efrit-documents--time value)))
+      (format-time-string "%FT%TZ" time t)
+    "-"))
 
 (defun efrit-documents--time (value)
   "VALUE (an Emacs time, an ISO/RFC date string, or nil) as an Emacs time or nil."
@@ -316,6 +359,11 @@ searches each source for the title's words within
                                    (plist-get item :urls))))
          (known (mapcar (lambda (l) (cons (efrit-documents-source-name (car l)) (cdr l))) linked))
          (out nil))
+    (setq efrit-documents-related-problems nil)
+    (efrit-log 'debug "documents: related for title=%S -> words=%S date=%s from=%S linked=%S providers=%S sources=%S"
+               (plist-get item :title) words (efrit-documents--iso date) (plist-get item :from)
+               known efrit-documents-related-functions
+               (mapcar #'efrit-documents-source-name (efrit-documents-sources)))
     (cl-flet ((keep (docs)
                 (dolist (doc docs)
                   (let ((key (cons (plist-get doc :source) (plist-get doc :id))))
@@ -324,16 +372,27 @@ searches each source for the title's words within
                       (push doc out))))))
       (dolist (fn efrit-documents-related-functions)
         (condition-case err
-            (keep (funcall fn item))
-          (error (efrit-log 'warn "documents: related provider %S failed: %s"
-                            fn (efrit-documents-explain err)))))
+            (let ((docs (funcall fn item)))
+              (efrit-log 'debug "documents: provider %s -> %d: %s" (efrit-documents--provider-name fn)
+                         (length docs) (mapconcat (lambda (d) (format "%S" (plist-get d :title))) docs ", "))
+              (keep docs))
+          (error
+           (let ((why (format "%s: %s" (efrit-documents--provider-name fn) (efrit-documents-explain err))))
+             (push why efrit-documents-related-problems)
+             (efrit-log 'warn "documents: related provider failed: %s" why)))))
       (when words
         (let ((window (* efrit-documents-related-days 24 3600)))
-          (keep (efrit-documents-search
-                 (list :title words
-                       :since (and date (time-subtract date window))
-                       :until (and date (time-add date window))
-                       :limit efrit-documents-related-limit))))))
+          (keep (seq-take
+                 (seq-filter (lambda (d) (> (efrit-documents--overlap words (plist-get d :title)) 0))
+                             (efrit-documents-search
+                              (list :title words
+                                    :since (and date (time-subtract date window))
+                                    :until (and date (time-add date window))
+                                    :limit (* 4 efrit-documents-related-limit))))
+                 efrit-documents-related-limit)))))
+    (efrit-log 'debug "documents: related result %d: %s" (length out)
+               (mapconcat (lambda (d) (format "%s:%s %S" (plist-get d :source) (plist-get d :id) (plist-get d :title)))
+                          (reverse out) ", "))
     (nreverse out)))
 
 (defun efrit-documents-related-text (item)

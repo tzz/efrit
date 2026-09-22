@@ -338,9 +338,14 @@ failures signal `efrit-auth-http-error' with (STATUS MESSAGE URL)."
   (pcase err
     (`(efrit-auth-http-error 401 ,msg . ,_) (format "not authorized (401): %s; try M-x efrit-auth-reauthorize" msg))
     (`(efrit-auth-http-error 403 ,msg . ,_)
-     (if (string-match-p "insufficient\\|scope\\|ACCESS_TOKEN_SCOPE" msg)
-         (format "the token lacks a scope (403): %s; add it to the auth-source entry and run M-x efrit-auth-reauthorize" msg)
-       (format "access refused (403): %s" msg)))
+     (cond
+      ((string-match-p "insufficient\\|scope\\|ACCESS_TOKEN_SCOPE" msg)
+       (format "the token lacks a scope (403): %s; add it to the auth-source entry and run M-x efrit-auth-reauthorize" msg))
+      ((string-match-p "has not been used in project\\|is disabled\\|SERVICE_DISABLED" msg)
+       (format "the API is not enabled for the OAuth client's Cloud project (403): %s; enable it under APIs & Services > Library in the Google Cloud console" msg))
+      ((string-match-p "admin_policy_enforced\\|access_denied" msg)
+       (format "blocked by the Workspace administrator's API controls (403): %s; the client must be allowed those scopes in the Admin console" msg))
+      (t (format "access refused (403): %s" msg))))
     (`(efrit-auth-http-error 404 ,msg . ,_) (format "not found (404): %s" msg))
     (`(efrit-auth-http-error ,status ,msg . ,_) (format "HTTP %s: %s" status msg))
     (_ (error-message-string err))))

@@ -186,7 +186,7 @@ related document (same title words, near the date) follows it."
                     (should (string-match-p "name contains 'widget'" (cdr (assoc "q" params))))
                     ;; The article is dated 2026-09-01 (see `test-gnus--raw').
                     (should (string-match-p "modifiedTime >= '2026-08-29" (cdr (assoc "q" params))))
-                    (should (string-match-p "modifiedTime <= '2026-09-04" (cdr (assoc "q" params))))
+                    (should (string-match-p "createdTime <= '2026-09-04" (cdr (assoc "q" params))))
                     '((files . (((id . "RECAP1") (name . "Widget bringup prep - recap")
                                  (mimeType . "application/vnd.google-apps.document") (modifiedTime . "2026-09-15T10:00:00Z"))
                                 ((id . "NOTES1") (name . "Notes: Widget bringup prep")

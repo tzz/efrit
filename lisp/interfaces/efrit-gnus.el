@@ -393,8 +393,13 @@ or when BODY carries one, no search runs: the footnote's URLs are
 expanded as links instead and FOOTNOTE itself is returned so the model
 sees the list."
   (cond
-   ((string-match-p (concat "^" (regexp-quote efrit-gnus-related-heading)) body) nil)
+   ((string-match-p (concat "^" (regexp-quote efrit-gnus-related-heading)) body)
+    (efrit-log 'debug "efrit-gnus: %S carries a related-documents footnote in its body; no search"
+               (cdr (assoc "Subject" headers)))
+    nil)
    (footnote
+    (efrit-log 'debug "efrit-gnus: %S: using the displayed footnote (%d chars); no search"
+               (cdr (assoc "Subject" headers)) (length footnote))
     (when-let* ((linked (efrit-gnus--expand-links footnote)))
       (concat footnote "\n" linked)))
    ((and efrit-gnus-related-documents (efrit-documents-sources))
@@ -748,20 +753,28 @@ found; a failing source is a one-line note."
       (unless (bound-and-true-p gnus-treat-condition)
         (article-goto-body)
         (narrow-to-region (point) (point-max)))
-      (unless (or (null (efrit-documents-sources))
-                  (text-property-any (point-min) (point-max) 'efrit-gnus-related t))
+      (unless (text-property-any (point-min) (point-max) 'efrit-gnus-related t)
         (let* ((body (buffer-substring-no-properties (point-min) (point-max)))
-               (item (list :title (efrit-gnus--article-header "Subject")
+               (title (efrit-gnus--article-header "Subject"))
+               (item (list :title title
                            :date (efrit-gnus--article-header "Date")
                            :from (efrit-gnus--article-header "From")
                            :participants (delq nil (list (efrit-gnus--article-header "To")
                                                          (efrit-gnus--article-header "Cc")))
                            :urls (efrit-gnus--article-links body)))
-               (docs (condition-case err
-                         (efrit-documents-related item)
-                       (error (list (list :title (format "not searched: %s" (efrit-documents-explain err))
-                                          :source "efrit" :url ""))))))
-          (when docs
+               (docs (and (efrit-documents-sources)
+                          (condition-case err
+                              (efrit-documents-related item)
+                            (error (push (efrit-documents-explain err) efrit-documents-related-problems)
+                                   nil))))
+               (interactive-p (not (bound-and-true-p gnus-treat-condition))))
+          (efrit-log 'debug "efrit-gnus: related footnote for %S (%s): %d document(s)%s"
+                     title (if interactive-p "by hand" "treatment") (length docs)
+                     (if efrit-documents-related-problems
+                         (format "; problems: %s" (string-join (reverse efrit-documents-related-problems) "; "))
+                       ""))
+          (cond
+           (docs
             (let ((inhibit-read-only t) (start nil))
               (goto-char (point-max))
               (unless (bolp) (insert "\n"))
@@ -775,7 +788,19 @@ found; a failing source is a one-line note."
               ;; have had they been in the original text.
               (save-restriction
                 (narrow-to-region start (point))
-                (gnus-article-add-buttons)))))))))
+                (gnus-article-add-buttons))
+              (when (and interactive-p efrit-documents-related-problems)
+                (message "efrit-gnus: %d related document(s); also: %s" (length docs)
+                         (string-join (reverse efrit-documents-related-problems) "; ")))))
+           ;; Nothing to show.  As a treatment stay quiet; by hand, say why.
+           (interactive-p
+            (message "efrit-gnus: no related documents for %S%s"
+                     (string-join (efrit-documents-title-words title) " ")
+                     (cond
+                      ((null (efrit-documents-sources)) " (no document sources are working; M-x efrit-documents-list-sources)")
+                      (efrit-documents-related-problems
+                       (concat " (" (string-join (reverse efrit-documents-related-problems) "; ") ")"))
+                      (t ""))))))))))
 
 (defun efrit-gnus--install-treatment ()
   "Put the footnote treatment after buttonizing in `gnus-treatment-function-alist'."
