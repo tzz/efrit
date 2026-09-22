@@ -181,6 +181,31 @@ follow-up response is delivered."
       (should (equal turn-reason "session-complete"))
       (should (eq (efrit-repl-session-status session) 'idle)))))
 
+(ert-deftest test-repl-loop-max-tokens-ends-turn-with-note ()
+  "An answer cut at max_tokens ends the turn like end_turn, keeps the
+text, and publishes a note naming the limit."
+  (let ((session (efrit-repl-session-create))
+        (turn-reason nil) (notes nil))
+    (test-repl-loop--with-mocks
+        (list (test-repl-loop--make-response
+               (vector (test-repl-loop--make-text "the first half of a long briefing"))
+               "max_tokens"))
+        "unused"
+      (let ((fn (lambda (event) (push (alist-get :text event) notes))))
+        (efrit-subscribe 'note fn)
+        (unwind-protect
+            (efrit-repl-continue session "brief me"
+                                 (lambda (_s reason) (setq turn-reason reason)))
+          (efrit-unsubscribe 'note fn)))
+      (should (equal turn-reason "end_turn"))
+      (should (eq (efrit-repl-session-status session) 'idle))
+      (should (= 1 (length notes)))
+      (should (string-match-p "cut at [0-9]+ output tokens" (car notes)))
+      (should (string-match-p "efrit-default-max-tokens" (car notes)))
+      ;; The request asked for the configured limit, not a literal.
+      (should (integerp efrit-default-max-tokens))
+      (should (> efrit-default-max-tokens 8192)))))
+
 (ert-deftest test-repl-loop-turn-resets-tool-counters ()
   "Each turn starts with fresh tool counters; they used to span the Emacs process."
   (require 'efrit-tools)

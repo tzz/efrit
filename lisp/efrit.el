@@ -286,6 +286,15 @@ Executes all ERT tests and displays results in a buffer."
 (autoload 'efrit-list-registered-tools "efrit-tool-registry"
   "Show the tools other packages have registered with efrit." t)
 ;;;###autoload
+(autoload 'efrit-prompts-manage "efrit-prompts"
+  "List and edit efrit's two-part prompts for analyses over many items." t)
+;;;###autoload
+(autoload 'efrit-prompts-edit "efrit-prompts"
+  "Edit one of efrit's two-part prompts, or write a new one." t)
+;;;###autoload
+(autoload 'efrit-prompts-read "efrit-prompts"
+  "Ask the user for a two-part prompt; returns (ITEM . SUMMARY).")
+;;;###autoload
 (autoload 'efrit-gnus-analyze "efrit-gnus"
   "Ask efrit about the selected articles in a Gnus summary." t)
 ;;;###autoload

@@ -86,7 +86,8 @@ as the next batch; numbering runs over the whole selection."
 
 (ert-deftest test-efrit-gnus-batches-over-turns ()
   "A selection over the budget is sent as consecutive turns: the first at
-once, each next one when the agent reports idle, then a closing message."
+once, each next one when the agent reports idle, then a closing message.
+One idle event schedules one step; a second idle during a step does not."
   (test-gnus--with-articles
       (mapcar (lambda (n) (cons (cons "nnml:mail" n) (test-gnus--raw (format "m%d" n) (make-string 300 ?y))))
               '(1 2 3 4 5))
@@ -98,7 +99,8 @@ once, each next one when the agent reports idle, then a closing message."
                 ((symbol-function 'efrit-subscribe) (lambda (type fn) (push (cons type fn) subscribed) fn))
                 ((symbol-function 'run-at-time) (lambda (_s _r fn &rest _) (push fn timers) nil)))
         (let ((efrit-gnus-max-chars 900) (efrit-gnus-confirm nil)
-              (efrit-gnus--queue nil) (efrit-gnus--closing nil) (efrit-gnus--watching nil))
+              (efrit-gnus--queue nil) (efrit-gnus--closing nil) (efrit-gnus--watching nil)
+              (efrit-gnus--sending nil))
           (efrit-gnus--submit (mapcar (lambda (n) (cons "nnml:mail" n)) '(1 2 3 4 5))
                               '("Triage." . "Overall triage.") "unread in mail")
           ;; First batch went out: articles 1-2 of 5, and it says so.
@@ -106,35 +108,54 @@ once, each next one when the agent reports idle, then a closing message."
           (should (equal "analyze articles 1-2 of 5 from unread in mail: Triage." (car (car submitted))))
           (should (string-match-p "articles 1-2 here, the rest follow" (cdr (car submitted))))
           (should (= 1 (length efrit-gnus--queue)))
-          (should subscribed)
+          (should (= 1 (length subscribed)))
           ;; Agent goes idle: the next batch is scheduled and sent.
-          (efrit-gnus--send-next '((:status . idle)))
-          (should timers) (funcall (pop timers))
+          (efrit-gnus--on-status '((:status . working)))
+          (should-not timers)
+          (efrit-gnus--on-status '((:status . idle)))
+          (should (= 1 (length timers)))
+          ;; While the step runs, another idle must not start a second one.
+          (let ((efrit-gnus--sending t))
+            (efrit-gnus--on-status '((:status . idle)))
+            (should (= 1 (length timers))))
+          (funcall (pop timers))
           (should (= 2 (length submitted)))
           (should (equal "analyze articles 3-4 of 5 from unread in mail: Triage." (car (car submitted))))
-          (efrit-gnus--send-next '((:status . idle)))
+          (efrit-gnus--on-status '((:status . idle)))
           (funcall (pop timers))
           (should (= 3 (length submitted)))
           (should (equal "analyze articles 5-5 of 5 from unread in mail: Triage." (car (car submitted))))
           (should-not efrit-gnus--queue)
           (should (equal "Overall triage." efrit-gnus--closing))
-          ;; The closing does not fire while batches remain or on non-idle.
-          (efrit-gnus--send-closing '((:status . working)))
-          (should-not timers)
-          (efrit-gnus--send-closing '((:status . idle)))
+          ;; The closing goes out on the next idle, after the last batch.
+          (efrit-gnus--on-status '((:status . idle)))
           (funcall (pop timers))
           (should (= 4 (length submitted)))
           (should (equal "over the whole selection" (car (car submitted))))
           (should (string-match-p "That was the whole selection. Overall triage." (cdr (car submitted))))
-          (should-not efrit-gnus--closing))))))
+          (should-not efrit-gnus--closing)
+          ;; Nothing left: idle schedules nothing.
+          (efrit-gnus--on-status '((:status . idle)))
+          (should-not timers)
+          ;; Cancel drops what is queued.
+          (setq efrit-gnus--queue '(x) efrit-gnus--closing "c")
+          (efrit-gnus-cancel)
+          (should-not efrit-gnus--queue) (should-not efrit-gnus--closing))))))
 
 (ert-deftest test-efrit-gnus-prompts-are-pairs ()
-  "Every built-in prompt has a per-batch and an over-everything part."
-  (dolist (e efrit-gnus-prompts)
-    (should (stringp (car e)))
-    (should (stringp (cadr e)))
-    (should (stringp (cddr e))))
-  (should (assoc "trends, accomplishments, concerns" efrit-gnus-prompts)))
+  "Every built-in prompt has a per-batch and an over-everything part, and
+a name or a plist resolves to that pair."
+  (should (>= (length efrit-prompts-builtin) 9))
+  (dolist (p efrit-prompts-builtin)
+    (should (stringp (plist-get p :name)))
+    (should (stringp (plist-get p :item)))
+    (should (stringp (plist-get p :summary))))
+  (let ((efrit-prompts--loaded t) (efrit-prompts--user nil))
+    (should (efrit-prompts-get "trends, accomplishments, concerns"))
+    (should (equal (efrit-gnus--prompt-pair "triage")
+                   (efrit-gnus--prompt-pair (efrit-prompts-get "triage"))))
+    (should (equal (efrit-gnus--prompt-pair "Which mention budgets?")
+                   '("Which mention budgets?" . nil)))))
 
 (ert-deftest test-efrit-gnus-submit-builds-turn ()
   "The submission fills the prompt, confirms once, and hands efrit a short
@@ -157,7 +178,7 @@ shown line plus the full API text; a busy efrit is a user error."
           (should (string-match-p "gnus_search and gnus_articles" (cadr submitted)))
           (should (string-match-p "=== Article 1 of 2 ===" (cadr submitted)))
           (should (string-match-p "Subject: m2" (cadr submitted)))
-          (efrit-gnus--submit '(("nnml:mail" . 1)) (cdr (assoc "summarize" efrit-gnus-prompts)))
+          (efrit-gnus--submit '(("nnml:mail" . 1)) "summarize")
           (should (equal "analyze 1 article from the selection: summarize" (car submitted)))
           ;; The summary prompt is armed for after the turn.
           (should (string-match-p "main threads and themes" efrit-gnus--closing))

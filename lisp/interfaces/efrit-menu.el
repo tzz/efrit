@@ -129,6 +129,7 @@
         :description (lambda () (efrit-menu--desc-toggle "Prompt caching" 'efrit-api-prompt-caching)))
        ("b" efrit-menu-toggle-sandbox :transient t :description efrit-menu--desc-permissions)
        ("x" "Permissions editor (grants, review, limits)" efrit-permissions)
+       ("p" "Prompt library (per-item / over-everything prompts)" efrit-prompts-manage)
        ("P" "Review an installed package" efrit-review-package)
        ("V" "Review all installed packages" efrit-review-all-packages)
        ("X" "Forget session sandbox grants" efrit-sandbox-reset-session :transient t)

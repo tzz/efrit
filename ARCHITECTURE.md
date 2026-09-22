@@ -81,6 +81,13 @@ Gnus articles with an analysis prompt and registers `gnus_groups`,
 `gnus_search` and `gnus_articles`; nngmail adds Gmail-specific tools on
 top of it from its own repository.
 
+Prompts for such analyses come from `efrit-prompts.el` (lisp/interfaces):
+a library of two-part prompts (one part per batch of items, one over
+everything), with built-ins from `efrit-prompts-define`, the user's own
+in `prompts.json` under `efrit-data-directory`, a transient chooser
+(`efrit-prompts-read`), and a manager/editor (`M-x efrit-prompts-manage`)
+that can ask the model for an improved version.
+
 ## 📦 **MODULE ORGANIZATION & LOAD ORDER**
 
 ### Directory Structure

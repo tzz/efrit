@@ -16,12 +16,14 @@
 ;;    summary buffer, `efrit-gnus-analyze' takes the articles you mean
 ;;    (the active region's lines, else the process-marked ones, else
 ;;    the one at point), a prompt chosen by name from
-;;    `efrit-gnus-prompts' or typed, and starts an efrit turn with the
+;;    the prompt library or typed, and starts an efrit turn with the
 ;;    articles inlined as text.  `efrit-gnus-analyze-thread' takes the
 ;;    thread at point, `efrit-gnus-analyze-unread' every unread article
 ;;    of a group, `efrit-gnus-analyze-group' the newest N of a group,
 ;;    and `efrit-gnus-analyze-search' the results of a Gnus search
-;;    (`gnus-search', so the query syntax is your server's).  The turn
+;;    (`gnus-search', so the query syntax is your server's).  The
+;;    prompts are efrit-prompts' library (`e' in the chooser or
+;;    `M-x efrit-prompts-manage' edits them).  The turn
 ;;    shows in the efrit buffer as one line ("analyze 12 articles from
 ;;    unread in INBOX: triage"); the model receives the prompt and the
 ;;    text.
@@ -56,9 +58,14 @@
 ;; the article in everything the model sees, with no extra command.
 ;;
 ;; Privacy: article text goes to the model efrit is configured for, as
-;; anything you ask efrit does.  The first analysis in an Emacs session
-;; says how many articles and characters it is about to send and asks;
-;; see `efrit-gnus-confirm'.
+;; anything you ask efrit does.  Nothing asks first; you chose the
+;; articles and the prompt.  `efrit-gnus-confirm' can make it ask.
+;;
+;; Size: a selection larger than `efrit-gnus-max-chars' goes out as
+;; consecutive turns.  Each prompt in the library has two
+;; parts: one asked of every batch, one asked once at the end over the
+;; whole selection.  `efrit-gnus-cancel' stops the batches still
+;; queued.
 ;;
 ;; Keys: `efrit-gnus-map' is bound under `efrit-gnus-summary-prefix-key'
 ;; (default `C-c g') in every Gnus summary and group buffer, and the analyze
@@ -79,6 +86,7 @@
 (require 'nnheader)
 (require 'message)
 (require 'efrit-events)
+(require 'efrit-prompts)
 
 (declare-function efrit-register-tool "efrit-tool-registry")
 (declare-function efrit-unregister-package-tools "efrit-tool-registry")
@@ -97,48 +105,52 @@
   :group 'efrit
   :prefix "efrit-gnus-")
 
-(defcustom efrit-gnus-prompts
-  '(("summarize"
-     "Summarize each of these messages in two or three lines: what it says, who wants what from whom, anything decided or due."
-     . "Now, across everything you were sent: what are the main threads and themes, what changed over time, what recurs, and what stands out as important or unresolved. One consolidated summary, longest section first.")
-    ("action items"
-     "List every action item, request or deadline in these messages, each with who asked, who must act, and by when. Say which are addressed to me. Omit anything already done."
-     . "Across all of them: one consolidated action list, deduplicated, grouped by owner, mine first, dated where dates exist. Flag items that appear more than once or seem overdue.")
-    ("draft replies"
-     "For each message that expects a reply from me, draft one in my voice: brief, plain, specific. Show the draft under the message's subject. Say which messages need no reply and why."
-     . "Across all of them: which replies are urgent, which can be one combined reply to the same person or thread, and which can wait. Order them.")
-    ("who and what"
-     "Who are the people in these messages and what does each one want or report? One line per person per message."
-     . "Across all of them: one entry per person, merged: what they are working on, asking for, or blocked by over the whole period.")
-    ("timeline"
-     "Put the events, decisions and commitments in these messages on a dated timeline, oldest first, with the message each comes from."
-     . "Merge into one timeline over the whole selection, oldest first. Then name the turning points: where a plan changed, a decision was reversed, or a deadline moved.")
-    ("triage"
-     "Sort these messages into: needs my reply today, needs my reply this week, read only, ignore. One line each with the reason. Be decisive."
-     . "Across all of them: the short list of what I must do today, then this week. Nothing else.")
-    ("extract"
-     "Extract every concrete fact from these messages -- names, dates, amounts, links, identifiers, decisions -- as a table with the message it came from."
-     . "One merged table over everything, duplicates collapsed, sorted by date. Then note any facts that conflict between messages.")
-    ("tone check"
-     "Read these messages for tone: is anyone upset, blocked, or waiting on me? Quote the line that tells you and say what a good response would be."
-     . "Across all of them: who is unhappy or waiting, and for how long; whether it is getting better or worse over the period.")
-    ("trends, accomplishments, concerns"
-     "For each message, note in one line: the topics it covers, anything finished or decided, and anything worrying or blocked."
-     . "Now, over the whole selection, three sections. Trends: the recurring topics and how each moved over the period, with dates. Accomplishments: what got done or decided, by whom. Concerns: what is blocked, slipping, contested, or keeps coming back unresolved, and since when. Write it as a briefing someone who read none of these could act on; name people and dates."))
-  "Named prompts offered by the analysis commands.
-Each entry is (NAME ITEM-PROMPT . SUMMARY-PROMPT).  ITEM-PROMPT goes
-with each batch of articles; SUMMARY-PROMPT is sent afterwards, once,
-and asks for the answer over the whole selection.  So a hundred
-recaps get a per-recap pass and then one briefing on what the hundred
-add up to.  A prompt you type at the prompt is used as ITEM-PROMPT and
-the summary asks the same question over everything.  Prompts may
-mention the group, the count and the query with the placeholders
-{group}, {count} and {query}."
-  :type '(alist :key-type string
-                :value-type (cons (string :tag "Per batch") (string :tag "Over everything"))))
+;;;; Prompts
+;; The named prompts live in efrit-prompts (a library with an editor,
+;; `M-x efrit-prompts-manage'); these are the built-in ones.  Each has
+;; a per-batch part and an over-everything part.  Prompts may mention
+;; the group, the count and the query with the placeholders {group},
+;; {count} and {query}.
+
+(efrit-prompts-define
+ "summarize"
+ "Summarize each of these messages in two or three lines: what it says, who wants what from whom, anything decided or due."
+ "Now, across everything you were sent: what are the main threads and themes, what changed over time, what recurs, and what stands out as important or unresolved. One consolidated summary, longest section first.")
+(efrit-prompts-define
+ "action items"
+ "List every action item, request or deadline in these messages, each with who asked, who must act, and by when. Say which are addressed to me. Omit anything already done."
+ "Across all of them: one consolidated action list, deduplicated, grouped by owner, mine first, dated where dates exist. Flag items that appear more than once or seem overdue.")
+(efrit-prompts-define
+ "draft replies"
+ "For each message that expects a reply from me, draft one in my voice: brief, plain, specific. Show the draft under the message's subject. Say which messages need no reply and why."
+ "Across all of them: which replies are urgent, which can be one combined reply to the same person or thread, and which can wait. Order them.")
+(efrit-prompts-define
+ "who and what"
+ "Who are the people in these messages and what does each one want or report? One line per person per message."
+ "Across all of them: one entry per person, merged: what they are working on, asking for, or blocked by over the whole period.")
+(efrit-prompts-define
+ "timeline"
+ "Put the events, decisions and commitments in these messages on a dated timeline, oldest first, with the message each comes from."
+ "Merge into one timeline over the whole selection, oldest first. Then name the turning points: where a plan changed, a decision was reversed, or a deadline moved.")
+(efrit-prompts-define
+ "triage"
+ "Sort these messages into: needs my reply today, needs my reply this week, read only, ignore. One line each with the reason. Be decisive."
+ "Across all of them: the short list of what I must do today, then this week. Nothing else.")
+(efrit-prompts-define
+ "extract"
+ "Extract every concrete fact from these messages -- names, dates, amounts, links, identifiers, decisions -- as a table with the message it came from."
+ "One merged table over everything, duplicates collapsed, sorted by date. Then note any facts that conflict between messages.")
+(efrit-prompts-define
+ "tone check"
+ "Read these messages for tone: is anyone upset, blocked, or waiting on me? Quote the line that tells you and say what a good response would be."
+ "Across all of them: who is unhappy or waiting, and for how long; whether it is getting better or worse over the period.")
+(efrit-prompts-define
+ "trends, accomplishments, concerns"
+ "For each message, note in one line: the topics it covers, anything finished or decided, and anything worrying or blocked."
+ "Now, over the whole selection, three sections. Trends: the recurring topics and how each moved over the period, with dates. Accomplishments: what got done or decided, by whom. Concerns: what is blocked, slipping, contested, or keeps coming back unresolved, and since when. Write it as a briefing someone who read none of these could act on; name people and dates.")
 
 (defcustom efrit-gnus-default-prompt "summarize"
-  "Name of the prompt in `efrit-gnus-prompts' offered first."
+  "Name of the prompt offered first, when none was used yet this session."
   :type 'string)
 
 (defcustom efrit-gnus-article-max-chars 12000
@@ -310,7 +322,8 @@ mark changes."
       (buffer-string))))
 
 (defun efrit-gnus--article-links (body)
-  "Distinct URLs in BODY, in order of first appearance, trailing punctuation dropped."
+  "Distinct URLs in BODY in order of first appearance.
+Trailing punctuation is dropped."
   (let (out (start 0))
     (while (string-match efrit-gnus-expand-link-regexp body start)
       (let ((url (string-trim-right (match-string 0 body) "[.,;:!?)]+")))
@@ -433,25 +446,20 @@ article larger than the whole budget goes out alone, cut by
 
 ;;;; Prompts and submission
 
-(defvar efrit-gnus-prompt-history nil)
 (defvar efrit-gnus-query-history nil)
 
-(defun efrit-gnus--read-prompt (&optional default)
-  "Ask for a prompt: a name from `efrit-gnus-prompts' or free text.
-Returns (ITEM-PROMPT . SUMMARY-PROMPT); for typed text the summary
-prompt is nil and `efrit-gnus--summary-prompt' derives one."
-  (let* ((names (mapcar #'car efrit-gnus-prompts))
-         (default (or default efrit-gnus-default-prompt))
-         (choice (completing-read
-                  (format "Ask efrit (name or your own question, default %s): " default)
-                  names nil nil nil 'efrit-gnus-prompt-history default)))
-    (or (cdr (assoc choice efrit-gnus-prompts)) (cons choice nil))))
+(defun efrit-gnus--read-prompt (&optional default purpose)
+  "Ask for a prompt through `efrit-prompts-read'.
+Returns (ITEM-PROMPT . SUMMARY-PROMPT); for typed text the summary is
+nil and `efrit-gnus--summary-prompt' derives one.  DEFAULT names the
+prompt offered first, PURPOSE heads the chooser."
+  (efrit-prompts-read (or purpose "Ask efrit about the articles")
+                      (or default efrit-prompts-last efrit-gnus-default-prompt)))
 
 (defun efrit-gnus--prompt-pair (prompt)
-  "PROMPT as (ITEM . SUMMARY): a pair passes through, a string gets no summary."
-  (cond ((consp prompt) prompt)
-        ((stringp prompt) (cons prompt nil))
-        (t (error "efrit-gnus: bad prompt %S" prompt))))
+  "PROMPT as (ITEM . SUMMARY): a pair or plist passes through, a name is
+looked up, any other string is a question with no summary."
+  (efrit-prompts-pair prompt))
 
 (defun efrit-gnus--summary-prompt (pair)
   "The over-everything prompt of PAIR, derived from the item prompt when absent."
@@ -469,7 +477,7 @@ prompt is nil and `efrit-gnus--summary-prompt' derives one."
 
 (defun efrit-gnus--prompt-name (prompt)
   "The short name of PROMPT (an item prompt string) for the conversation line."
-  (or (car (seq-find (lambda (e) (equal (cadr e) prompt)) efrit-gnus-prompts))
+  (or (efrit-prompts-name-of prompt)
       (truncate-string-to-width prompt 40 nil nil "…")))
 
 (defun efrit-gnus--confirm (count chars)
@@ -527,43 +535,66 @@ turn started."
         (user-error "efrit is busy with another turn; try again when it is idle"))
       t)))
 
-(defun efrit-gnus--send-next (event)
-  "On the agent going idle, send the next queued batch."
-  (when (and efrit-gnus--queue
-             (eq (alist-get :status event) 'idle))
-    (let ((batch (car (last efrit-gnus--queue))))
-      (setq efrit-gnus--queue (butlast efrit-gnus--queue))
-      (pcase-let ((`(,refs ,prompt ,where ,offset ,total) batch))
-        ;; Not from inside the event: let the turn finish tearing down.
-        (run-at-time 0.1 nil
-                     (lambda ()
-                       (condition-case err
-                           (efrit-gnus--submit-batch refs prompt where offset total)
-                         (error
-                          (setq efrit-gnus--queue nil efrit-gnus--closing nil)
-                          (message "efrit-gnus: batch stopped: %s" (error-message-string err))))))))))
+(defun efrit-gnus-cancel ()
+  "Stop sending the rest of the current selection and its closing summary.
+The turn in flight finishes on its own."
+  (interactive)
+  (if (or efrit-gnus--queue efrit-gnus--closing)
+      (efrit-gnus--stop-batches "cancelled")
+    (message "efrit-gnus: nothing queued")))
 
-(defun efrit-gnus--send-closing (event)
-  "After the last batch's turn, send the summary prompt over the whole selection."
-  (when (and efrit-gnus--closing (null efrit-gnus--queue)
-             (eq (alist-get :status event) 'idle))
-    (let ((prompt efrit-gnus--closing))
-      (setq efrit-gnus--closing nil)
-      (run-at-time 0.1 nil
-                   (lambda ()
-                     (efrit-submit "over the whole selection"
-                                   (concat "That was the whole selection. " prompt)))))))
+(defvar efrit-gnus--sending nil
+  "Non-nil while a queued batch is being rendered and submitted.
+Rendering runs the event loop (network fetches for linked documents),
+so a second idle event can arrive meanwhile; this keeps it from
+starting anything.")
+
+(defun efrit-gnus--stop-batches (why)
+  "Drop the queue and the closing prompt, saying WHY."
+  (setq efrit-gnus--queue nil efrit-gnus--closing nil efrit-gnus--sending nil)
+  (message "efrit-gnus: batch stopped: %s" why))
+
+(defun efrit-gnus--send-next-batch ()
+  "Send the oldest queued batch; the closing prompt when none is left."
+  (setq efrit-gnus--sending t)
+  (unwind-protect
+      (condition-case err
+          (if efrit-gnus--queue
+              (let ((batch (car (last efrit-gnus--queue))))
+                (setq efrit-gnus--queue (butlast efrit-gnus--queue))
+                (pcase-let ((`(,refs ,prompt ,where ,offset ,total) batch))
+                  (efrit-gnus--submit-batch refs prompt where offset total)))
+            (when efrit-gnus--closing
+              (let ((prompt efrit-gnus--closing))
+                (setq efrit-gnus--closing nil)
+                (unless (efrit-submit "over the whole selection"
+                                      (concat "That was the whole selection. " prompt))
+                  (user-error "efrit is busy; the closing summary was not sent")))))
+        (error (efrit-gnus--stop-batches (error-message-string err))))
+    (setq efrit-gnus--sending nil)))
+
+(defun efrit-gnus--on-status (event)
+  "On the agent going idle, continue the selection: next batch, then the closing.
+One handler decides in order, so the closing prompt can never overtake
+a batch that is still rendering (two handlers racing did exactly that:
+the summary went out after batch one and the second batch found the
+session busy)."
+  (when (and (eq (alist-get :status event) 'idle)
+             (not efrit-gnus--sending)
+             (or efrit-gnus--queue efrit-gnus--closing))
+    ;; Not from inside the event: let the turn finish tearing down.
+    (run-at-time 0.1 nil #'efrit-gnus--send-next-batch)))
 
 (defun efrit-gnus--watch-for-idle ()
   "Subscribe once to the agent's status events."
   (unless efrit-gnus--watching
-    (efrit-subscribe 'status #'efrit-gnus--send-next)
-    (efrit-subscribe 'status #'efrit-gnus--send-closing)
+    (efrit-subscribe 'status #'efrit-gnus--on-status)
     (setq efrit-gnus--watching t)))
 
 (defun efrit-gnus--submit (refs prompt &optional where group query)
   "Render REFS and run PROMPT over them: per batch, then over everything.
-PROMPT is (ITEM . SUMMARY) from `efrit-gnus-prompts', or a string.
+PROMPT is (ITEM . SUMMARY), a prompt name, a plist from `efrit-prompts',
+or a question as a string.
 WHERE names the selection in the conversation line (\"unread in
 INBOX\"); GROUP and QUERY fill the placeholders.  The articles go out
 in as many turns as `efrit-gnus-max-chars' requires, each answered per
@@ -623,8 +654,9 @@ article at point."
   "Ask efrit PROMPT about the selected articles in this summary.
 The selection is the active region's articles, else the process-marked
 ones, else the article at point.  Interactively PROMPT is picked from
-`efrit-gnus-prompts' by name or typed."
-  (interactive (list (efrit-gnus--read-prompt)))
+the prompt library or typed."
+  (interactive (list (efrit-gnus--read-prompt
+                      nil (format "%d selected article(s)" (length (efrit-gnus--summary-refs))))))
   (let ((refs (efrit-gnus--summary-refs)))
     (efrit-gnus--submit refs prompt (format "group %s" (gnus-group-real-name gnus-newsgroup-name))
                         (gnus-group-real-name gnus-newsgroup-name))))
@@ -632,7 +664,7 @@ ones, else the article at point.  Interactively PROMPT is picked from
 ;;;###autoload
 (defun efrit-gnus-analyze-thread (prompt)
   "Ask efrit PROMPT about the thread of the article at point, as shown in this summary."
-  (interactive (list (efrit-gnus--read-prompt)))
+  (interactive (list (efrit-gnus--read-prompt nil "This thread")))
   (unless (derived-mode-p 'gnus-summary-mode)
     (user-error "efrit-gnus: not in a summary buffer"))
   (let ((numbers (gnus-summary-articles-in-thread)))
@@ -645,7 +677,10 @@ ones, else the article at point.  Interactively PROMPT is picked from
   "Ask efrit PROMPT about every unread article of GROUP.
 Interactively GROUP is the current one in a summary or on a group line.
 Nothing is marked read by this.  Defaults to the `triage' prompt."
-  (interactive (list (efrit-gnus--group-for-command) (efrit-gnus--read-prompt "triage")))
+  (interactive (let ((g (efrit-gnus--group-for-command)))
+                 (list g (efrit-gnus--read-prompt
+                          "triage" (format "%d unread in %s" (length (gnus-list-of-unread-articles g))
+                                           (gnus-group-real-name g))))))
   (let ((numbers (gnus-list-of-unread-articles group)))
     (when (null numbers) (user-error "efrit-gnus: nothing unread in %s" (gnus-group-real-name group)))
     (efrit-gnus--submit (mapcar (lambda (n) (cons group n)) numbers)
@@ -660,7 +695,7 @@ Interactively COUNT is the prefix argument or is asked for."
    (let* ((g (efrit-gnus--group-for-command))
           (n (if current-prefix-arg (prefix-numeric-value current-prefix-arg)
                (read-number (format "Newest how many of %s? " (gnus-group-real-name g)) 20))))
-     (list g n (efrit-gnus--read-prompt))))
+     (list g n (efrit-gnus--read-prompt nil (format "Newest %d of %s" n (gnus-group-real-name g))))))
   (let* ((numbers (efrit-gnus--group-article-numbers group))
          (newest (last numbers count)))
     (when (null newest) (user-error "efrit-gnus: %s is empty" (gnus-group-real-name group)))
@@ -676,7 +711,7 @@ passed raw.  At most `efrit-gnus-search-limit' results are used."
   (interactive
    (list (gnus-completing-read "Server" (mapcar #'car gnus-server-alist) t)
          (read-string "Search query: " nil 'efrit-gnus-query-history)
-         (efrit-gnus--read-prompt)))
+         (efrit-gnus--read-prompt nil "Search results")))
   (let ((refs (efrit-gnus--search server query efrit-gnus-search-limit)))
     (when (null refs) (user-error "efrit-gnus: no results for %S" query))
     (efrit-gnus--submit refs prompt (format "search %S on %s" query server) nil query)))
@@ -807,6 +842,8 @@ each file as it loads."
     (define-key map "u" #'efrit-gnus-analyze-unread)
     (define-key map "g" #'efrit-gnus-analyze-group)
     (define-key map "s" #'efrit-gnus-analyze-search)
+    (define-key map "e" #'efrit-prompts-manage)
+    (define-key map "k" #'efrit-gnus-cancel)
     map)
   "Keymap of the efrit commands for Gnus.")
 
@@ -826,7 +863,10 @@ reload rebuilds)."
     ["About this thread..." efrit-gnus-analyze-thread t]
     ["About all unread here..." efrit-gnus-analyze-unread t]
     ["About the newest N here..." efrit-gnus-analyze-group t]
-    ["About a search..." efrit-gnus-analyze-search t])
+    ["About a search..." efrit-gnus-analyze-search t]
+    "---"
+    ["Edit the prompts..." efrit-prompts-manage t]
+    ["Stop the batches still queued" efrit-gnus-cancel t])
   "The submenu added to Gnus's Article menu.")
 
 (defun efrit-gnus--install-menu ()

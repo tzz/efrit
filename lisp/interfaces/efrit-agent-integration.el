@@ -142,6 +142,10 @@ Uses proper accessor functions to avoid fragility when struct changes."
 
 (defun efrit-agent--on-thinking-start (event)
   (efrit-agent--in-agent-buffer
+    ;; The spinner timer drives both the in-buffer line and the
+    ;; mode-line glyph; `efrit-agent--show-thinking' only inserts
+    ;; the line.  Without the timer both stand still.
+    (efrit-agent--spinner-start (alist-get :label event))
     (efrit-agent--show-thinking (alist-get :label event))))
 
 (defun efrit-agent--on-thinking-stop (_event)

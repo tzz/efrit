@@ -56,6 +56,25 @@
     (should (eq efrit-agent--status 'working))
     (should efrit-agent--start-time)))
 
+;;; Spinner
+
+(ert-deftest test-efrit-agent-thinking-start-runs-spinner ()
+  "A thinking-start event starts the spinner timer: the label is set and a
+repeating timer exists, so the in-buffer line and the mode-line glyph
+animate.  thinking-stop clears both."
+  (with-efrit-agent-test-buffer
+    (efrit-agent--spinner-stop)
+    (efrit-publish 'thinking-start '((:session-id . "s") (:label . "waiting for Claude...")))
+    (unwind-protect
+        (progn
+          (should (equal efrit-agent--thinking-label "waiting for Claude..."))
+          (should (timerp efrit-agent--spinner-timer))
+          (should (memq efrit-agent--spinner-timer timer-list))
+          (efrit-publish 'thinking-stop '((:session-id . "s")))
+          (should-not efrit-agent--thinking-label)
+          (should-not efrit-agent--spinner-timer))
+      (efrit-agent--spinner-stop))))
+
 ;;; Status rendering tests
 
 (ert-deftest test-efrit-agent-status-idle ()
