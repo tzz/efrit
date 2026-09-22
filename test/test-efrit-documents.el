@@ -198,8 +198,9 @@ advice is installed, without it."
     (should (string-match-p "\\[document not fetched: no such doc\\]" (efrit-documents-expand-url "https://fake/zzz")))))
 
 (ert-deftest test-efrit-documents-related-and-search ()
-  "Related documents are found by the title's words near the date,
-without the ones already linked; the tools list and fetch."
+  "With the title search opted in, related documents are found by the
+title's words near the date, without the ones already linked; the tools
+list and fetch.  Off by default: providers only."
   (test-docs--with-source
       (list (cons "r1" (list :title "Widget bringup prep - recap" :modified "2026-09-15T10:00:00Z" :text "recap"))
             (cons "n1" (list :title "Notes: Widget bringup prep" :modified "2026-09-15T11:00:00Z" :text "notes"))
@@ -207,17 +208,21 @@ without the ones already linked; the tools list and fetch."
             (cons "o1" (list :title "Other" :modified "2026-09-15T11:00:00Z" :text "other")))
     (should (equal '("widget" "bringup" "prep")
                    (efrit-documents-title-words "Recap: Widget bringup prep 2026-09-15")))
+    ;; Default: no providers, no search, nothing.
+    (should-not (efrit-documents-related '(:title "Recap: Widget bringup prep" :date "2026-09-15T12:00:00Z")))
     ;; Sources match any one word; the full match ranks above the
     ;; one-word match even though the latter is newer.
-    (let ((related (efrit-documents-related '(:title "Recap: Widget bringup prep" :date "2026-09-15T12:00:00Z"
-                                                    :urls ("https://fake/r1")))))
+    (let* ((efrit-documents-related-search t)
+           (related (efrit-documents-related '(:title "Recap: Widget bringup prep" :date "2026-09-15T12:00:00Z"
+                                                     :urls ("https://fake/r1")))))
       (should (equal '("n1" "w1") (mapcar (lambda (d) (plist-get d :id)) related))))
-    ;; The title "Recap Bot: 2026-09-21 - The Overclockers" reduces to
-    ;; one word, and "Notes - The Overclockers" shares it.
-    (should (equal '("overclockers") (efrit-documents-title-words "Recap Bot: 2026-09-21 - The Overclockers")))
-    (should (= 1 (efrit-documents--overlap '("overclockers") "Notes - The Overclockers")))
-    (should (string-match-p "Related document (fake): https://fake/n1 ---\nTitle: Notes"
-                            (efrit-documents-related-text '(:title "Widget bringup prep" :date "2026-09-15"))))
+    ;; The title "Recap: 2026-09-21 - Platform weekly" reduces to
+    ;; one word, and "Notes - Platform weekly" shares it.
+    (should (equal '("platform") (efrit-documents-title-words "Recap: 2026-09-21 - Platform weekly")))
+    (should (= 1 (efrit-documents--overlap '("platform") "Notes - Platform weekly")))
+    (let ((efrit-documents-related-search t))
+      (should (string-match-p "Related document (fake): https://fake/n1 ---\nTitle: Notes"
+                              (efrit-documents-related-text '(:title "Widget bringup prep" :date "2026-09-15")))))
     (should-not (efrit-documents-related '(:title "the of and" :date nil)))
     ;; Tools.
     (should (string-match-p "2 documents.*\n- fake:r1\\|- fake:n1"
@@ -294,6 +299,31 @@ maps files.list; auth errors become document errors with the reason."
           (should (equal "sheet" (plist-get (cadr found) :kind))))
         (let ((err (should-error (efrit-documents-source-fetch s "GONE" 'markdown) :type 'efrit-documents-error)))
           (should (string-match-p "not found (404): File not found: GONE" (cadr err))))))))
+
+(ert-deftest test-efrit-documents-gdrive-export-falls-back-when-too-large ()
+  "Drive refuses exports over 10 MB; HTML falls back to Markdown, then text,
+and the document says which format it got; refused everywhere is an error."
+  (let ((asked nil) (efrit-documents--cache (make-hash-table :test #'equal)))
+    (cl-letf (((symbol-function 'efrit-documents-gdrive--find-host) (lambda (_s) "gmail"))
+              ((symbol-function 'efrit-auth-request)
+               (cl-function
+                (lambda (_host _method url &key params &allow-other-keys)
+                  (cond
+                   ((string-suffix-p "/export" url)
+                    (let ((mime (cdr (assoc "mimeType" params))))
+                      (push mime asked)
+                      (if (and (equal mime "text/plain") (string-match-p "/BIG/" url))
+                          "Plain text of the big doc"
+                        (signal 'efrit-auth-http-error (list 403 "This file is too large to be exported." url)))))
+                   (t '((id . "BIG") (name . "Big") (mimeType . "application/vnd.google-apps.document")
+                        (modifiedTime . "2026-09-21T10:00:00Z"))))))))
+      (let* ((s (efrit-document-source-gdrive :name "gdrive"))
+             (doc (efrit-documents-source-fetch s "BIG" 'html)))
+        (should (equal "Plain text of the big doc" (plist-get doc :text)))
+        (should (eq 'text (plist-get doc :format)))
+        (should (equal '("text/html" "text/markdown" "text/plain") (reverse asked)))
+        (let ((err (should-error (efrit-documents-source-fetch s "HUGE" 'markdown) :type 'efrit-documents-error)))
+          (should (string-match-p "any text format" (cadr err))))))))
 
 ;;;; The Confluence source
 
@@ -396,7 +426,8 @@ date bounds; title: markers resolve by a lookup."
   "A provider's documents come before the title search and are not duplicated by it."
   (test-docs--with-source
       (list (cons "n1" (list :title "Notes: Widget sync" :modified "2026-09-15T11:00:00Z" :text "notes")))
-    (let ((efrit-documents-related-functions
+    (let ((efrit-documents-related-search t)
+          (efrit-documents-related-functions
            (list (lambda (item)
                    (should (equal "Widget sync" (plist-get item :title)))
                    (list (list :source "fake" :id "n1" :title "old name")
@@ -407,12 +438,12 @@ date bounds; title: markers resolve by a lookup."
         ;; The provider's title wins; the search did not add n1 again.
         (should (equal "old name" (plist-get (car docs) :title)))))))
 
-(ert-deftest test-efrit-documents-gcalendar-finds-renamed-meeting ()
-  "The event is found by date, people and words even when the notes and the
-event were renamed; its Drive attachments come back as documents."
+(ert-deftest test-efrit-documents-gcalendar-exact-rule ()
+  "The day comes from the title's date; that day's events are listed; only
+the event whose title the item's title contains gives its attachments.
+No word scoring: a same-day event with a shared word does not count."
   (let ((calls nil) (efrit-documents-gcalendar--host nil) (efrit-documents--sources nil)
-        (efrit-documents-gcalendar-calendars '("primary"))
-        (efrit-documents-related-days 3))
+        (efrit-documents-gcalendar-calendars '("primary")))
     (efrit-documents-gdrive-register)
     (cl-letf (((symbol-function 'efrit-auth-credentials)
                (lambda (host &optional _user)
@@ -424,38 +455,51 @@ event were renamed; its Drive attachments come back as documents."
                 (lambda (host _method url &key params &allow-other-keys)
                   (push (list host url params) calls)
                   (should (string-match-p "/calendars/primary/events\\'" url))
-                  '((items . (((id . "e1") (summary . "Widget platform weekly (was: bringup prep)")
+                  '((items . (((id . "e1") (summary . "Platform weekly")
                                (htmlLink . "https://calendar.google.com/event?eid=e1")
-                               (start . ((dateTime . "2026-09-15T14:00:00Z")))
-                               (organizer . ((email . "Lead@example.com")))
-                               (attendees . (((email . "me@example.com"))))
-                               (attachments . (((fileId . "NOTES1") (title . "Notes: Old bringup name")
+                               (start . ((dateTime . "2026-09-21T14:00:00Z")))
+                               (attachments . (((fileId . "NOTES1") (title . "Notes - Platform weekly")
                                                 (fileUrl . "https://docs.google.com/document/d/NOTES1/edit")
                                                 (mimeType . "application/vnd.google-apps.document"))
                                                ((fileUrl . "https://example.com/deck.pdf") (title . "deck")))))
-                              ((id . "e2") (summary . "Lunch")
-                               (start . ((dateTime . "2026-09-15T12:00:00Z")))
-                               (attachments . (((fileId . "LUNCH") (title . "menu")))))
-                              ((id . "e3") (summary . "Widget retro") (start . ((dateTime . "2026-09-16T10:00:00Z")))))))))))
+                              ((id . "e2") (summary . "Platform budget review")
+                               (start . ((dateTime . "2026-09-21T12:00:00Z")))
+                               (attachments . (((fileId . "BUDGET") (title . "budget")))))
+                              ((id . "e3") (summary . "Lunch") (start . ((dateTime . "2026-09-21T13:00:00Z")))))))))))
+      ;; The mail's Date is the next morning; the title's date wins.
       (let ((docs (efrit-documents-gcalendar-related
-                   '(:title "Recap: Widget platform weekly" :date "2026-09-15T15:00:00Z"
-                     :from "recap-bot@example.com" :participants ("lead@example.com, me@example.com")))))
+                   '(:title "Recap: 2026-09-21 - Platform weekly" :date "2026-09-22T08:00:00Z"))))
         (should (equal "gmail" (car (car calls))))
-        (should (equal "2026-09-12T15:00:00Z" (cdr (assoc "timeMin" (nth 2 (car calls))))))
+        (let ((min (cdr (assoc "timeMin" (nth 2 (car calls)))))
+              (max (cdr (assoc "timeMax" (nth 2 (car calls))))))
+          ;; One calendar day around 2026-09-21 local noon.
+          (should (< (float-time (date-to-time min)) (float-time (date-to-time "2026-09-21T12:00:00"))))
+          (should (> (float-time (date-to-time max)) (float-time (date-to-time "2026-09-21T12:00:00"))))
+          (should (= (* 24 3600) (- (float-time (date-to-time max)) (float-time (date-to-time min))))))
         (should (equal "true" (cdr (assoc "singleEvents" (nth 2 (car calls))))))
-        ;; Only the Drive attachment of the matching event; the PDF link
-        ;; and the lunch menu are not.
+        ;; Only the Drive attachment of the matching event; the budget
+        ;; meeting shares a word and is on the same day, and does not count.
         (should (equal '("NOTES1") (mapcar (lambda (d) (plist-get d :id)) docs)))
         (should (equal "gdrive" (plist-get (car docs) :source)))
-        (should (equal "Widget platform weekly (was: bringup prep)" (plist-get (car docs) :event))))
-      ;; Scoring: two shared words (weekly is a stopword), organizer named (2), same day (1).
-      (let ((event '((summary . "Widget platform weekly") (start . ((dateTime . "2026-09-15T14:00:00Z")))
-                     (organizer . ((email . "lead@example.com"))))))
-        (should (= 5 (efrit-documents-gcalendar-score
-                      event '(:title "Widget platform weekly" :from "lead@example.com") (date-to-time "2026-09-15T15:00:00Z"))))
-        (should (= 0 (efrit-documents-gcalendar-score
-                      event '(:title "Lunch" :from "x@example.com") (date-to-time "2026-09-14T15:00:00Z")))))
-      ;; No date: nothing to look at, no request.
+        (should (equal "Platform weekly" (plist-get (car docs) :event))))
+      ;; The default match rule.
+      (should (efrit-documents-gcalendar-title-matches-p "Notes: Platform weekly" "Platform weekly"))
+      (should (efrit-documents-gcalendar-title-matches-p "platform weekly" "Platform weekly!"))
+      (should-not (efrit-documents-gcalendar-title-matches-p "Platform budget" "Platform weekly"))
+      ;; Whole-word containment, either way round is not: the item must contain the event.
+      (should (efrit-documents-gcalendar-title-matches-p "Platform weekly" "weekly"))
+      (should-not (efrit-documents-gcalendar-title-matches-p "weekly" "Platform weekly"))
+      (should-not (efrit-documents-gcalendar-title-matches-p "x" ""))
+      ;; The primitive with an exact rule of one's own: the day and an
+      ;; equality test, nothing inferred.
+      (should (equal '("NOTES1")
+                     (mapcar (lambda (d) (plist-get d :id))
+                             (efrit-documents-gcalendar-attachments
+                              (date-to-time "2026-09-21T12:00:00")
+                              (lambda (event-title) (equal event-title "Platform weekly"))))))
+      (should-not (efrit-documents-gcalendar-attachments
+                   (date-to-time "2026-09-21T12:00:00") (lambda (e) (equal e "Lunch"))))
+      ;; No date anywhere: nothing to look at, no request.
       (setq calls nil)
       (should-not (efrit-documents-gcalendar-related '(:title "Widget")))
       (should-not calls))))

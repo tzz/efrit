@@ -42,8 +42,9 @@
 ;;   `efrit-documents-expand-url' URL    the text for an analysis, or nil
 ;;   `efrit-documents-search' QUERY      across every source, or one
 ;;   `efrit-documents-related' PLIST     documents that belong with an
-;;                                       item: same title words, near
-;;                                       the same date
+;;                                       item: the calendar event's
+;;                                       attachments (and, opted in, a
+;;                                       title search near the date)
 ;;
 ;; and the model gets `doc_fetch' and `doc_search' tools.  Everything
 ;; is read-only.  Text is capped at `efrit-documents-max-chars'.
@@ -82,8 +83,17 @@ one you never use."
   :type 'integer)
 
 (defcustom efrit-documents-related-limit 3
-  "Most documents `efrit-documents-related' returns per source."
+  "Most documents the title search in `efrit-documents-related' adds."
   :type 'integer)
+
+(defcustom efrit-documents-related-search nil
+  "Whether `efrit-documents-related' also searches sources by title words.
+nil (the default): only `efrit-documents-related-functions' answer, and
+they answer from facts (a calendar event's attachments).  t adds a
+search of every source for the title's words within
+`efrit-documents-related-days' of the date -- more finds, and false
+positives with them."
+  :type 'boolean)
 
 (defcustom efrit-documents-related-days 3
   "Days either side of an item's date within which a document counts as related."
@@ -347,12 +357,12 @@ the log; the others still answer."
 
 (defun efrit-documents-related (item)
   "Documents that belong with ITEM: a plist with :title, :date and optionally :urls.
-Asks `efrit-documents-related-functions' first (a calendar knows the
-meeting's attachments by date, whatever they are called), then
-searches each source for the title's words within
-`efrit-documents-related-days' of :date.  Documents already among
-:urls, and duplicates, are left out.  Returns document plists without
-:text, providers' answers first."
+Asks `efrit-documents-related-functions' (a calendar knows the
+meeting's attachments by date and title); with
+`efrit-documents-related-search' also searches each source for the
+title's words within `efrit-documents-related-days' of :date.
+Documents already among :urls, and duplicates, are left out.  Returns
+document plists without :text, providers' answers first."
   (let* ((words (efrit-documents-title-words (plist-get item :title)))
          (date (efrit-documents--time (plist-get item :date)))
          (linked (delq nil (mapcar (lambda (u) (ignore-errors (efrit-documents-resolve u)))
@@ -380,7 +390,7 @@ searches each source for the title's words within
            (let ((why (format "%s: %s" (efrit-documents--provider-name fn) (efrit-documents-explain err))))
              (push why efrit-documents-related-problems)
              (efrit-log 'warn "documents: related provider failed: %s" why)))))
-      (when words
+      (when (and words efrit-documents-related-search)
         (let ((window (* efrit-documents-related-days 24 3600)))
           (keep (seq-take
                  (seq-filter (lambda (d) (> (efrit-documents--overlap words (plist-get d :title)) 0))
@@ -397,10 +407,15 @@ searches each source for the title's words within
 
 (defun efrit-documents-related-text (item)
   "The related documents of ITEM fetched and rendered as blocks for a model, or nil."
+  (efrit-documents-related-docs-text
+   (condition-case err
+       (efrit-documents-related item)
+     (error (efrit-log 'warn "documents: related lookup failed: %s" (efrit-documents-explain err)) nil))))
+
+(defun efrit-documents-related-docs-text (docs)
+  "DOCS (document plists) fetched and rendered as blocks for a model, or nil."
   (let ((blocks nil))
-    (dolist (doc (condition-case err
-                     (efrit-documents-related item)
-                   (error (efrit-log 'warn "documents: related lookup failed: %s" (efrit-documents-explain err)) nil)))
+    (dolist (doc docs)
       (condition-case err
           (push (format "--- Related document (%s): %s ---\n%s"
                         (plist-get doc :source) (or (plist-get doc :url) (efrit-documents-ref doc))

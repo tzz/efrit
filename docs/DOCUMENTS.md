@@ -167,8 +167,8 @@ downloaded as they are. Text is capped at `efrit-documents-max-chars`
 
 Search: `files.list` with a `q=` built from the words and dates:
 `name contains` for title words (any of them; results are then ranked
-by how many they share, so "Notes - The Overclockers" is found for a
-recap titled "Recap Bot: 2026-09-21 - The Overclockers"), `fullText
+by how many they share, so "Notes - Platform weekly" is found for a
+recap titled "Recap: 2026-09-21 - Platform weekly"), `fullText
 contains` for body words, a `modifiedTime` *or* `createdTime` window,
 Google document types and text files only, across shared drives too.
 
@@ -178,29 +178,65 @@ Recognised URLs: `docs.google.com/document|spreadsheets|presentation/d/ID`,
 ### What Calendar does, and why it exists
 
 Calendar's "take meeting notes" creates a Doc and attaches it to the
-event. The recap e-mail for the meeting does not link that Doc, and
-searching Drive for the recap's subject finds it only while the Doc and
-the meeting still share a name. Meetings get renamed; the notes keep
-the old title, or the other way round.
+event. The recap e-mail for the meeting does not link that Doc, and a
+title search of Drive finds it only while the Doc and the meeting still
+share a name. Meetings get renamed; the notes keep the old title, or
+the other way round. The event keeps the attachment whatever either is
+called, so `efrit-documents-gcalendar` goes by the event.
 
-So `efrit-documents-gcalendar` goes by the event instead. Given an item
-with a title and a date (the article's Subject and Date, plus From, To
-and Cc), it lists the events on `efrit-documents-gcalendar-calendars`
-(default `("primary")`) within `efrit-documents-related-days` (3) either
-side of the date, recurring events expanded to instances, and drops
-events without attachments. Each remaining event is scored: one point
-per word the event's title shares with the item's title (after
-stopwords), two points if the event's organizer or an attendee address
-appears in the item's From/To/Cc, one point for the same day. Events
-scoring at least `efrit-documents-gcalendar-min-score` (2) count; the
-best `efrit-documents-gcalendar-max-events` (2) give their attachments,
-which are returned as Drive documents by file id and fetched like any
-other. The title search over Drive still runs afterwards, for documents
-that were never attached.
+Two layers:
 
-To cover a shared team calendar as well, add its id to
-`efrit-documents-gcalendar-calendars` (Calendar settings → the
-calendar → *Integrate calendar* → Calendar ID).
+- `efrit-documents-gcalendar-attachments DAY PREDICATE` is the
+  primitive: list every event of DAY (a time; the whole local calendar
+  day) on `efrit-documents-gcalendar-calendars` (default `("primary")`;
+  add a shared calendar's id from its *Integrate calendar* settings),
+  keep those whose title satisfies PREDICATE, return their Drive
+  attachments as documents. No scoring, no nearest-in-time.
+- `efrit-documents-gcalendar-related` is the default provider on
+  `efrit-documents-related-functions`: the day is a `YYYY-MM-DD` in the
+  item's title, else its Date; an event matches when the item's title
+  contains the event's title whole (case and punctuation aside).
+
+### Related documents in Gnus: one function, yours to replace
+
+Everything above is reached from Gnus through one variable,
+`efrit-gnus-related-documents-function`. It is called with no
+arguments in a buffer holding the article as delivered — headers, a
+blank line, the decoded body — and returns a list of document plists
+(`:source`, `:id`, `:title`, `:url`; no text). efrit fetches and
+renders what it returns. The same function serves the analysis (each
+article) and the footnote treatment (the displayed article).
+
+The default, `efrit-gnus-related-documents-default`, builds an item
+from Subject, Date, From/To/Cc and the body's links and asks
+`efrit-documents-related`, which runs the providers (Calendar) and,
+only with `efrit-documents-related-search` set, a title-word search of
+every source. That search is off by default: it finds more and guesses
+more.
+
+Mail with a fixed subject format deserves an exact rule instead of the
+default's guess. A recap bot that writes `Recap: DATE - TITLE`
+gets, in your configuration:
+
+```elisp
+(defun my-related-documents ()
+  (let ((subject (save-restriction (message-narrow-to-head)
+                                   (or (message-fetch-field "Subject") ""))))
+    (if (string-match "\\`Recap: \\([0-9-]+\\) - \\(.+\\)\\'" subject)
+        (let* ((date (match-string 1 subject))
+               (name (efrit-documents-gcalendar--normalize (match-string 2 subject))))
+          (efrit-documents-gcalendar-attachments
+           (date-to-time (concat date "T12:00:00"))
+           (lambda (event-title)
+             (equal (efrit-documents-gcalendar--normalize event-title) name))))
+      (efrit-gnus-related-documents-default))))
+
+(with-eval-after-load 'efrit-gnus
+  (setq efrit-gnus-related-documents-function #'my-related-documents))
+```
+
+That day's events, the one with exactly that title, its notes. Nothing
+else is looked at.
 
 ## Confluence
 
@@ -259,10 +295,8 @@ on each site and says who you are, or why not.
   Docs expander when the Drive source is present.
 - **Related documents.** With `efrit-gnus-related-documents` (default
   t) each article also carries `--- Related document (SOURCE): URL ---`
-  blocks: the Calendar provider's attachments first, then what the
-  sources find by subject words near the Date. This costs one search
-  per source per article; set it to nil for large analyses of
-  unrelated mail.
+  blocks, from `efrit-gnus-related-documents-function` (above). Set it
+  to nil for large analyses of unrelated mail.
 - **The footnote.** `gnus-treat-related-documents` is a washing
   treatment like `gnus-treat-buttonize`. It takes the usual values
   (nil, t, a list of group regexps, ...); default nil. Where it is on,
@@ -292,21 +326,19 @@ on the efrit menu) and open the log (`M-x efrit-log-show`). A related-
 documents lookup writes one line per step:
 
 ```
-documents: related for title="Recap Bot: 2026-09-21 - The Overclockers" -> words=("overclockers") date=... linked=(("gdrive" . "1Czw...")) providers=(efrit-documents-gcalendar-related) sources=("gdrive")
-documents: gcalendar primary 2026-09-18T16:00:00Z..2026-09-24T16:00:00Z -> 14 events, 3 with attachments
-documents: gcalendar event "The Overclockers" at 2026-09-21T14:00:00Z: score 4 (min 2), 1 attachment(s)
-documents: provider gcalendar -> 1: "Notes - The Overclockers"
-documents: gdrive q=trashed = false and (name contains 'overclockers') and ((modifiedTime >= ...) or (createdTime >= ...)) and (...)
-documents: gdrive search title=("overclockers") ... -> 1: "Notes - The Overclockers"
-documents: related result 1: gdrive:N1 "Notes - The Overclockers"
-efrit-gnus: related footnote for "Recap Bot: ..." (treatment): 1 document(s)
+documents: related for title="Recap: 2026-09-21 - Platform weekly" -> words=("platform") date=... linked=(("gdrive" . "1Czw...")) providers=(efrit-documents-gcalendar-related) sources=("gdrive")
+documents: gcalendar primary 2026-09-21T04:00:00Z..2026-09-22T04:00:00Z -> 6 events: "Standup", "Platform weekly"*, "Lunch", ...
+documents: gcalendar event "Platform weekly" at 2026-09-21T14:00:00Z: matches, 1 attachment(s)
+documents: provider gcalendar -> 1: "Notes - Platform weekly"
+documents: related result 1: gdrive:N1 "Notes - Platform weekly"
+efrit-gnus: related footnote for "Recap: ..." (treatment): 1 document(s)
 ```
 
 A provider or source that fails is a `WARN` line with the reason, and
 `W R` by hand says the same in the echo area: "no related documents for
-\"overclockers\" (gcalendar: no auth-source entry for Calendar ...)".
-The words line tells you what the title reduced to after stopwords; if
-it is empty, nothing is searched.
+\"platform\" (gcalendar: no auth-source entry for Calendar ...)".
+With `efrit-documents-related-search` on, `gdrive q=...` lines show the
+exact Drive query and its hits.
 
 ## Failure messages
 
@@ -317,6 +349,7 @@ Errors are turned into one line naming what to fix:
 - `access refused (403): ... admin_policy_enforced` — the Workspace admin gate (above).
 - `no auth-source entry for Drive: tried hosts ...` — none of the candidate hosts has an entry with a Drive scope; add the scope or an entry named `gdrive`.
 - `not found (404)` — a deleted document, or an id that is not a Google Doc.
+- `Drive refuses to export ... in any text format (over its 10 MB export limit)` — Drive caps every export at 10 MB. A Doc with embedded images exceeds it as HTML, so HTML falls back to Markdown, then plain text (the images are dropped, the words stay); this message means even the plain text is over the cap.
 
 `doc_sources` (or `M-x efrit-documents-list-sources`) shows each
 source and, when a check command found it unusable, why.

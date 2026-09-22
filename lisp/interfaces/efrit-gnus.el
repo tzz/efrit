@@ -221,12 +221,23 @@ adds one for Google Docs.  Only URLs matching
 
 (defcustom efrit-gnus-related-documents t
   "Whether an analysis also carries documents related to each article.
-Related means: found in a document source (`efrit-documents') by the
-words of the subject, modified within a few days of the article's
-date, and not already linked from it.  For a meeting recap that is the
-notes Calendar took for the same meeting.  Costs one search per source
-per article; nil turns it off."
+`efrit-gnus-related-documents-function' decides what is related.  nil
+turns it off."
   :type 'boolean)
+
+(defcustom efrit-gnus-related-documents-function #'efrit-gnus-related-documents-default
+  "Function that finds the documents related to the article in the current buffer.
+Called with no arguments in a buffer holding the article as delivered:
+headers, a blank line, the decoded body.  Returns a list of
+`efrit-documents' document plists (:source :id :title :url, no :text
+needed) -- the notes taken at the meeting a recap describes, the page
+a ticket points to.  The default asks `efrit-documents-related' with
+the Subject, Date, From/To/Cc and the body's links, which the Calendar
+provider answers by date and title.  Mail with a fixed subject format
+\(a recap bot) deserves an exact rule in your configuration: parse the
+Subject and call `efrit-documents-gcalendar-attachments' with the day
+and an equality test."
+  :type 'function)
 
 (defcustom efrit-gnus-summary-prefix-key "C-c g"
   "Prefix under which `efrit-gnus-map' is bound in Gnus summary and group buffers.
@@ -386,29 +397,60 @@ the render can use it instead of searching again."
         (let ((end (or (text-property-not-all start (point-max) 'efrit-gnus-related t) (point-max))))
           (buffer-substring-no-properties start end))))))
 
+(defun efrit-gnus--article-item ()
+  "The item plist `efrit-documents-related' takes, from the article in the current buffer."
+  (save-excursion
+    (save-restriction
+      (widen)
+      (let* ((header (lambda (name)
+                       (save-restriction
+                         (message-narrow-to-head)
+                         (when-let* ((v (message-fetch-field name)))
+                           (mail-decode-encoded-word-string v)))))
+             (body (progn (goto-char (point-min))
+                          (if (re-search-forward "^$" nil t)
+                              (buffer-substring-no-properties (point) (point-max))
+                            ""))))
+        (list :title (funcall header "Subject")
+              :date (funcall header "Date")
+              :from (funcall header "From")
+              :participants (delq nil (list (funcall header "To") (funcall header "Cc")))
+              :urls (efrit-gnus--article-links body))))))
+
+(defun efrit-gnus-related-documents-default ()
+  "The default `efrit-gnus-related-documents-function': ask `efrit-documents-related'."
+  (efrit-documents-related (efrit-gnus--article-item)))
+
+(defun efrit-gnus--related-documents-in-buffer ()
+  "Run `efrit-gnus-related-documents-function' on the current buffer.
+Returns document plists; a failure is recorded in
+`efrit-documents-related-problems' and returns nil."
+  (condition-case err
+      (funcall efrit-gnus-related-documents-function)
+    (error
+     (push (efrit-documents-explain err) efrit-documents-related-problems)
+     (efrit-log 'warn "efrit-gnus: related-documents function failed: %s" (efrit-documents-explain err))
+     nil)))
+
 (defun efrit-gnus--related-documents (headers body &optional footnote)
-  "Documents related to an article with HEADERS (an alist) and BODY, as text, or nil.
-With FOOTNOTE (the related-documents footnote from the article buffer)
-or when BODY carries one, no search runs: the footnote's URLs are
-expanded as links instead and FOOTNOTE itself is returned so the model
-sees the list."
+  "Documents related to the article in the current buffer, as text, or nil.
+HEADERS (an alist) and BODY are the rendered article; the current
+buffer holds the article with headers and decoded body.  With FOOTNOTE
+\(the related-documents footnote from the article buffer) or when BODY
+carries one, no lookup runs: the footnote's URLs are expanded as links
+instead and FOOTNOTE itself is returned so the model sees the list."
   (cond
    ((string-match-p (concat "^" (regexp-quote efrit-gnus-related-heading)) body)
-    (efrit-log 'debug "efrit-gnus: %S carries a related-documents footnote in its body; no search"
+    (efrit-log 'debug "efrit-gnus: %S carries a related-documents footnote in its body; no lookup"
                (cdr (assoc "Subject" headers)))
     nil)
    (footnote
-    (efrit-log 'debug "efrit-gnus: %S: using the displayed footnote (%d chars); no search"
+    (efrit-log 'debug "efrit-gnus: %S: using the displayed footnote (%d chars); no lookup"
                (cdr (assoc "Subject" headers)) (length footnote))
     (when-let* ((linked (efrit-gnus--expand-links footnote)))
       (concat footnote "\n" linked)))
    ((and efrit-gnus-related-documents (efrit-documents-sources))
-    (efrit-documents-related-text
-     (list :title (cdr (assoc "Subject" headers))
-           :date (cdr (assoc "Date" headers))
-           :from (cdr (assoc "From" headers))
-           :participants (delq nil (list (cdr (assoc "To" headers)) (cdr (assoc "Cc" headers))))
-           :urls (efrit-gnus--article-links body))))))
+    (efrit-documents-related-docs-text (efrit-gnus--related-documents-in-buffer)))))
 
 (defun efrit-gnus--expand-links (body)
   "Linked documents of BODY as text blocks to append, or nil.
@@ -462,8 +504,12 @@ Returns nil when the article cannot be fetched."
                    (efrit-gnus--clip body efrit-gnus-article-max-chars))
                  (when-let* ((linked (efrit-gnus--expand-links body)))
                    (concat "\n\n" linked))
-                 (when-let* ((related (efrit-gnus--related-documents
-                                       headers body (efrit-gnus--displayed-footnote group number))))
+                 (when-let* ((related
+                              (efrit-gnus--with-article-text
+                               raw body
+                               (lambda ()
+                                 (efrit-gnus--related-documents
+                                  headers body (efrit-gnus--displayed-footnote group number))))))
                    (concat "\n\n" related)))))
           (when handles (mm-destroy-parts handles)))))))
 
@@ -716,6 +762,39 @@ source (results are not cached across articles).  A list such as
   '((t :inherit gnus-header-subject :weight bold))
   "Face of the heading of the related-documents footnote.")
 
+(defun efrit-gnus--with-article-text (raw body function)
+  "Call FUNCTION in a buffer holding RAW's headers, a blank line, and BODY.
+This is the buffer `efrit-gnus-related-documents-function' is promised:
+the article as delivered, with the MIME body already turned into text."
+  (with-temp-buffer
+    (insert raw)
+    (goto-char (point-min))
+    (while (search-forward "\r\n" nil t) (replace-match "\n" t t))
+    (goto-char (point-min))
+    (let ((head-end (progn (re-search-forward "^$" nil 'move) (point))))
+      (delete-region head-end (point-max))
+      (goto-char (point-max))
+      (insert "\n" body))
+    (goto-char (point-min))
+    (funcall function)))
+
+(defun efrit-gnus--with-original-article (function)
+  "Call FUNCTION as `efrit-gnus--with-article-text' does, for the displayed article.
+The original article buffer has the raw message; its MIME body is
+decoded here."
+  (when (gnus-buffer-live-p gnus-original-article-buffer)
+    (let* ((raw (with-current-buffer gnus-original-article-buffer
+                  (buffer-substring-no-properties (point-min) (point-max))))
+           (body (with-temp-buffer
+                   (insert raw)
+                   (let ((handles (mm-dissect-buffer t))
+                         (texts (list nil)) (attachments (list nil)))
+                     (unwind-protect
+                         (progn (when handles (efrit-gnus--walk-parts handles texts attachments))
+                                (string-join (nreverse (car texts)) "\n\n"))
+                       (when handles (mm-destroy-parts handles)))))))
+      (efrit-gnus--with-article-text raw body function))))
+
 (defun efrit-gnus--article-header (name)
   "Header NAME of the article being washed, from the original article buffer."
   (when (gnus-buffer-live-p gnus-original-article-buffer)
@@ -754,19 +833,11 @@ found; a failing source is a one-line note."
         (article-goto-body)
         (narrow-to-region (point) (point-max)))
       (unless (text-property-any (point-min) (point-max) 'efrit-gnus-related t)
-        (let* ((body (buffer-substring-no-properties (point-min) (point-max)))
-               (title (efrit-gnus--article-header "Subject"))
-               (item (list :title title
-                           :date (efrit-gnus--article-header "Date")
-                           :from (efrit-gnus--article-header "From")
-                           :participants (delq nil (list (efrit-gnus--article-header "To")
-                                                         (efrit-gnus--article-header "Cc")))
-                           :urls (efrit-gnus--article-links body)))
+        (let* ((title (efrit-gnus--article-header "Subject"))
                (docs (and (efrit-documents-sources)
-                          (condition-case err
-                              (efrit-documents-related item)
-                            (error (push (efrit-documents-explain err) efrit-documents-related-problems)
-                                   nil))))
+                          (progn (setq efrit-documents-related-problems nil)
+                                 (efrit-gnus--with-original-article
+                                  #'efrit-gnus--related-documents-in-buffer))))
                (interactive-p (not (bound-and-true-p gnus-treat-condition))))
           (efrit-log 'debug "efrit-gnus: related footnote for %S (%s): %d document(s)%s"
                      title (if interactive-p "by hand" "treatment") (length docs)

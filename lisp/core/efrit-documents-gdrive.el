@@ -165,22 +165,58 @@ Signals `efrit-auth-no-credentials' naming what was tried."
   "The export MIME type for a Google MIME type and FORMAT, or nil for a plain file."
   (cdr (assq format (cdr (assoc mime efrit-documents-gdrive--exports)))))
 
+(defconst efrit-documents-gdrive--fallbacks
+  '(("text/html" "text/markdown" "text/plain")
+    ("text/markdown" "text/plain")
+    ("text/csv" "text/plain"))
+  "Export MIME types to try, in order, when the first is too large.
+Drive refuses exports over 10 MB with \"This file is too large to be
+exported\"; a Doc with embedded images exceeds that as HTML while its
+text is a few kilobytes.  The text formats drop the images.")
+
+(defun efrit-documents-gdrive--too-large-p (err)
+  "Whether ERR is Drive's export size refusal."
+  (and (eq (car-safe err) 'efrit-auth-http-error)
+       (string-match-p "too large to be exported\\|exportSizeLimitExceeded" (or (nth 2 err) ""))))
+
+(defun efrit-documents-gdrive--export (source id export)
+  "Export doc ID as EXPORT, falling back to smaller formats when Drive refuses.
+Returns (MIME . BYTES).  Signals `efrit-documents-error' when every
+format is refused, naming the last reason."
+  (let ((chain (or (assoc export efrit-documents-gdrive--fallbacks) (list export)))
+        (result nil) (last-error nil))
+    (while (and chain (null result))
+      (let ((mime (pop chain)))
+        (condition-case err
+            (setq result (cons mime (efrit-documents-gdrive--request source (format "/%s/export" id)
+                                                                     `(("mimeType" . ,mime)) t)))
+          (efrit-auth-http-error
+           (setq last-error err)
+           (if (and chain (efrit-documents-gdrive--too-large-p err))
+               (efrit-log 'info "documents: gdrive %s too large as %s; trying %s" id mime (car chain))
+             (setq chain nil))))))
+    (or result
+        (signal 'efrit-documents-error
+                (list (if (efrit-documents-gdrive--too-large-p last-error)
+                          (format "Drive refuses to export %s in any text format (over its 10 MB export limit)" id)
+                        (efrit-auth-explain last-error)))))))
+
 (cl-defmethod efrit-documents-source-fetch ((source efrit-document-source-gdrive) id format)
   (let* ((doc (efrit-documents-source-metadata source id))
          (export (efrit-documents-gdrive--export-mime (plist-get doc :mime) format))
-         (bytes (condition-case err
-                    (if export
-                        (efrit-documents-gdrive--request source (format "/%s/export" id)
-                                                         `(("mimeType" . ,export)) t)
-                      ;; A plain file (text, markdown, csv uploaded to Drive).
-                      (efrit-documents-gdrive--request source (format "/%s" id) '(("alt" . "media")) t))
+         (got (if export
+                  (efrit-documents-gdrive--export source id export)
+                ;; A plain file (text, markdown, csv uploaded to Drive).
+                (condition-case err
+                    (cons nil (efrit-documents-gdrive--request source (format "/%s" id) '(("alt" . "media")) t))
                   (efrit-auth-http-error
-                   (signal 'efrit-documents-error (list (efrit-auth-explain err))))))
+                   (signal 'efrit-documents-error (list (efrit-auth-explain err)))))))
+         (mime (car got))
          (text (string-trim (replace-regexp-in-string
-                             "\r\n" "\n" (decode-coding-string (or bytes "") 'utf-8) t t))))
+                             "\r\n" "\n" (decode-coding-string (or (cdr got) "") 'utf-8) t t))))
     (append doc (list :text text
-                      :format (cond ((equal export "text/html") 'html)
-                                    ((equal export "text/markdown") 'markdown)
+                      :format (cond ((equal mime "text/html") 'html)
+                                    ((equal mime "text/markdown") 'markdown)
                                     (t 'text))))))
 
 (defun efrit-documents-gdrive--q (query)
@@ -188,8 +224,8 @@ Signals `efrit-auth-no-credentials' naming what was tried."
   (let ((parts (list "trashed = false"))
         (quote (lambda (w) (string-replace "'" "\\'" w))))
     ;; Any title word, not all: the document was named by someone else
-    ;; ("Notes - The Overclockers" for a mail titled "Recap Bot:
-    ;; 2026-09-21 - The Overclockers").  `efrit-documents-search' ranks
+    ;; ("Notes - Platform weekly" for a mail titled "Recap:
+    ;; 2026-09-21 - Platform weekly").  `efrit-documents-search' ranks
     ;; the results by how many words they share.
     (when-let* ((words (plist-get query :title)))
       (push (concat "(" (mapconcat (lambda (w) (format "name contains '%s'" (funcall quote w)))

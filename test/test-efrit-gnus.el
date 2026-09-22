@@ -167,6 +167,7 @@ related document (same title words, near the date) follows it."
   (require 'efrit-documents-gdrive)
   (let ((efrit-documents--cache (make-hash-table :test #'equal))
         (efrit-documents-related-functions nil)
+        (efrit-documents-related-search t)
         (efrit-gnus-related-documents t)
         (efrit-gnus-expand-link-functions nil))
     (cl-letf (((symbol-function 'efrit-documents-gdrive--find-host) (lambda (_s) "gmail"))
@@ -210,6 +211,7 @@ links and does not search again."
   (require 'efrit-documents-gdrive)
   (let ((efrit-documents--cache (make-hash-table :test #'equal))
         (efrit-documents-related-functions nil)
+        (efrit-documents-related-search t)
         (efrit-gnus-related-documents t)
         (efrit-gnus-expand-link-functions nil)
         (searches 0))
@@ -284,6 +286,67 @@ links and does not search again."
           (should (string-match-p "Notes taken by Calendar" text))
           (should-not (string-match-p "Related document (gdrive)" text))
           (should (= 0 searches)))))))
+
+(ert-deftest test-efrit-gnus-related-documents-function ()
+  "A custom `efrit-gnus-related-documents-function' runs in a buffer with
+the headers and the decoded body, in both the render and the wash; its
+documents are fetched.  A failing one is a recorded problem, not an error."
+  (require 'efrit-documents-gdrive)
+  (let* ((seen nil)
+         (efrit-documents--cache (make-hash-table :test #'equal))
+         (efrit-gnus-related-documents t)
+         (efrit-gnus-expand-link-functions nil)
+         (efrit-gnus-related-documents-function
+          (lambda ()
+            (push (buffer-substring-no-properties (point-min) (point-max)) seen)
+            (save-excursion
+              (goto-char (point-min))
+              (when (re-search-forward "^Subject: Recap: \\([0-9-]+\\) - \\(.+\\)$" nil t)
+                (list (list :source "gdrive" :id "NOTES1" :title (concat "Notes - " (match-string 2))
+                            :url "https://docs.google.com/document/d/NOTES1/edit")))))))
+    (cl-letf (((symbol-function 'efrit-documents-gdrive--find-host) (lambda (_s) "gmail"))
+              ((symbol-function 'efrit-documents-ensure-tools) #'ignore)
+              ((symbol-function 'efrit-auth-request)
+               (cl-function
+                (lambda (_host _method url &key &allow-other-keys)
+                  (cond
+                   ((string-suffix-p "/export" url) "Notes body")
+                   ((string-match-p "/files/NOTES1\\'" url)
+                    '((id . "NOTES1") (name . "Notes - Platform weekly") (mimeType . "application/vnd.google-apps.document")
+                      (modifiedTime . "2026-09-21T15:00:00Z")))
+                   (t (error "unexpected %s" url)))))))
+      ;; Render: the function sees headers + decoded body (HTML part rendered).
+      (test-gnus--with-articles
+          `((("nnml:recaps" . 1) . ,(test-gnus--raw "Recap: 2026-09-21 - Platform weekly"
+                                                    "Plain recap." "<p>HTML <b>recap</b>.</p>")))
+        (let ((text (efrit-gnus--render "nnml:recaps" 1)))
+          (should (string-match-p "Related document (gdrive): https://docs.google.com/document/d/NOTES1/edit ---\nTitle: Notes - Platform weekly" text))
+          (should (string-match-p "Notes body" text))
+          (should (string-match-p "^Subject: Recap: 2026-09-21 - Platform weekly$" (car seen)))
+          (should (string-match-p "\n\nPlain recap\." (car seen)))
+          ;; The MIME body is gone; the text of both parts is there.
+          (should-not (string-match-p "^--b1" (car seen)))
+          (should (string-match-p "HTML recap" (car seen)))))
+      ;; Wash: same buffer shape from the original article buffer.
+      (setq seen nil)
+      (let ((gnus-article-buffer (generate-new-buffer "*test article*"))
+            (gnus-original-article-buffer (generate-new-buffer "*test original*")))
+        (unwind-protect
+            (progn
+              (with-current-buffer gnus-original-article-buffer
+                (insert (test-gnus--raw "Recap: 2026-09-21 - Platform weekly" "Plain recap.")))
+              (with-current-buffer gnus-article-buffer
+                (insert "Subject: Recap: 2026-09-21 - Platform weekly\n\nPlain recap.\n")
+                (gnus-article-show-related-documents)
+                (should (string-match-p "Related documents:\n- Notes - Platform weekly (gdrive) https://docs.google.com/document/d/NOTES1/edit" (buffer-string)))
+                (should (string-match-p "^Subject: Recap: " (car seen)))))
+          (kill-buffer gnus-article-buffer) (kill-buffer gnus-original-article-buffer)))
+      ;; A failing function is a problem, not a crash.
+      (let ((efrit-gnus-related-documents-function (lambda () (error "no calendar today"))))
+        (test-gnus--with-articles
+            `((("nnml:recaps" . 2) . ,(test-gnus--raw "Other" "body")))
+          (should (string-match-p "Article: nnml:recaps#2" (efrit-gnus--render "nnml:recaps" 2)))
+          (should (member "no calendar today" efrit-documents-related-problems)))))))
 
 (ert-deftest test-efrit-gnus-prompts-are-pairs ()
   "Every built-in prompt has a per-batch and an over-everything part, and

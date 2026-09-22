@@ -12,21 +12,24 @@
 ;; A related-documents provider for `efrit-documents': given an item
 ;; with a title and a date (a meeting recap's subject and Date), find
 ;; the calendar event it is about and return the event's attachments.
-;; Calendar's "take meeting notes" Doc is such an attachment.  Title
-;; search alone misses it when the meeting was renamed after the notes
-;; were created, or the notes were named after an earlier title; the
-;; event keeps the attachment whatever either is called now.
+;; Calendar's "take meeting notes" Doc is such an attachment.
 ;;
-;; How the event is found: `events.list' on each calendar in
-;; `efrit-documents-gcalendar-calendars' for the window of
-;; `efrit-documents-related-days' around the date (recurring events
-;; expanded to instances), then the instances are scored against the
-;; item: shared title words count, an organizer or attendee whose
-;; address appears in the item's :from or :participants counts, and
-;; closeness in time breaks ties.  Events with no attachments are
-;; ignored.  The best few (`efrit-documents-gcalendar-max-events') give
-;; their attachments as documents of the Drive source (by fileId), so
-;; `efrit-documents-fetch' exports them like any other Doc.
+;; Two layers:
+;;
+;;   `efrit-documents-gcalendar-attachments' DAY PREDICATE is the
+;;   primitive: list every event of DAY on
+;;   `efrit-documents-gcalendar-calendars', keep those whose title
+;;   satisfies PREDICATE, return their Drive attachments as documents
+;;   of the Drive source.  No scoring, no nearest-in-time.
+;;
+;;   `efrit-documents-gcalendar-related' is the default provider on
+;;   `efrit-documents-related-functions': the day is a YYYY-MM-DD in the
+;;   item's title, else its :date; an event matches when the item's
+;;   title contains the event's title whole.  A mail source whose
+;;   subjects follow a fixed format (a recap bot) should not rely on
+;;   that guess: give efrit-gnus its own
+;;   `efrit-gnus-related-documents-function' that parses the subject
+;;   and calls the primitive with the exact day and an equality test.
 ;;
 ;; Credentials: an auth-source entry named
 ;; `efrit-documents-gcalendar-auth-host' (default "gcalendar"), else the
@@ -68,16 +71,6 @@ An entry counts only if its :scope names a Calendar scope."
 (defcustom efrit-documents-gcalendar-calendars '("primary")
   "Calendar ids searched: \"primary\", an address, or a shared calendar's id."
   :type '(repeat string))
-
-(defcustom efrit-documents-gcalendar-max-events 2
-  "Most events whose attachments are returned for one item."
-  :type 'integer)
-
-(defcustom efrit-documents-gcalendar-min-score 2
-  "Least score an event needs to count as the item's meeting.
-One shared title word is 1; an organizer or attendee named in the item
-is 2; the same day is 1."
-  :type 'integer)
 
 (defconst efrit-documents-gcalendar--api "https://www.googleapis.com/calendar/v3"
   "Calendar v3 endpoint.")
@@ -122,10 +115,46 @@ is 2; the same day is 1."
     (efrit-auth-http-error
      (signal 'efrit-documents-error (list (efrit-auth-explain err))))))
 
+;;;; The day and the title
+
+(defun efrit-documents-gcalendar-item-date (item)
+  "The day ITEM is about: a YYYY-MM-DD in its title, else its :date, as a time.
+A recap is sent after the meeting, sometimes the next morning; the
+date the bot wrote in the subject is the meeting's."
+  (let ((title (or (plist-get item :title) "")))
+    (or (and (string-match "\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}\\)" title)
+             (efrit-documents--time (concat (match-string 1 title) "T12:00:00")))
+        (efrit-documents--time (plist-get item :date)))))
+
+(defun efrit-documents-gcalendar--day-bounds (time)
+  "The start and end of TIME's calendar day, local zone, as (START . END)."
+  (let* ((decoded (decode-time time))
+         (start (encode-time (list 0 0 0 (decoded-time-day decoded) (decoded-time-month decoded)
+                                   (decoded-time-year decoded) nil -1 (decoded-time-zone decoded)))))
+    (cons start (time-add start (* 24 3600)))))
+
+(defun efrit-documents-gcalendar--normalize (title)
+  "TITLE lower-cased with runs of space and punctuation collapsed to one space."
+  (string-trim (replace-regexp-in-string "[[:space:][:punct:]]+" " " (downcase (or title "")))))
+
+(defun efrit-documents-gcalendar-title-matches-p (item-title event-title)
+  "Whether an event called EVENT-TITLE is the meeting ITEM-TITLE is about.
+Equal, or ITEM-TITLE contains EVENT-TITLE whole (bounded by spaces or
+the ends), case and punctuation aside.  \"Notes: Platform weekly\" matches
+the event \"Platform weekly\"; \"Platform budget\" does not."
+  (let ((want (efrit-documents-gcalendar--normalize item-title))
+        (have (efrit-documents-gcalendar--normalize event-title)))
+    (and (not (string-empty-p have))
+         (not (string-empty-p want))
+         (or (equal want have)
+             (string-match-p (concat "\\(?:\\`\\| \\)" (regexp-quote have) "\\(?:\\'\\| \\)") want))
+         t)))
+
 ;;;; Events
 
 (defun efrit-documents-gcalendar--events (since until)
-  "Event instances with attachments on the configured calendars between SINCE and UNTIL."
+  "Event instances on the configured calendars between SINCE and UNTIL.
+The log line marks the ones with attachments with a star."
   (let ((out nil))
     (dolist (calendar efrit-documents-gcalendar-calendars)
       (let ((result (efrit-documents-gcalendar--request
@@ -135,50 +164,15 @@ is 2; the same day is 1."
                        ("singleEvents" . "true")
                        ("orderBy" . "startTime")
                        ("maxResults" . "250")
-                       ("fields" . "items(id,summary,htmlLink,start,organizer,attendees,attachments)")))))
-        (efrit-log 'debug "documents: gcalendar %s %s..%s -> %d events, %d with attachments"
+                       ("fields" . "items(id,summary,htmlLink,start,attachments)")))))
+        (efrit-log 'debug "documents: gcalendar %s %s..%s -> %d events: %s"
                    calendar (format-time-string "%FT%TZ" since t) (format-time-string "%FT%TZ" until t)
                    (length (alist-get 'items result))
-                   (cl-count-if (lambda (e) (alist-get 'attachments e)) (alist-get 'items result)))
-        (dolist (event (alist-get 'items result))
-          (when (alist-get 'attachments event)
-            (push event out)))))
-    (nreverse out)))
-
-(defun efrit-documents-gcalendar--event-time (event)
-  "EVENT's start as an Emacs time, or nil."
-  (let ((start (alist-get 'start event)))
-    (efrit-documents--time (or (alist-get 'dateTime start) (alist-get 'date start)))))
-
-(defun efrit-documents-gcalendar--addresses (item)
-  "Lower-cased mail addresses named in ITEM's :from and :participants."
-  (let ((text (string-join (delq nil (list (plist-get item :from)
-                                            (and (listp (plist-get item :participants))
-                                                 (string-join (plist-get item :participants) " "))
-                                            (and (stringp (plist-get item :participants))
-                                                 (plist-get item :participants))))
-                           " "))
-        (out nil) (start 0))
-    (while (string-match "[[:alnum:]._%+-]+@[[:alnum:].-]+" text start)
-      (push (downcase (match-string 0 text)) out)
-      (setq start (match-end 0)))
+                   (mapconcat (lambda (e) (format "%S%s" (alist-get 'summary e)
+                                                  (if (alist-get 'attachments e) "*" "")))
+                              (alist-get 'items result) ", "))
+        (setq out (append out (alist-get 'items result)))))
     out))
-
-(defun efrit-documents-gcalendar-score (event item date)
-  "How well EVENT matches ITEM dated DATE: shared title words, people, same day."
-  (let* ((words (efrit-documents-title-words (plist-get item :title)))
-         (event-words (efrit-documents-title-words (alist-get 'summary event)))
-         (shared (length (cl-intersection words event-words :test #'equal)))
-         (addresses (efrit-documents-gcalendar--addresses item))
-         (people (delq nil (cons (alist-get 'email (alist-get 'organizer event))
-                                 (mapcar (lambda (a) (alist-get 'email a)) (alist-get 'attendees event)))))
-         (people (mapcar #'downcase people))
-         (named (if (cl-intersection addresses people :test #'equal) 2 0))
-         (event-time (efrit-documents-gcalendar--event-time event))
-         (same-day (if (and date event-time
-                            (equal (format-time-string "%F" date t) (format-time-string "%F" event-time t)))
-                       1 0)))
-    (+ shared named same-day)))
 
 (defun efrit-documents-gcalendar--attachment-doc (attachment event)
   "A document plist for ATTACHMENT of EVENT: a Drive file by id when it is one."
@@ -198,31 +192,43 @@ is 2; the same day is 1."
             :event (alist-get 'summary event)
             :event-url (alist-get 'htmlLink event)))))
 
-(defun efrit-documents-gcalendar-related (item)
-  "For `efrit-documents-related-functions': attachments of ITEM's meeting."
-  (let ((date (efrit-documents--time (plist-get item :date))))
-    (when date
-      (let* ((window (* efrit-documents-related-days 24 3600))
-             (events (efrit-documents-gcalendar--events (time-subtract date window) (time-add date window)))
-             (scored (delq nil (mapcar (lambda (e)
-                                         (let ((score (efrit-documents-gcalendar-score e item date)))
-                                           (efrit-log 'debug "documents: gcalendar event %S at %s: score %d (min %d), %d attachment(s)"
-                                                      (alist-get 'summary e)
-                                                      (or (alist-get 'dateTime (alist-get 'start e)) (alist-get 'date (alist-get 'start e)))
-                                                      score efrit-documents-gcalendar-min-score
-                                                      (length (alist-get 'attachments e)))
-                                           (and (>= score efrit-documents-gcalendar-min-score) (cons score e))))
-                                       events)))
-             (best (seq-take (sort scored (lambda (a b) (> (car a) (car b))))
-                             efrit-documents-gcalendar-max-events))
-             (out nil))
-        (dolist (entry best)
-          (dolist (attachment (alist-get 'attachments (cdr entry)))
-            (if-let* ((doc (efrit-documents-gcalendar--attachment-doc attachment (cdr entry))))
+(defun efrit-documents-gcalendar-attachments (day predicate)
+  "The Drive attachments of DAY's events whose title satisfies PREDICATE.
+DAY is a time; every event of that calendar day on
+`efrit-documents-gcalendar-calendars' is listed and PREDICATE is
+called with its title.  Returns document plists of the Drive source
+\(no :text), in event order.  This is the primitive a mail-specific
+rule builds on: decide the day and the title test yourself, and let
+this do the calendar."
+  (pcase-let* ((`(,since . ,until) (efrit-documents-gcalendar--day-bounds day))
+               (out nil))
+    (dolist (event (efrit-documents-gcalendar--events since until))
+      (let ((matches (funcall predicate (alist-get 'summary event))))
+        (efrit-log 'debug "documents: gcalendar event %S at %s: %s, %d attachment(s)"
+                   (alist-get 'summary event)
+                   (or (alist-get 'dateTime (alist-get 'start event)) (alist-get 'date (alist-get 'start event)))
+                   (if matches "matches" "no match")
+                   (length (alist-get 'attachments event)))
+        (when matches
+          (dolist (attachment (alist-get 'attachments event))
+            (if-let* ((doc (efrit-documents-gcalendar--attachment-doc attachment event)))
                 (push doc out)
               (efrit-log 'debug "documents: gcalendar attachment %S of %S is not a Drive file (%s); skipped"
-                         (alist-get 'title attachment) (alist-get 'summary (cdr entry)) (alist-get 'fileUrl attachment)))))
-        (nreverse out)))))
+                         (alist-get 'title attachment) (alist-get 'summary event) (alist-get 'fileUrl attachment)))))))
+    (nreverse out)))
+
+(defun efrit-documents-gcalendar-related (item)
+  "For `efrit-documents-related-functions': the attachments of ITEM's meeting.
+The day is a YYYY-MM-DD in ITEM's title, else its :date
+\(`efrit-documents-gcalendar-item-date'); an event matches when the
+title contains its title whole
+\(`efrit-documents-gcalendar-title-matches-p').  A mail source with a
+fixed subject format does better with its own rule on top of
+`efrit-documents-gcalendar-attachments'."
+  (when-let* ((day (efrit-documents-gcalendar-item-date item)))
+    (efrit-documents-gcalendar-attachments
+     day (lambda (event-title)
+           (efrit-documents-gcalendar-title-matches-p (plist-get item :title) event-title)))))
 
 (add-hook 'efrit-documents-related-functions #'efrit-documents-gcalendar-related)
 
