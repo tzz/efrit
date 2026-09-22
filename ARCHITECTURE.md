@@ -100,8 +100,9 @@ talk to their APIs through `efrit-auth.el`: auth-source lookup by host
 (OAuth2 client fields → oauth2.el consent/refresh/plstore, otherwise a
 bearer or basic secret), and `efrit-auth-request` with retries and typed
 errors.  efrit-gnus expands article links and adds related documents
-through this layer; backends only add expanders for links no source
-handles.
+through this layer (and, with `gnus-treat-related-documents`, writes
+them as a footnote into the article buffer that a later analysis reads
+back); backends only add expanders for links no source handles.
 
 ## 📦 **MODULE ORGANIZATION & LOAD ORDER**
 

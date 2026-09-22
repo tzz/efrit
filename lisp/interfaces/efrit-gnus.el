@@ -59,7 +59,10 @@
 ;; meeting a recap describes -- follow that.  A backend can add its own
 ;; expander to `efrit-gnus-expand-link-functions' for links no source
 ;; handles.  The document tools (doc_fetch, doc_search) are registered
-;; with the Gnus ones.
+;; with the Gnus ones.  `gnus-treat-related-documents' (off by default)
+;; is a washing treatment that appends the same related documents as a
+;; footnote to the article you read, with URLs; an analysis of that
+;; article then fetches them from the footnote instead of searching.
 ;;
 ;; Privacy: article text goes to the model efrit is configured for, as
 ;; anything you ask efrit does.  Nothing asks first; you chose the
@@ -85,6 +88,7 @@
 (require 'gnus-group)
 (require 'gnus-int)
 (require 'gnus-range)
+(require 'gnus-art)
 (require 'mm-decode)
 (require 'mm-view)
 (require 'nnheader)
@@ -104,6 +108,10 @@
 (declare-function gnus-search-run-search "gnus-search")
 (defvar shr-width) (defvar shr-use-fonts) (defvar shr-inhibit-images)
 (defvar gnus-summary-article-menu)
+(defvar gnus-treatment-function-alist)
+(defvar gnus-summary-wash-map)
+(defvar gnus-treat-condition)
+(defvar gnus-article-current)
 
 (defgroup efrit-gnus nil
   "Ask efrit about articles in Gnus."
@@ -359,13 +367,41 @@ An expander that signals contributes a note naming the error."
          (throw 'done (format "[could not fetch: %s]" (error-message-string err))))))
     nil))
 
-(defun efrit-gnus--related-documents (headers body)
-  "Documents related to an article with HEADERS (an alist) and BODY, as text, or nil."
-  (when (and efrit-gnus-related-documents (efrit-documents-sources))
+(defconst efrit-gnus-related-heading "Related documents:"
+  "The line that opens a related-documents footnote in an article.
+`gnus-article-show-related-documents' writes it; `efrit-gnus--render'
+sees it in the body and expands the URLs under it instead of searching
+again.")
+
+(defun efrit-gnus--displayed-footnote (group number)
+  "The related-documents footnote shown for article NUMBER of GROUP, or nil.
+The article buffer keeps only the displayed article; when that is this
+one and the washing treatment wrote a footnote, its text is returned so
+the render can use it instead of searching again."
+  (when (and (gnus-buffer-live-p gnus-article-buffer)
+             (equal (car-safe (buffer-local-value 'gnus-article-current (get-buffer gnus-article-buffer))) group)
+             (eql (cdr-safe (buffer-local-value 'gnus-article-current (get-buffer gnus-article-buffer))) number))
+    (with-current-buffer gnus-article-buffer
+      (when-let* ((start (text-property-any (point-min) (point-max) 'efrit-gnus-related t)))
+        (let ((end (or (text-property-not-all start (point-max) 'efrit-gnus-related t) (point-max))))
+          (buffer-substring-no-properties start end))))))
+
+(defun efrit-gnus--related-documents (headers body &optional footnote)
+  "Documents related to an article with HEADERS (an alist) and BODY, as text, or nil.
+With FOOTNOTE (the related-documents footnote from the article buffer)
+or when BODY carries one, no search runs: the footnote's URLs are
+expanded as links instead and FOOTNOTE itself is returned so the model
+sees the list."
+  (cond
+   ((string-match-p (concat "^" (regexp-quote efrit-gnus-related-heading)) body) nil)
+   (footnote
+    (when-let* ((linked (efrit-gnus--expand-links footnote)))
+      (concat footnote "\n" linked)))
+   ((and efrit-gnus-related-documents (efrit-documents-sources))
     (efrit-documents-related-text
      (list :title (cdr (assoc "Subject" headers))
            :date (cdr (assoc "Date" headers))
-           :urls (efrit-gnus--article-links body)))))
+           :urls (efrit-gnus--article-links body))))))
 
 (defun efrit-gnus--expand-links (body)
   "Linked documents of BODY as text blocks to append, or nil.
@@ -419,7 +455,8 @@ Returns nil when the article cannot be fetched."
                    (efrit-gnus--clip body efrit-gnus-article-max-chars))
                  (when-let* ((linked (efrit-gnus--expand-links body)))
                    (concat "\n\n" linked))
-                 (when-let* ((related (efrit-gnus--related-documents headers body)))
+                 (when-let* ((related (efrit-gnus--related-documents
+                                       headers body (efrit-gnus--displayed-footnote group number))))
                    (concat "\n\n" related)))))
           (when handles (mm-destroy-parts handles)))))))
 
@@ -643,6 +680,110 @@ takes and then one briefing on trends."
           efrit-gnus--closing summary)
     (efrit-gnus--watch-for-idle)
     (efrit-gnus--submit-batch refs item where 0 n)))
+
+;;;; Washing: a related-documents footnote in the article buffer
+;;
+;; A Gnus article treatment (like buttonizing): under the control of
+;; `gnus-treat-related-documents' it appends, below the article, a
+;; footnote listing the documents `efrit-documents-related' finds for
+;; the subject and date -- the notes Calendar took for the meeting a
+;; recap describes, the Confluence page with the same title.  The
+;; footnote is text with URLs, so Gnus buttonizes it for you to follow,
+;; and when efrit analyzes the article it reads the same footnote and
+;; fetches those documents as links, without searching again.
+
+(defcustom gnus-treat-related-documents nil
+  "Append a footnote of related documents (from efrit's sources) to the article.
+Valid values are nil, t, a list of group-name regexps, an integer, a
+`typep' form, or and/or/not of those; see Info node `(gnus)Customizing
+Articles'.  Off by default: each article costs one search per document
+source (results are not cached across articles).  A list such as
+\='(\"recaps\") turns it on where the mail is a pointer to a meeting.
+`W R' in the summary applies it to the current article regardless."
+  :group 'gnus-article-treat
+  :group 'efrit-gnus
+  :link '(custom-manual "(gnus)Customizing Articles")
+  :type gnus-article-treat-custom)
+
+(defface efrit-gnus-related-heading
+  '((t :inherit gnus-header-subject :weight bold))
+  "Face of the heading of the related-documents footnote.")
+
+(defun efrit-gnus--article-header (name)
+  "Header NAME of the article being washed, from the original article buffer."
+  (when (gnus-buffer-live-p gnus-original-article-buffer)
+    (with-current-buffer gnus-original-article-buffer
+      (save-restriction
+        (article-narrow-to-head)
+        (message-fetch-field name)))))
+
+(defun efrit-gnus--related-footnote (docs)
+  "The footnote text for DOCS: a heading and one line per document."
+  (concat efrit-gnus-related-heading "\n"
+          (mapconcat (lambda (d)
+                       (format "- %s (%s%s) %s"
+                               (or (plist-get d :title) (plist-get d :id))
+                               (plist-get d :source)
+                               (if-let* ((m (plist-get d :modified)))
+                                   (concat ", " (substring m 0 (min 10 (length m))))
+                                 "")
+                               (or (plist-get d :url) (efrit-documents-ref d))))
+                     docs "\n")
+          "\n"))
+
+(defun gnus-article-show-related-documents ()
+  "Append a footnote listing documents related to this article.
+A Gnus washing function (`gnus-treat-related-documents'); also
+\\<gnus-summary-mode-map>\\[gnus-article-show-related-documents] in the
+summary.  Related means: found in an efrit document source by the
+subject's words within a few days of the Date.  Idempotent: an article
+with the footnote is left alone.  Nothing is shown when nothing is
+found; a failing source is a one-line note."
+  (interactive nil gnus-article-mode gnus-summary-mode)
+  (efrit-documents-ensure-tools)
+  (gnus-with-article-buffer
+    (save-restriction
+      (unless (bound-and-true-p gnus-treat-condition)
+        (article-goto-body)
+        (narrow-to-region (point) (point-max)))
+      (unless (or (null (efrit-documents-sources))
+                  (text-property-any (point-min) (point-max) 'efrit-gnus-related t))
+        (let* ((body (buffer-substring-no-properties (point-min) (point-max)))
+               (item (list :title (efrit-gnus--article-header "Subject")
+                           :date (efrit-gnus--article-header "Date")
+                           :urls (efrit-gnus--article-links body)))
+               (docs (condition-case err
+                         (efrit-documents-related item)
+                       (error (list (list :title (format "not searched: %s" (efrit-documents-explain err))
+                                          :source "efrit" :url ""))))))
+          (when docs
+            (let ((inhibit-read-only t) (start nil))
+              (goto-char (point-max))
+              (unless (bolp) (insert "\n"))
+              (insert "\n")
+              (setq start (point))
+              (insert (efrit-gnus--related-footnote docs))
+              (add-text-properties start (point) '(efrit-gnus-related t))
+              (put-text-property start (+ start (length efrit-gnus-related-heading))
+                                 'face 'efrit-gnus-related-heading)
+              ;; Make the URLs followable, as the buttonize pass would
+              ;; have had they been in the original text.
+              (save-restriction
+                (narrow-to-region start (point))
+                (gnus-article-add-buttons)))))))))
+
+(defun efrit-gnus--install-treatment ()
+  "Put the footnote treatment after buttonizing in `gnus-treatment-function-alist'."
+  (unless (assq 'gnus-treat-related-documents gnus-treatment-function-alist)
+    (let ((cell (memq (assq 'gnus-treat-buttonize gnus-treatment-function-alist)
+                      gnus-treatment-function-alist)))
+      (if cell
+          (setcdr cell (cons '(gnus-treat-related-documents gnus-article-show-related-documents) (cdr cell)))
+        (setq gnus-treatment-function-alist
+              (append gnus-treatment-function-alist
+                      '((gnus-treat-related-documents gnus-article-show-related-documents))))))))
+
+(efrit-gnus--install-treatment)
 
 ;;;; Choosing articles
 
@@ -886,7 +1027,8 @@ Called at load and again by the reloaders (the map is a `defvar' that a
 reload rebuilds)."
   (when efrit-gnus-summary-prefix-key
     (define-key gnus-summary-mode-map (kbd efrit-gnus-summary-prefix-key) efrit-gnus-map)
-    (define-key gnus-group-mode-map (kbd efrit-gnus-summary-prefix-key) efrit-gnus-map)))
+    (define-key gnus-group-mode-map (kbd efrit-gnus-summary-prefix-key) efrit-gnus-map))
+  (define-key gnus-summary-wash-map "R" #'gnus-article-show-related-documents))
 
 (efrit-gnus--install-keys)
 
@@ -898,6 +1040,7 @@ reload rebuilds)."
     ["About the newest N here..." efrit-gnus-analyze-group t]
     ["About a search..." efrit-gnus-analyze-search t]
     "---"
+    ["Show related documents (footnote)" gnus-article-show-related-documents t]
     ["Edit the prompts..." efrit-prompts-manage t]
     ["Stop the batches still queued" efrit-gnus-cancel t])
   "The submenu added to Gnus's Article menu.")

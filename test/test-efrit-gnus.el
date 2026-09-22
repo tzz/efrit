@@ -202,6 +202,87 @@ related document (same title words, near the date) follows it."
           ;; The linked recap is not repeated as a related document.
           (should-not (string-match-p "Related document (gdrive): [^\n]*RECAP1" text)))))))
 
+(ert-deftest test-efrit-gnus-related-footnote-and-render ()
+  "The washing function appends a footnote of related documents once;
+a render of an article carrying the footnote expands those URLs as
+links and does not search again."
+  (require 'efrit-documents-gdrive)
+  (let ((efrit-documents--cache (make-hash-table :test #'equal))
+        (efrit-gnus-related-documents t)
+        (efrit-gnus-expand-link-functions nil)
+        (searches 0))
+    (cl-letf (((symbol-function 'efrit-documents-gdrive--find-host) (lambda (_s) "gmail"))
+              ((symbol-function 'efrit-documents-ensure-tools) #'ignore)
+              ((symbol-function 'efrit-auth-request)
+               (cl-function
+                (lambda (_host _method url &key raw &allow-other-keys)
+                  (ignore raw)
+                  (cond
+                   ((string-suffix-p "/export" url) "Notes taken by Calendar")
+                   ((string-match-p "/files/NOTES1\\'" url)
+                    '((id . "NOTES1") (name . "Notes: Widget bringup prep") (mimeType . "application/vnd.google-apps.document")
+                      (modifiedTime . "2026-09-15T11:00:00Z") (webViewLink . "https://docs.google.com/document/d/NOTES1/edit")))
+                   ((string-suffix-p "/files" url)
+                    (cl-incf searches)
+                    '((files . (((id . "NOTES1") (name . "Notes: Widget bringup prep")
+                                 (mimeType . "application/vnd.google-apps.document") (modifiedTime . "2026-09-15T11:00:00Z")
+                                 (webViewLink . "https://docs.google.com/document/d/NOTES1/edit"))))))
+                   (t (error "unexpected %s" url)))))))
+      ;; The article buffer as Gnus leaves it after the other treatments.
+      (let ((gnus-article-buffer (generate-new-buffer "*test article*"))
+            (gnus-original-article-buffer (generate-new-buffer "*test original*")))
+        (unwind-protect
+            (progn
+              (with-current-buffer gnus-original-article-buffer
+                (insert "From: a@example.com\nSubject: Recap: Widget bringup prep\nDate: Mon, 15 Sep 2026 10:00:00 +0000\n\nbody\n"))
+              (with-current-buffer gnus-article-buffer
+                (insert "From: a@example.com\nSubject: Recap: Widget bringup prep\nDate: Mon, 15 Sep 2026 10:00:00 +0000\n\nRecap body.\n")
+                (gnus-article-show-related-documents)
+                (let ((text (buffer-string)))
+                  (should (string-match-p "\n\nRelated documents:\n- Notes: Widget bringup prep (gdrive, 2026-09-15) https://docs.google.com/document/d/NOTES1/edit\n" text))
+                  (should (eq 'efrit-gnus-related-heading
+                              (get-text-property (string-match "Related documents:" text) 'face text))))
+                (should (= 1 searches))
+                ;; Idempotent.
+                (gnus-article-show-related-documents)
+                (should (= 1 searches))
+                (should (= 1 (cl-count "Related documents:" (split-string (buffer-string) "\n") :test #'equal)))))
+          (kill-buffer gnus-article-buffer) (kill-buffer gnus-original-article-buffer)))
+      ;; A render of the article shown in the article buffer with the
+      ;; footnote: the footnote's documents are fetched, nothing searched.
+      (setq searches 0)
+      (let ((gnus-article-buffer (generate-new-buffer "*test article*")))
+        (unwind-protect
+            (progn
+              (with-current-buffer gnus-article-buffer
+                (setq-local gnus-article-current (cons "nnml:recaps" 1))
+                (insert "Recap body.\n\n")
+                (let ((start (point)))
+                  (insert "Related documents:\n- Notes: Widget bringup prep (gdrive, 2026-09-15) https://docs.google.com/document/d/NOTES1/edit\n")
+                  (add-text-properties start (point) '(efrit-gnus-related t))))
+              (test-gnus--with-articles
+                  `((("nnml:recaps" . 1) . ,(test-gnus--raw "Recap: Widget bringup prep" "Recap body.")))
+                (let ((text (efrit-gnus--render "nnml:recaps" 1)))
+                  (should (string-match-p "\n\nRelated documents:\n- Notes: Widget bringup prep" text))
+                  (should (string-match-p "Linked document: https://docs.google.com/document/d/NOTES1/edit ---\nTitle: Notes" text))
+                  (should (string-match-p "Notes taken by Calendar" text))
+                  (should (= 0 searches)))
+                ;; Another article: the footnote is not this one's.
+                (with-current-buffer gnus-article-buffer (setq-local gnus-article-current (cons "nnml:recaps" 2)))
+                (efrit-gnus--render "nnml:recaps" 1)
+                (should (= 1 searches))))
+          (kill-buffer gnus-article-buffer)))
+      ;; A render of an article whose body already has the footnote.
+      (setq searches 0)
+      (test-gnus--with-articles
+          `((("nnml:recaps" . 1) . ,(test-gnus--raw "Recap: Widget bringup prep"
+                                                    "Recap body.\n\nRelated documents:\n- Notes: Widget bringup prep (gdrive, 2026-09-15) https://docs.google.com/document/d/NOTES1/edit\n")))
+        (let ((text (efrit-gnus--render "nnml:recaps" 1)))
+          (should (string-match-p "Linked document: https://docs.google.com/document/d/NOTES1/edit ---\nTitle: Notes: Widget bringup prep" text))
+          (should (string-match-p "Notes taken by Calendar" text))
+          (should-not (string-match-p "Related document (gdrive)" text))
+          (should (= 0 searches)))))))
+
 (ert-deftest test-efrit-gnus-prompts-are-pairs ()
   "Every built-in prompt has a per-batch and an over-everything part, and
 a name or a plist resolves to that pair."
