@@ -286,6 +286,24 @@ Executes all ERT tests and displays results in a buffer."
 (autoload 'efrit-list-registered-tools "efrit-tool-registry"
   "Show the tools other packages have registered with efrit." t)
 ;;;###autoload
+(autoload 'efrit-documents-ensure-tools "efrit-documents"
+  "Register the document tools (doc_fetch, doc_search, doc_sources) with efrit." t)
+;;;###autoload
+(autoload 'efrit-documents-list-sources "efrit-documents"
+  "Say which document sources are registered and whether they work." t)
+;;;###autoload
+(autoload 'efrit-documents-gdrive-check "efrit-documents-gdrive"
+  "Check that Google Drive is reachable as a document source." t)
+;;;###autoload
+(autoload 'efrit-documents-confluence-check "efrit-documents-confluence"
+  "Check that each configured Confluence site is reachable as a document source." t)
+;;;###autoload
+(autoload 'efrit-auth-reauthorize "efrit-auth"
+  "Run the OAuth2 consent flow again for an auth-source host." t)
+;;;###autoload
+(autoload 'efrit-auth-check "efrit-auth"
+  "Describe the credentials auth-source holds for a host." t)
+;;;###autoload
 (autoload 'efrit-prompts-manage "efrit-prompts"
   "List and edit efrit's two-part prompts for analyses over many items." t)
 ;;;###autoload

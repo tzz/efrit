@@ -88,6 +88,21 @@ in `prompts.json` under `efrit-data-directory`, a transient chooser
 (`efrit-prompts-read`), and a manager/editor (`M-x efrit-prompts-manage`)
 that can ask the model for an improved version.
 
+Documents outside Emacs come through `efrit-documents.el` (lisp/core): a
+source protocol (`efrit-document-source` with match/fetch/metadata/search
+generics), a session cache keyed by the source's modified time, a
+related-documents lookup (title words near a date), and the
+`doc_fetch`/`doc_search`/`doc_sources` tools.  `efrit-documents-gdrive.el`
+is the Google Drive source and `efrit-documents-confluence.el` the
+Confluence one (Atlassian Cloud and self-hosted, one source per site in
+`efrit-documents-confluence-sites`).  Sources
+talk to their APIs through `efrit-auth.el`: auth-source lookup by host
+(OAuth2 client fields → oauth2.el consent/refresh/plstore, otherwise a
+bearer or basic secret), and `efrit-auth-request` with retries and typed
+errors.  efrit-gnus expands article links and adds related documents
+through this layer; backends only add expanders for links no source
+handles.
+
 ## 📦 **MODULE ORGANIZATION & LOAD ORDER**
 
 ### Directory Structure

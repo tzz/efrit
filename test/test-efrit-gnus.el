@@ -97,10 +97,10 @@ One idle event schedules one step; a second idle during a step does not."
                 ((symbol-function 'efrit-gnus-ensure-tools) #'ignore)
                 ((symbol-function 'efrit-gnus--require) (lambda (&rest _) t))
                 ((symbol-function 'efrit-subscribe) (lambda (type fn) (push (cons type fn) subscribed) fn))
+                ((symbol-function 'efrit-unsubscribe) #'ignore)
                 ((symbol-function 'run-at-time) (lambda (_s _r fn &rest _) (push fn timers) nil)))
         (let ((efrit-gnus-max-chars 900) (efrit-gnus-confirm nil)
-              (efrit-gnus--queue nil) (efrit-gnus--closing nil) (efrit-gnus--watching nil)
-              (efrit-gnus--sending nil))
+              (efrit-gnus--queue nil) (efrit-gnus--closing nil) (efrit-gnus--sending nil))
           (efrit-gnus--submit (mapcar (lambda (n) (cons "nnml:mail" n)) '(1 2 3 4 5))
                               '("Triage." . "Overall triage.") "unread in mail")
           ;; First batch went out: articles 1-2 of 5, and it says so.
@@ -108,7 +108,7 @@ One idle event schedules one step; a second idle during a step does not."
           (should (equal "analyze articles 1-2 of 5 from unread in mail: Triage." (car (car submitted))))
           (should (string-match-p "articles 1-2 here, the rest follow" (cdr (car submitted))))
           (should (= 1 (length efrit-gnus--queue)))
-          (should (= 1 (length subscribed)))
+          (should (equal '(status . efrit-gnus--on-status) (car subscribed)))
           ;; Agent goes idle: the next batch is scheduled and sent.
           (efrit-gnus--on-status '((:status . working)))
           (should-not timers)
@@ -141,6 +141,66 @@ One idle event schedules one step; a second idle during a step does not."
           (setq efrit-gnus--queue '(x) efrit-gnus--closing "c")
           (efrit-gnus-cancel)
           (should-not efrit-gnus--queue) (should-not efrit-gnus--closing))))))
+
+(ert-deftest test-efrit-gnus-reload-drops-stale-handlers ()
+  "After a reload the previous generation's status handlers must be gone
+from the bus, or they race the new one.  Watching is done against the
+real event bus here."
+  (require 'efrit-events)
+  (let ((efrit-events--subscribers nil))
+    (defalias 'efrit-gnus--send-next #'ignore)
+    (defalias 'efrit-gnus--send-closing #'ignore)
+    (unwind-protect
+        (progn
+          (efrit-subscribe 'status #'efrit-gnus--send-next)
+          (efrit-subscribe 'status #'efrit-gnus--send-closing)
+          (efrit-gnus--watch-for-idle)
+          (efrit-gnus--watch-for-idle)
+          (should (equal '(efrit-gnus--on-status)
+                         (cdr (assq 'status efrit-events--subscribers)))))
+      (fmakunbound 'efrit-gnus--send-next)
+      (fmakunbound 'efrit-gnus--send-closing))))
+
+(ert-deftest test-efrit-gnus-documents-in-render ()
+  "A linked Google Doc comes through efrit-documents' Drive source, and a
+related document (same title words, near the date) follows it."
+  (require 'efrit-documents-gdrive)
+  (let ((efrit-documents--cache (make-hash-table :test #'equal))
+        (efrit-gnus-related-documents t)
+        (efrit-gnus-expand-link-functions nil))
+    (cl-letf (((symbol-function 'efrit-documents-gdrive--find-host) (lambda (_s) "gmail"))
+              ((symbol-function 'efrit-auth-request)
+               (cl-function
+                (lambda (_host _method url &key params raw &allow-other-keys)
+                  (cond
+                   ((string-suffix-p "/export" url)
+                    (if (string-match-p "NOTES" url) "Notes taken by Calendar" "The recap text"))
+                   ((string-match-p "/files/RECAP1\\'" url)
+                    '((id . "RECAP1") (name . "Widget bringup prep - recap") (mimeType . "application/vnd.google-apps.document")
+                      (modifiedTime . "2026-09-15T10:00:00Z")))
+                   ((string-match-p "/files/NOTES1\\'" url)
+                    '((id . "NOTES1") (name . "Notes: Widget bringup prep") (mimeType . "application/vnd.google-apps.document")
+                      (modifiedTime . "2026-09-15T11:00:00Z")))
+                   ((string-suffix-p "/files" url)
+                    (should (string-match-p "name contains 'widget'" (cdr (assoc "q" params))))
+                    ;; The article is dated 2026-09-01 (see `test-gnus--raw').
+                    (should (string-match-p "modifiedTime >= '2026-08-29" (cdr (assoc "q" params))))
+                    (should (string-match-p "modifiedTime <= '2026-09-04" (cdr (assoc "q" params))))
+                    '((files . (((id . "RECAP1") (name . "Widget bringup prep - recap")
+                                 (mimeType . "application/vnd.google-apps.document") (modifiedTime . "2026-09-15T10:00:00Z"))
+                                ((id . "NOTES1") (name . "Notes: Widget bringup prep")
+                                 (mimeType . "application/vnd.google-apps.document") (modifiedTime . "2026-09-15T11:00:00Z"))))))
+                   (t (error "unexpected %s (raw %s)" url raw)))))))
+      (test-gnus--with-articles
+          `((("nnml:recaps" . 1) . ,(test-gnus--raw "Recap: Widget bringup prep"
+                                                    "Recap: https://docs.google.com/document/d/RECAP1/edit")))
+        (let ((text (efrit-gnus--render "nnml:recaps" 1)))
+          (should (string-match-p "Linked document: https://docs.google.com/document/d/RECAP1/edit ---\nTitle: Widget bringup prep - recap" text))
+          (should (string-match-p "The recap text" text))
+          (should (string-match-p "Related document (gdrive): .*NOTES1.*\nTitle: Notes: Widget bringup prep" text))
+          (should (string-match-p "Notes taken by Calendar" text))
+          ;; The linked recap is not repeated as a related document.
+          (should-not (string-match-p "Related document (gdrive): [^\n]*RECAP1" text)))))))
 
 (ert-deftest test-efrit-gnus-prompts-are-pairs ()
   "Every built-in prompt has a per-batch and an over-everything part, and
@@ -208,7 +268,8 @@ tools register as read-only under package efrit-gnus."
   (let ((efrit-tool-registry nil))
     (cl-letf (((symbol-function 'efrit-gnus--require) (lambda (&rest _) t)))
       (efrit-gnus-ensure-tools)
-      (should (equal '("gnus_articles" "gnus_groups" "gnus_search")
+      ;; The document tools ride along.
+      (should (equal '("doc_fetch" "doc_search" "doc_sources" "gnus_articles" "gnus_groups" "gnus_search")
                      (sort (mapcar #'car efrit-tool-registry) #'string<)))
       (should (cl-every (lambda (e) (eq 'read (efrit-registered-tool-class (cdr e)))) efrit-tool-registry))
       (should (equal '("gnus_articles" "gnus_groups" "gnus_search")

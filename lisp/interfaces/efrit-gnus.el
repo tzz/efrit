@@ -52,10 +52,14 @@
 ;; Reading an article in Gnus marks it read.  These commands do not go
 ;; through the summary's article display, so they leave marks alone.
 ;;
-;; Links: a backend that can fetch a linked document (a Google Doc a
-;; meeting recap points to, say) adds a function to
-;; `efrit-gnus-expand-link-functions'; the document's text then follows
-;; the article in everything the model sees, with no extra command.
+;; Documents: a link in the article that an efrit document source
+;; (`efrit-documents': Google Drive, ...) can fetch is followed by the
+;; document's text, and documents related to the article -- same title
+;; words, near the same date, such as the notes Calendar took for the
+;; meeting a recap describes -- follow that.  A backend can add its own
+;; expander to `efrit-gnus-expand-link-functions' for links no source
+;; handles.  The document tools (doc_fetch, doc_search) are registered
+;; with the Gnus ones.
 ;;
 ;; Privacy: article text goes to the model efrit is configured for, as
 ;; anything you ask efrit does.  Nothing asks first; you chose the
@@ -87,6 +91,7 @@
 (require 'message)
 (require 'efrit-events)
 (require 'efrit-prompts)
+(require 'efrit-documents)
 
 (declare-function efrit-register-tool "efrit-tool-registry")
 (declare-function efrit-unregister-package-tools "efrit-tool-registry")
@@ -205,6 +210,15 @@ adds one for Google Docs.  Only URLs matching
 (defcustom efrit-gnus-expand-links-max 5
   "Most links expanded per article; the rest are listed as URLs only."
   :type 'integer)
+
+(defcustom efrit-gnus-related-documents t
+  "Whether an analysis also carries documents related to each article.
+Related means: found in a document source (`efrit-documents') by the
+words of the subject, modified within a few days of the article's
+date, and not already linked from it.  For a meeting recap that is the
+notes Calendar took for the same meeting.  Costs one search per source
+per article; nil turns it off."
+  :type 'boolean)
 
 (defcustom efrit-gnus-summary-prefix-key "C-c g"
   "Prefix under which `efrit-gnus-map' is bound in Gnus summary and group buffers.
@@ -332,9 +346,11 @@ Trailing punctuation is dropped."
     (nreverse out)))
 
 (defun efrit-gnus--expand-link (url)
-  "Text for URL from `efrit-gnus-expand-link-functions', or nil.
+  "Text for URL: from a document source, else `efrit-gnus-expand-link-functions'.
 An expander that signals contributes a note naming the error."
   (catch 'done
+    (when-let* ((text (efrit-documents-expand-url url)))
+      (throw 'done text))
     (dolist (fn efrit-gnus-expand-link-functions)
       (condition-case err
           (when-let* ((text (funcall fn url)))
@@ -343,10 +359,18 @@ An expander that signals contributes a note naming the error."
          (throw 'done (format "[could not fetch: %s]" (error-message-string err))))))
     nil))
 
+(defun efrit-gnus--related-documents (headers body)
+  "Documents related to an article with HEADERS (an alist) and BODY, as text, or nil."
+  (when (and efrit-gnus-related-documents (efrit-documents-sources))
+    (efrit-documents-related-text
+     (list :title (cdr (assoc "Subject" headers))
+           :date (cdr (assoc "Date" headers))
+           :urls (efrit-gnus--article-links body)))))
+
 (defun efrit-gnus--expand-links (body)
   "Linked documents of BODY as text blocks to append, or nil.
 At most `efrit-gnus-expand-links-max' links are fetched."
-  (when efrit-gnus-expand-link-functions
+  (when (or efrit-gnus-expand-link-functions (efrit-documents-sources))
     (let ((n 0) blocks)
       (dolist (url (efrit-gnus--article-links body))
         (when (< n efrit-gnus-expand-links-max)
@@ -357,9 +381,10 @@ At most `efrit-gnus-expand-links-max' links are fetched."
 
 (defun efrit-gnus--render (group number)
   "Article NUMBER of GROUP as plain text: headers, body, attachment list.
-Documents linked from the body that an `efrit-gnus-expand-link-functions'
-entry can fetch follow the body.  Returns nil when the article cannot
-be fetched."
+Documents linked from the body that a document source or an
+`efrit-gnus-expand-link-functions' entry can fetch follow the body,
+then documents related to it (see `efrit-gnus-related-documents').
+Returns nil when the article cannot be fetched."
   (when-let* ((raw (efrit-gnus--fetch-raw group number)))
     (with-temp-buffer
       (set-buffer-multibyte nil)
@@ -393,7 +418,9 @@ be fetched."
                      "[no text body]"
                    (efrit-gnus--clip body efrit-gnus-article-max-chars))
                  (when-let* ((linked (efrit-gnus--expand-links body)))
-                   (concat "\n\n" linked)))))
+                   (concat "\n\n" linked))
+                 (when-let* ((related (efrit-gnus--related-documents headers body)))
+                   (concat "\n\n" related)))))
           (when handles (mm-destroy-parts handles)))))))
 
 (defun efrit-gnus--header-line (group number)
@@ -496,8 +523,6 @@ turns; the first goes now, the rest as each turn ends.")
 (defvar efrit-gnus--closing nil
   "The summary prompt to send once the last batch's turn has ended, or nil.")
 
-(defvar efrit-gnus--watching nil)
-
 (defun efrit-gnus--api-text (prompt text offset sent total)
   "The message the model receives: PROMPT, guidance, the batch TEXT."
   (concat
@@ -586,10 +611,17 @@ session busy)."
     (run-at-time 0.1 nil #'efrit-gnus--send-next-batch)))
 
 (defun efrit-gnus--watch-for-idle ()
-  "Subscribe once to the agent's status events."
-  (unless efrit-gnus--watching
-    (efrit-subscribe 'status #'efrit-gnus--on-status)
-    (setq efrit-gnus--watching t)))
+  "Subscribe to the agent's status events.
+`efrit-subscribe' adds a function once, so this is safe to call at load
+and before every selection.  Subscribers from an earlier version of
+this file are removed: a reload keeps `efrit-events--subscribers' and
+the old function definitions, and two generations of handlers racing
+sent the closing summary before the second batch (2026-09-22)."
+  (dolist (old '(efrit-gnus--send-next efrit-gnus--send-closing))
+    (efrit-unsubscribe 'status old))
+  (efrit-subscribe 'status #'efrit-gnus--on-status))
+
+(efrit-gnus--watch-for-idle)
 
 (defun efrit-gnus--submit (refs prompt &optional where group query)
   "Render REFS and run PROMPT over them: per batch, then over everything.
@@ -805,6 +837,7 @@ passed raw.  At most `efrit-gnus-search-limit' results are used."
   (pcase-dolist (`(,name ,description ,schema ,fn) efrit-gnus--tools)
     (efrit-register-tool name :description description :input-schema schema
                          :function fn :class 'read :package 'efrit-gnus))
+  (efrit-documents-ensure-tools)
   (when (called-interactively-p 'any)
     (message "efrit-gnus: %d tools registered" (length efrit-gnus--tools))))
 
