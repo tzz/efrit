@@ -89,6 +89,7 @@
 (declare-function gnus-search-server-to-engine "gnus-search")
 (declare-function gnus-search-run-search "gnus-search")
 (defvar shr-width) (defvar shr-use-fonts) (defvar shr-inhibit-images)
+(defvar gnus-summary-article-menu)
 
 (defgroup efrit-gnus nil
   "Ask efrit about articles in Gnus."
@@ -704,13 +705,28 @@ reload rebuilds)."
 
 (efrit-gnus--install-keys)
 
-(easy-menu-add-item gnus-summary-mode-map '("menu-bar" "Article")
-                    '("Ask efrit"
-                      ["About the selection..." efrit-gnus-analyze t]
-                      ["About this thread..." efrit-gnus-analyze-thread t]
-                      ["About all unread here..." efrit-gnus-analyze-unread t]
-                      ["About the newest N here..." efrit-gnus-analyze-group t]
-                      ["About a search..." efrit-gnus-analyze-search t]))
+(defconst efrit-gnus--menu
+  '("Ask efrit"
+    ["About the selection..." efrit-gnus-analyze t]
+    ["About this thread..." efrit-gnus-analyze-thread t]
+    ["About all unread here..." efrit-gnus-analyze-unread t]
+    ["About the newest N here..." efrit-gnus-analyze-group t]
+    ["About a search..." efrit-gnus-analyze-search t])
+  "The submenu added to Gnus's Article menu.")
+
+(defun efrit-gnus--install-menu ()
+  "Add the \"Ask efrit\" submenu to the summary's Article menu.
+Gnus builds that menu lazily, in `gnus-summary-make-menu-bar' when the
+first summary opens; adding to the mode map before then made a second
+\"Article\" menu.  So this runs from `gnus-summary-menu-hook', which
+Gnus calls once the menus exist."
+  (when (boundp 'gnus-summary-article-menu)
+    (easy-menu-add-item gnus-summary-article-menu nil efrit-gnus--menu)))
+
+(add-hook 'gnus-summary-menu-hook #'efrit-gnus--install-menu)
+;; A summary already open (this file loaded late, or reloaded) has its
+;; menu built; add to it now.
+(efrit-gnus--install-menu)
 
 (provide 'efrit-gnus)
 
