@@ -57,6 +57,49 @@ and deleting the override restores the built-in."
     (should-error (efrit-prompts-put "" "x" "y") :type 'user-error)
     (should-error (efrit-prompts-put "blank" "  " "y") :type 'user-error)))
 
+(ert-deftest test-efrit-prompts-kinds ()
+  "A prompt is single or summarizing: derived from the summary when not
+given, stored in the file, kept by copy and rename; a single prompt's
+pair has no summary; a summarizing prompt needs one."
+  (test-prompts--with-library
+    (efrit-prompts-define "solo" "Draft a reply to each." nil "one task" 'single)
+    (should (eq 'single (efrit-prompts-kind (efrit-prompts-get "solo"))))
+    (should (eq 'summarizing (efrit-prompts-kind (efrit-prompts-get "one"))))
+    (should (equal '("Draft a reply to each." . nil) (efrit-prompts-pair "solo")))
+    ;; Explicit kind wins over the summary text; a single prompt drops it
+    (efrit-prompts-put "quick" "Do this." "ignored" nil 'single)
+    (should (equal "" (plist-get (efrit-prompts-get "quick") :summary)))
+    (should-not (efrit-prompts-summarizing-p (efrit-prompts-get "quick")))
+    ;; Derived: an empty summary means single
+    (efrit-prompts-put "derived" "Do that." "")
+    (should (eq 'single (efrit-prompts-kind (efrit-prompts-get "derived"))))
+    (should-error (efrit-prompts-put "bad" "Item." "" nil 'summarizing) :type 'user-error)
+    ;; Round trip through the file, and a pre-kind file entry
+    (efrit-prompts-reload)
+    (should (eq 'single (efrit-prompts-kind (efrit-prompts-get "quick"))))
+    (should (eq 'summarizing
+                (efrit-prompts-kind
+                 (efrit-prompts--plist-from-json
+                  (let ((h (make-hash-table :test 'equal)))
+                    (puthash "name" "old" h) (puthash "item" "i" h) (puthash "summary" "s" h) h)))))
+    (efrit-prompts-rename "quick" "quicker")
+    (should (eq 'single (efrit-prompts-kind (efrit-prompts-get "quicker"))))
+    ;; The manager shows the kind and no summary hint for a single prompt
+    (with-temp-buffer
+      (efrit-prompts-manage-mode)
+      (efrit-prompts-manage-refresh)
+      (let ((row (seq-find (lambda (e) (equal (car e) "quicker")) tabulated-list-entries)))
+        (should (equal "single" (substring-no-properties (aref (cadr row) 2))))
+        (should (equal "" (aref (cadr row) 4)))))
+    ;; The editor round-trips the kind and rejects an unknown one
+    (with-temp-buffer
+      (efrit-prompts-edit-mode)
+      (efrit-prompts-edit--insert (efrit-prompts-get "quicker"))
+      (should (equal "single" (plist-get (efrit-prompts-edit--read) :kind)))
+      (should (eq 'single (efrit-prompts-edit--kind (efrit-prompts-edit--read))))
+      (efrit-prompts-edit--replace-section :kind "weekly")
+      (should-error (efrit-prompts-edit--kind (efrit-prompts-edit--read)) :type 'user-error))))
+
 (ert-deftest test-efrit-prompts-pair-and-names ()
   "Pairs resolve from a name, a plist, a pair or a question; the last
 used name is offered first."
@@ -139,7 +182,8 @@ parts; the callback gets the parsed pair, or the failure as a string."
             (efrit-prompts-edit-mode)
             (efrit-prompts-edit--insert '(:name "one" :description "first"
                                           :item "Item one." :summary "Summary one."))
-            (should (equal '(:name "one" :description "first" :item "Item one." :summary "Summary one.")
+            (should (equal '(:name "one" :description "first" :kind "summarizing"
+                             :item "Item one." :summary "Summary one.")
                            (efrit-prompts-edit--read)))
             (efrit-prompts-edit--replace-section :item "New item.")
             (efrit-prompts-edit--replace-section :summary "New summary.")

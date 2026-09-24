@@ -128,8 +128,9 @@
 
 ;;;; Prompts
 ;; The named prompts live in efrit-prompts (a library with an editor,
-;; `M-x efrit-prompts-manage'); these are the built-in ones.  Each has
-;; a per-batch part and an over-everything part.  Prompts may mention
+;; `M-x efrit-prompts-manage'); these are the built-in ones.  A
+;; summarizing prompt has a per-batch part and an over-everything part;
+;; a single prompt ("draft replies") has the per-batch part only.  Prompts may mention
 ;; the group, the count and the query with the placeholders {group},
 ;; {count} and {query}.
 
@@ -144,7 +145,7 @@
 (efrit-prompts-define
  "draft replies"
  "For each message that expects a reply from me, draft one in my voice: brief, plain, specific. Show the draft under the message's subject. Say which messages need no reply and why."
- "Across all of them: which replies are urgent, which can be one combined reply to the same person or thread, and which can wait. Order them.")
+ nil "One task per message; nothing to consolidate." 'single)
 (efrit-prompts-define
  "who and what"
  "Who are the people in these messages and what does each one want or report? One line per person per message."
@@ -588,21 +589,25 @@ article larger than the whole budget goes out alone, cut by
 (defun efrit-gnus--read-prompt (&optional default purpose)
   "Ask for a prompt through `efrit-prompts-read'.
 Returns (ITEM-PROMPT . SUMMARY-PROMPT); for typed text the summary is
-nil and `efrit-gnus--summary-prompt' derives one.  DEFAULT names the
+nil and `efrit-gnus--prompt-pair' derives one.  DEFAULT names the
 prompt offered first, PURPOSE heads the chooser."
   (efrit-prompts-read (or purpose "Ask efrit about the articles")
                       (or default efrit-prompts-last efrit-gnus-default-prompt)))
 
 (defun efrit-gnus--prompt-pair (prompt)
-  "PROMPT as (ITEM . SUMMARY): a pair or plist passes through, a name is
-looked up, any other string is a question with no summary."
-  (efrit-prompts-pair prompt))
-
-(defun efrit-gnus--summary-prompt (pair)
-  "The over-everything prompt of PAIR, derived from the item prompt when absent."
-  (or (cdr pair)
-      (format "Now the same, over the whole selection as one: %s Consolidate; do not repeat the per-message answers."
-              (car pair))))
+  "PROMPT as (ITEM . SUMMARY).
+A pair or plist passes through, a name is looked up; a single-task
+prompt has a nil SUMMARY and no closing turn.  A typed question (a
+string that names no prompt) gets a derived summary: the user asked
+one thing of the whole selection, so it is asked once more over all
+the answers."
+  (let ((pair (efrit-prompts-pair prompt)))
+    (if (and (null (cdr pair))
+             (not (efrit-prompts-name-of (car pair))))
+        (cons (car pair)
+              (format "Now the same, over the whole selection as one: %s Consolidate; do not repeat the per-message answers."
+                      (car pair)))
+      pair)))
 
 (defun efrit-gnus--fill (prompt group count query)
   "PROMPT with {group}, {count} and {query} filled in."
@@ -661,17 +666,23 @@ Rendering runs the event loop (network fetches for linked documents),
 so a second idle event can arrive meanwhile; this keeps it from
 starting anything.")
 
-(defun efrit-gnus--api-text (prompt text offset sent total)
-  "The message the model receives: PROMPT, guidance, the batch TEXT."
+(defun efrit-gnus--api-text (prompt text offset sent total &optional summarizing)
+  "The message the model receives: PROMPT, guidance, the batch TEXT.
+SUMMARIZING says a closing turn over everything will follow."
   (concat
    prompt
    (if (> total sent)
-       (format "\n\nThis is part of a selection of %d articles, sent in batches because of size: articles %d-%d here%s. Answer for these now, briefly per article; a final message will ask for the view over the whole selection."
+       (format "\n\nThis is part of a selection of %d articles, sent in batches because of size: articles %d-%d here%s. Answer for these now%s."
                total (1+ offset) (+ offset sent)
                (if efrit-gnus-isolate-batches
                    ", each batch in a conversation of its own"
-                 ", the rest follow in later messages"))
-     "\n\nAnswer per article, briefly; a follow-up message will ask for the view over the whole selection.")
+                 ", the rest follow in later messages")
+               (if summarizing
+                   ", briefly per article; a final message will ask for the view over the whole selection"
+                 ", per article"))
+     (if summarizing
+         "\n\nAnswer per article, briefly; a follow-up message will ask for the view over the whole selection."
+       "\n\nAnswer per article."))
    "\n\nThe articles follow, oldest first, each with its reference (GROUP#NUMBER). "
    "Refer to them by subject and sender, not by number. "
    "If you need other articles, the rest of a conversation, or the full text of one "
@@ -719,7 +730,8 @@ turn started."
                     (format "analyze %d article%s from %s: %s"
                             total (if (= 1 total) "" "s")
                             (or where "the selection") (efrit-gnus--prompt-name prompt))))
-           (api (efrit-gnus--api-text prompt text offset sent total)))
+           (api (efrit-gnus--api-text prompt text offset sent total
+                                      (and (efrit-gnus-run-closing run) t))))
       (when rest
         (push (list rest prompt where last total) (efrit-gnus-run-queue run)))
       (cl-incf (efrit-gnus-run-batches run))
@@ -811,7 +823,7 @@ for what each turn can see."
   (let* ((pair (efrit-gnus--prompt-pair prompt))
          (n (length refs))
          (item (efrit-gnus--fill (car pair) group n query))
-         (summary (efrit-gnus--fill (efrit-gnus--summary-prompt pair) group n query))
+         (summary (and (cdr pair) (efrit-gnus--fill (cdr pair) group n query)))
          (session (efrit-agent-repl-session))
          (run (efrit-gnus-run--make
                :closing summary :session session

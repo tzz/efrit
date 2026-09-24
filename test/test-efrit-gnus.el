@@ -425,19 +425,26 @@ documents are fetched.  A failing one is a recorded problem, not an error."
           (should (member "no calendar today" efrit-documents-related-problems)))))))
 
 (ert-deftest test-efrit-gnus-prompts-are-pairs ()
-  "Every built-in prompt has a per-batch and an over-everything part, and
-a name or a plist resolves to that pair."
+  "Every built-in prompt has a per-batch part; summarizing ones an
+over-everything part too.  A name or a plist resolves to that pair, a
+single prompt to an item with no closing, a typed question to the
+question plus a derived closing."
   (should (>= (length efrit-prompts-builtin) 9))
   (dolist (p efrit-prompts-builtin)
     (should (stringp (plist-get p :name)))
     (should (stringp (plist-get p :item)))
-    (should (stringp (plist-get p :summary))))
+    (should (memq (efrit-prompts-kind p) '(single summarizing)))
+    (when (efrit-prompts-summarizing-p p)
+      (should (not (string-empty-p (plist-get p :summary))))))
   (let ((efrit-prompts--loaded t) (efrit-prompts--user nil))
-    (should (efrit-prompts-get "trends, accomplishments, concerns"))
+    (should (efrit-prompts-summarizing-p (efrit-prompts-get "trends, accomplishments, concerns")))
+    (should-not (efrit-prompts-summarizing-p (efrit-prompts-get "draft replies")))
     (should (equal (efrit-gnus--prompt-pair "triage")
                    (efrit-gnus--prompt-pair (efrit-prompts-get "triage"))))
-    (should (equal (efrit-gnus--prompt-pair "Which mention budgets?")
-                   '("Which mention budgets?" . nil)))))
+    (should (cdr (efrit-gnus--prompt-pair "triage")))
+    (should-not (cdr (efrit-gnus--prompt-pair "draft replies")))
+    (should (equal "Now the same, over the whole selection as one: Which mention budgets? Consolidate; do not repeat the per-message answers."
+                   (cdr (efrit-gnus--prompt-pair "Which mention budgets?"))))))
 
 (ert-deftest test-efrit-gnus-submit-builds-turn ()
   "The submission fills the prompt, confirms once, and hands efrit a short
