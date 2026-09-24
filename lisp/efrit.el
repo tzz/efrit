@@ -298,6 +298,9 @@ Executes all ERT tests and displays results in a buffer."
 (autoload 'efrit-documents-gcalendar-check "efrit-documents-gcalendar"
   "Check that Google Calendar is reachable as a related-documents provider." t)
 ;;;###autoload
+(autoload 'efrit-documents-jira-check "efrit-documents-jira"
+  "Check that Jira is reachable as a document source (through jira.el)." t)
+;;;###autoload
 (autoload 'efrit-documents-confluence-check "efrit-documents-confluence"
   "Check that each configured Confluence site is reachable as a document source." t)
 ;;;###autoload
@@ -330,6 +333,8 @@ Executes all ERT tests and displays results in a buffer."
 ;;;###autoload
 (autoload 'efrit-submit "efrit-agent-input"
   "Start a REPL turn from Lisp with a prepared prompt.")
+(autoload 'efrit-agent-repl-session "efrit-agent-input"
+  "The agent buffer's REPL session, created if needed.")
 ;;;###autoload
 (autoload 'efrit-reload "efrit-reload"
   "Reload every loaded efrit library from source, dependencies first." t)

@@ -133,6 +133,7 @@
        ("g" "Document source check: Google Drive" efrit-documents-gdrive-check)
        ("w" "Document source check: Confluence" efrit-documents-confluence-check)
        ("k" "Document source check: Google Calendar" efrit-documents-gcalendar-check)
+       ("j" "Document source check: Jira" efrit-documents-jira-check)
        ("P" "Review an installed package" efrit-review-package)
        ("V" "Review all installed packages" efrit-review-all-packages)
        ("X" "Forget session sandbox grants" efrit-sandbox-reset-session :transient t)

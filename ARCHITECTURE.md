@@ -79,7 +79,22 @@ agent buffer and sends API-INPUT (with the editor-context block
 prepended, as for typed input) to the model.  First user: `efrit-gnus.el` (lisp/interfaces), which sends selected
 Gnus articles with an analysis prompt and registers `gnus_groups`,
 `gnus_search` and `gnus_articles`; nngmail adds Gmail-specific tools on
-top of it from its own repository.
+top of it from its own repository.  A package that runs several turns
+over separate data takes a history mark first
+(`efrit-repl-session-history-mark` on `(efrit-agent-repl-session)`),
+rewinds to it before each turn (`efrit-repl-session-rewind`) and reads
+each answer with `efrit-repl-session-last-answer`; efrit-gnus does this
+per batch, so the model never rereads earlier batches, and sends the
+stitched answers to the closing turn.
+
+The REPL history is also bounded by size: before every request
+`efrit-repl-session-fit-context` estimates the history against the
+model's window (`efrit-usage-window`, per-model via
+`efrit-usage-context-windows`, less `efrit-repl-context-headroom`) and
+elides the oldest tool results, then the oldest user messages, in
+place; a `note` event says what it dropped.  Without this a long
+tool-heavy turn grew past the window and every request after it failed
+with "prompt is too long".
 
 Prompts for such analyses come from `efrit-prompts.el` (lisp/interfaces):
 a library of two-part prompts (one part per batch of items, one over
@@ -95,7 +110,9 @@ related-documents lookup (title words near a date), and the
 `doc_fetch`/`doc_search`/`doc_sources` tools.  `efrit-documents-gdrive.el`
 is the Google Drive source and `efrit-documents-confluence.el` the
 Confluence one (Atlassian Cloud and self-hosted, one source per site in
-`efrit-documents-confluence-sites`).  `efrit-documents-gcalendar.el` is
+`efrit-documents-confluence-sites`).  `efrit-documents-jira.el` wraps
+the jira.el package (and its nnjira renderer) as a source and a
+key-mention provider. `efrit-documents-gcalendar.el` is
 not a source but a related-documents provider
 (`efrit-documents-related-functions`): it finds the calendar event an
 item is about by date, title words and people, and returns the event's

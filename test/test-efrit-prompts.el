@@ -166,5 +166,47 @@ parts; the callback gets the parsed pair, or the failure as a string."
       (should (string-match-p "built-in" (buffer-string)))
       (should (string-match-p "Item mine" (buffer-string))))))
 
+(defvar test-prompts--depth 0 "The fake recursion depth; dynamic so the stubs see rebinding.")
+
+(ert-deftest test-efrit-prompts-manager-wait-survives-view-and-edit ()
+  "The chooser's wait on the manager ends on `q' or on killing the buffer,
+not when another buffer (the view popup, the editor) takes its window."
+  (test-prompts--with-library
+    (let ((buf (get-buffer-create " *efrit prompts test*"))
+          (events nil) (inside nil) (recursive nil))
+      (unwind-protect
+          (cl-letf* ((test-prompts--depth (recursion-depth))
+                     ((symbol-function 'recursion-depth) (lambda () test-prompts--depth))
+                     ;; A real recursive edit runs INSIDE one level deeper
+                     ((symbol-function 'recursive-edit)
+                      (lambda () (setq recursive t)
+                        (let ((test-prompts--depth (1+ test-prompts--depth)))
+                          (funcall inside))))
+                    ((symbol-function 'exit-recursive-edit)
+                     (lambda () (push 'exit events)))
+                    ((symbol-function 'quit-window) (lambda (&rest _) (push 'quit events))))
+            ;; Inside the "recursive edit": the window goes away (view,
+            ;; edit) and nothing ends the wait; `q' does.
+            (setq inside (lambda ()
+                           (with-current-buffer buf
+                             (run-hooks 'window-configuration-change-hook)
+                             (run-hooks 'buffer-list-update-hook)
+                             (should-not (memq 'exit events))
+                             (efrit-prompts-manage-quit)
+                             (should (equal '(exit quit) (seq-take events 2))))))
+            (with-current-buffer buf (efrit-prompts-manage-mode))
+            (efrit-prompts--wait-for-buffer buf)
+            (should recursive)
+            ;; Outside a wait, `q' only quits the window.
+            (setq events nil)
+            (with-current-buffer buf (efrit-prompts-manage-quit))
+            (should (equal '(quit) events))
+            ;; Killing the manager during a wait ends it too.
+            (setq events nil)
+            (setq inside (lambda () (kill-buffer buf)))
+            (efrit-prompts--wait-for-buffer buf)
+            (should (equal '(exit) events)))
+        (when (buffer-live-p buf) (kill-buffer buf))))))
+
 (provide 'test-efrit-prompts)
 ;;; test-efrit-prompts.el ends here

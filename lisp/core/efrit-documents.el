@@ -70,10 +70,10 @@
   :group 'efrit
   :prefix "efrit-documents-")
 
-(defcustom efrit-documents-sources-libraries '(efrit-documents-gdrive efrit-documents-gcalendar efrit-documents-confluence)
+(defcustom efrit-documents-sources-libraries '(efrit-documents-gdrive efrit-documents-gcalendar efrit-documents-confluence efrit-documents-jira)
   "Libraries loaded by `efrit-documents-ensure-tools' so their sources register.
 Google Drive, Google Calendar (a related-documents provider, not a
-source) and Confluence come with efrit (Confluence registers nothing
+source), Confluence and Jira (through the jira.el package) come with efrit (Confluence registers nothing
 until `efrit-documents-confluence-sites' is set); add yours, or remove
 one you never use."
   :type '(repeat symbol))
@@ -109,7 +109,7 @@ positives with them."
 
 (defcustom efrit-documents-related-functions nil
   "Functions that know which documents belong with an item, beyond title search.
-Each is called with the ITEM plist (:title :date :urls) and returns a
+Each is called with the ITEM plist (:title :date :urls :body ...) and returns a
 list of document plists (with :source and :id at least, no :text), or
 nil.  They run before the title search in `efrit-documents-related';
 what they return comes first and is not searched for again.  The

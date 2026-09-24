@@ -71,8 +71,12 @@
 ;; Size: a selection larger than `efrit-gnus-max-chars' goes out as
 ;; consecutive turns.  Each prompt in the library has two
 ;; parts: one asked of every batch, one asked once at the end over the
-;; whole selection.  `efrit-gnus-cancel' stops the batches still
-;; queued.
+;; whole selection.  By default (`efrit-gnus-isolate-batches') each
+;; batch is a turn of its own: the conversation is taken back to where
+;; the selection started before every batch, so the model reads one
+;; batch at a time, and the closing turn gets the per-batch answers
+;; stitched together instead of the articles.  `efrit-gnus-cancel'
+;; stops the batches still queued.
 ;;
 ;; Keys: `efrit-gnus-map' is bound under `efrit-gnus-summary-prefix-key'
 ;; (default `C-c g') in every Gnus summary and group buffer, and the analyze
@@ -100,6 +104,10 @@
 (declare-function efrit-register-tool "efrit-tool-registry")
 (declare-function efrit-unregister-package-tools "efrit-tool-registry")
 (declare-function efrit-submit "efrit-agent-input")
+(declare-function efrit-agent-repl-session "efrit-agent-input")
+(declare-function efrit-repl-session-history-mark "efrit-repl-session")
+(declare-function efrit-repl-session-rewind "efrit-repl-session")
+(declare-function efrit-repl-session-last-answer "efrit-repl-session")
 (declare-function efrit-reload "efrit-reload")
 (declare-function nngmail-reload "nngmail-reload")
 (declare-function shr-insert-document "shr")
@@ -178,6 +186,16 @@ a note, so the model knows what it did not read."
 
 (defcustom efrit-gnus-tool-max-articles 25
   "Most articles the `gnus_articles' tool returns in full at once."
+  :type 'integer)
+
+(defcustom efrit-gnus-tool-max-chars 40000
+  "Characters of article text one `gnus_articles' call returns, in total.
+Separate from `efrit-gnus-max-chars', which sizes the batches an
+analysis sends: a tool result stays in the conversation for every
+later request, and the model tends to call the tool many times in one
+turn (52 calls in a 115-article run on 2026-09-24, which is what
+overran the context window).  Articles past this are listed by
+reference for a second call."
   :type 'integer)
 
 (defcustom efrit-gnus-search-limit 50
@@ -415,7 +433,8 @@ the render can use it instead of searching again."
               :date (funcall header "Date")
               :from (funcall header "From")
               :participants (delq nil (list (funcall header "To") (funcall header "Cc")))
-              :urls (efrit-gnus--article-links body))))))
+              :urls (efrit-gnus--article-links body)
+              :body body)))))
 
 (defun efrit-gnus-related-documents-default ()
   "The default `efrit-gnus-related-documents-function': ask `efrit-documents-related'."
@@ -531,15 +550,16 @@ Returns nil when the article cannot be fetched."
   (when (and (> total 3) (or (= done total) (zerop (% done 5))))
     (message "efrit-gnus: rendering %d/%d" done total)))
 
-(defun efrit-gnus--payload (refs &optional batch)
-  "The articles REFS ((GROUP . NUMBER) ...) rendered, within `efrit-gnus-max-chars'.
+(defun efrit-gnus--payload (refs &optional batch max-chars)
+  "The articles REFS ((GROUP . NUMBER) ...) rendered, within MAX-CHARS.
+MAX-CHARS defaults to `efrit-gnus-max-chars'.
 Returns (TEXT SENT-COUNT TOTAL-CHARS REST): REST is the tail of REFS
 that did not fit, in order, for the caller to send as the next batch;
 nil when everything fit.  Articles are numbered within the whole
 selection: BATCH is (OFFSET . TOTAL) when this is a later batch.  An
 article larger than the whole budget goes out alone, cut by
 `efrit-gnus-article-max-chars' as always."
-  (let ((budget efrit-gnus-max-chars)
+  (let ((budget (or max-chars efrit-gnus-max-chars))
         (parts nil) (sent 0) (total 0) (rest nil)
         (i (or (car batch) 0))
         (n (or (cdr batch) (length refs)))
@@ -605,21 +625,52 @@ looked up, any other string is a question with no summary."
                               count (if (= count 1) "" "s") chars))
         (setq efrit-gnus--confirmed t))))
 
-(defvar efrit-gnus--queue nil
-  "Batches waiting for the agent to go idle: (REFS PROMPT WHERE OFFSET TOTAL).
-A selection larger than `efrit-gnus-max-chars' is sent as consecutive
-turns; the first goes now, the rest as each turn ends.")
+(defcustom efrit-gnus-isolate-batches t
+  "Whether each batch of a selection is analyzed in a turn of its own.
+When non-nil, the model sees one batch at a time: before every batch
+the conversation is taken back to where it stood when the selection
+started, so no batch reads the ones before it.  The per-batch answers
+are collected, and the closing turn receives them all, stitched, with
+the summary prompt -- not the articles.  With 115 articles in five
+batches this keeps every request near one batch in size, where the
+accumulating history overran the model's context window (1.06M tokens
+on 2026-09-24).  nil keeps every batch and its answer in the
+conversation, so the closing summary can also see the articles."
+  :type 'boolean)
 
-(defvar efrit-gnus--closing nil
-  "The summary prompt to send once the last batch's turn has ended, or nil.")
+(cl-defstruct (efrit-gnus-run (:constructor efrit-gnus-run--make))
+  "One selection in flight: its batches, answers, and closing prompt."
+  (queue nil)      ; batches waiting: (REFS PROMPT WHERE OFFSET TOTAL), oldest last
+  (closing nil)    ; the summary prompt, sent after the last batch
+  (mark nil)       ; history mark of the session when the run started
+  (session nil)    ; the REPL session the run uses
+  (answers nil)    ; (LABEL . ANSWER) per finished batch, newest first
+  (batches 0)      ; batches sent so far
+  (where nil)      ; how the selection is named in the conversation
+  (total 0))       ; articles in the selection
+
+(defvar efrit-gnus--run nil
+  "The `efrit-gnus-run' in progress, or nil.
+A selection larger than `efrit-gnus-max-chars' is sent as consecutive
+turns; the first goes now, the rest as each turn ends, then the
+closing summary.")
+
+(defvar efrit-gnus--sending nil
+  "Non-nil while a queued batch is being rendered and submitted.
+Rendering runs the event loop (network fetches for linked documents),
+so a second idle event can arrive meanwhile; this keeps it from
+starting anything.")
 
 (defun efrit-gnus--api-text (prompt text offset sent total)
   "The message the model receives: PROMPT, guidance, the batch TEXT."
   (concat
    prompt
    (if (> total sent)
-       (format "\n\nThis is part of a selection of %d articles, sent in batches because of size: articles %d-%d here, the rest follow in later messages. Answer for these now, briefly per article; a final message will ask for the view over the whole selection."
-               total (1+ offset) (+ offset sent))
+       (format "\n\nThis is part of a selection of %d articles, sent in batches because of size: articles %d-%d here%s. Answer for these now, briefly per article; a final message will ask for the view over the whole selection."
+               total (1+ offset) (+ offset sent)
+               (if efrit-gnus-isolate-batches
+                   ", each batch in a conversation of its own"
+                 ", the rest follow in later messages"))
      "\n\nAnswer per article, briefly; a follow-up message will ask for the view over the whole selection.")
    "\n\nThe articles follow, oldest first, each with its reference (GROUP#NUMBER). "
    "Refer to them by subject and sender, not by number. "
@@ -627,8 +678,34 @@ turns; the first goes now, the rest as each turn ends.")
    "that was cut, the gnus_search and gnus_articles tools give it to you.\n\n"
    text))
 
-(defun efrit-gnus--submit-batch (refs prompt where offset total)
-  "Render and submit the batch starting REFS; queue the remainder.
+(defun efrit-gnus--closing-text (run prompt)
+  "The closing message of RUN: PROMPT over the stitched per-batch answers.
+With `efrit-gnus-isolate-batches' the model has not seen the batches
+this turn, so their answers are inlined, oldest first."
+  (let ((answers (reverse (efrit-gnus-run-answers run))))
+    (if (and efrit-gnus-isolate-batches answers)
+        (concat
+         (format "That was the whole selection: %d articles from %s, analyzed in %d batch%s. The analysis of each batch follows; the articles themselves are not in this conversation (the gnus_search and gnus_articles tools have them if you need one).\n\n"
+                 (efrit-gnus-run-total run) (or (efrit-gnus-run-where run) "the selection")
+                 (length answers) (if (= 1 (length answers)) "" "es"))
+         (mapconcat (lambda (a) (format "=== %s ===\n%s" (car a) (cdr a))) answers "\n\n")
+         "\n\n" prompt)
+      (concat "That was the whole selection. " prompt))))
+
+(defun efrit-gnus--rewind-for-turn (run)
+  "Take RUN's session back to the history mark, when batches are isolated."
+  (when (and efrit-gnus-isolate-batches (efrit-gnus-run-session run) (efrit-gnus-run-mark run))
+    (efrit-repl-session-rewind (efrit-gnus-run-session run) (efrit-gnus-run-mark run))))
+
+(defun efrit-gnus--collect-answer (run)
+  "Store the answer of the turn that just ended in RUN, labeled by batch."
+  (when-let* ((session (efrit-gnus-run-session run))
+              (answer (efrit-repl-session-last-answer session (efrit-gnus-run-mark run))))
+    (push (cons (format "Batch %d" (efrit-gnus-run-batches run)) answer)
+          (efrit-gnus-run-answers run))))
+
+(defun efrit-gnus--submit-batch (run refs prompt where offset total)
+  "Render and submit for RUN the batch starting REFS; queue the remainder.
 OFFSET is how many of TOTAL were sent before.  Returns non-nil if the
 turn started."
   (pcase-let* ((`(,text ,sent ,chars ,rest) (efrit-gnus--payload refs (cons offset total))))
@@ -644,9 +721,11 @@ turn started."
                             (or where "the selection") (efrit-gnus--prompt-name prompt))))
            (api (efrit-gnus--api-text prompt text offset sent total)))
       (when rest
-        (push (list rest prompt where last total) efrit-gnus--queue))
+        (push (list rest prompt where last total) (efrit-gnus-run-queue run)))
+      (cl-incf (efrit-gnus-run-batches run))
+      (efrit-gnus--rewind-for-turn run)
       (unless (efrit-submit shown api)
-        (setq efrit-gnus--queue nil efrit-gnus--closing nil)
+        (setq efrit-gnus--run nil)
         (user-error "efrit is busy with another turn; try again when it is idle"))
       t)))
 
@@ -654,19 +733,13 @@ turn started."
   "Stop sending the rest of the current selection and its closing summary.
 The turn in flight finishes on its own."
   (interactive)
-  (if (or efrit-gnus--queue efrit-gnus--closing)
+  (if efrit-gnus--run
       (efrit-gnus--stop-batches "cancelled")
     (message "efrit-gnus: nothing queued")))
 
-(defvar efrit-gnus--sending nil
-  "Non-nil while a queued batch is being rendered and submitted.
-Rendering runs the event loop (network fetches for linked documents),
-so a second idle event can arrive meanwhile; this keeps it from
-starting anything.")
-
 (defun efrit-gnus--stop-batches (why)
-  "Drop the queue and the closing prompt, saying WHY."
-  (setq efrit-gnus--queue nil efrit-gnus--closing nil efrit-gnus--sending nil)
+  "Drop the run in progress, saying WHY."
+  (setq efrit-gnus--run nil efrit-gnus--sending nil)
   (message "efrit-gnus: batch stopped: %s" why))
 
 (defun efrit-gnus--send-next-batch ()
@@ -674,17 +747,22 @@ starting anything.")
   (setq efrit-gnus--sending t)
   (unwind-protect
       (condition-case err
-          (if efrit-gnus--queue
-              (let ((batch (car (last efrit-gnus--queue))))
-                (setq efrit-gnus--queue (butlast efrit-gnus--queue))
-                (pcase-let ((`(,refs ,prompt ,where ,offset ,total) batch))
-                  (efrit-gnus--submit-batch refs prompt where offset total)))
-            (when efrit-gnus--closing
-              (let ((prompt efrit-gnus--closing))
-                (setq efrit-gnus--closing nil)
-                (unless (efrit-submit "over the whole selection"
-                                      (concat "That was the whole selection. " prompt))
-                  (user-error "efrit is busy; the closing summary was not sent")))))
+          (when-let* ((run efrit-gnus--run))
+            (efrit-gnus--collect-answer run)
+            (if (efrit-gnus-run-queue run)
+                (let ((batch (car (last (efrit-gnus-run-queue run)))))
+                  (setf (efrit-gnus-run-queue run) (butlast (efrit-gnus-run-queue run)))
+                  (pcase-let ((`(,refs ,prompt ,where ,offset ,total) batch))
+                    (efrit-gnus--submit-batch run refs prompt where offset total)))
+              (let ((prompt (efrit-gnus-run-closing run)))
+                ;; The run is over once the closing turn starts: its
+                ;; idle event must not send anything more.
+                (setq efrit-gnus--run nil)
+                (when prompt
+                  (efrit-gnus--rewind-for-turn run)
+                  (unless (efrit-submit "over the whole selection"
+                                        (efrit-gnus--closing-text run prompt))
+                    (user-error "efrit is busy; the closing summary was not sent"))))))
         (error (efrit-gnus--stop-batches (error-message-string err))))
     (setq efrit-gnus--sending nil)))
 
@@ -693,12 +771,16 @@ starting anything.")
 One handler decides in order, so the closing prompt can never overtake
 a batch that is still rendering (two handlers racing did exactly that:
 the summary went out after batch one and the second batch found the
-session busy)."
-  (when (and (eq (alist-get :status event) 'idle)
-             (not efrit-gnus--sending)
-             (or efrit-gnus--queue efrit-gnus--closing))
-    ;; Not from inside the event: let the turn finish tearing down.
-    (run-at-time 0.1 nil #'efrit-gnus--send-next-batch)))
+session busy).  A failed turn ends the run: its answer is missing and
+the next batch would start the whole chain over."
+  (pcase (alist-get :status event)
+    ('idle
+     (when (and efrit-gnus--run (not efrit-gnus--sending))
+       ;; Not from inside the event: let the turn finish tearing down.
+       (run-at-time 0.1 nil #'efrit-gnus--send-next-batch)))
+    ('failed
+     (when efrit-gnus--run
+       (efrit-gnus--stop-batches "the turn failed")))))
 
 (defun efrit-gnus--watch-for-idle ()
   "Subscribe to the agent's status events.
@@ -722,17 +804,22 @@ INBOX\"); GROUP and QUERY fill the placeholders.  The articles go out
 in as many turns as `efrit-gnus-max-chars' requires, each answered per
 article; when the last turn ends, the SUMMARY prompt is sent for one
 answer across the whole selection.  So 113 recaps become 113 short
-takes and then one briefing on trends."
+takes and then one briefing on trends.  See `efrit-gnus-isolate-batches'
+for what each turn can see."
   (efrit-gnus--require 'efrit-agent-input)
   (efrit-gnus-ensure-tools)
   (let* ((pair (efrit-gnus--prompt-pair prompt))
          (n (length refs))
          (item (efrit-gnus--fill (car pair) group n query))
-         (summary (efrit-gnus--fill (efrit-gnus--summary-prompt pair) group n query)))
-    (setq efrit-gnus--queue nil
-          efrit-gnus--closing summary)
+         (summary (efrit-gnus--fill (efrit-gnus--summary-prompt pair) group n query))
+         (session (efrit-agent-repl-session))
+         (run (efrit-gnus-run--make
+               :closing summary :session session
+               :mark (efrit-repl-session-history-mark session)
+               :where where :total n)))
+    (setq efrit-gnus--run run)
     (efrit-gnus--watch-for-idle)
-    (efrit-gnus--submit-batch refs item where 0 n)))
+    (efrit-gnus--submit-batch run refs item where 0 n)))
 
 ;;;; Washing: a related-documents footnote in the article buffer
 ;;
@@ -1043,7 +1130,8 @@ passed raw.  At most `efrit-gnus-search-limit' results are used."
          (refs (delq nil (mapcar #'efrit-gnus--parse-ref (seq-take raw efrit-gnus-tool-max-articles)))))
     (if (null refs)
         "No valid references; a reference is GROUP#NUMBER as shown by gnus_search."
-      (pcase-let ((`(,text ,_sent ,_chars ,rest) (efrit-gnus--payload refs)))
+      (pcase-let ((`(,text ,_sent ,_chars ,rest)
+                   (efrit-gnus--payload refs nil efrit-gnus-tool-max-chars)))
         (if rest
             (concat text (format "\n\n[%d more article%s not included, over the size limit; ask for them in a second call: %s]"
                                  (length rest) (if (= 1 (length rest)) "" "s")

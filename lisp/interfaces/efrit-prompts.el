@@ -661,6 +661,7 @@ ON-SAVE, when given, is called with the saved plist."
     (define-key map (kbd "m") #'efrit-prompts-manage-menu)
     (define-key map (kbd "g") #'efrit-prompts-manage-refresh)
     (define-key map (kbd "?") #'efrit-prompts-manage-help)
+    (define-key map (kbd "q") #'efrit-prompts-manage-quit)
     map))
 
 (define-derived-mode efrit-prompts-manage-mode tabulated-list-mode "Efrit-Prompts"
@@ -812,21 +813,35 @@ this so it can ask again with the edited list)."
     (when wait
       (efrit-prompts--wait-for-buffer buf))))
 
+(defvar efrit-prompts-manage--waiting nil
+  "Recursion depth of the chooser's wait on the manager, or nil.")
+
+(defun efrit-prompts-manage-quit ()
+  "Leave the manager.
+Ends the chooser's wait when it is waiting, so it asks again with the
+edited list; otherwise buries the buffer as `quit-window' does."
+  (interactive)
+  (if (and efrit-prompts-manage--waiting
+           (= (recursion-depth) efrit-prompts-manage--waiting))
+      (progn (quit-window) (exit-recursive-edit))
+    (quit-window)))
+
 (defun efrit-prompts--wait-for-buffer (buf)
-  "Recursive edit until BUF is no longer shown in any window."
-  (let ((depth (1+ (recursion-depth)))
-        (check nil))
-    (setq check (lambda ()
-                  (when (and (= (recursion-depth) depth)
-                             (not (get-buffer-window buf t)))
-                    (exit-recursive-edit))))
+  "Recursive edit until the manager BUF is quit (`q') or killed.
+Not until it leaves the window: the view popup and the editor open
+over it and took it out of every window, which ended the wait as soon
+as `v' or `e' was pressed (2026-09-24)."
+  (let ((efrit-prompts-manage--waiting (1+ (recursion-depth)))
+        (on-kill nil))
+    (setq on-kill (lambda ()
+                    (when (and (eq (current-buffer) buf)
+                               (= (recursion-depth) efrit-prompts-manage--waiting))
+                      (exit-recursive-edit))))
     (unwind-protect
         (progn
-          (add-hook 'window-configuration-change-hook check)
-          (add-hook 'buffer-list-update-hook check)
+          (add-hook 'kill-buffer-hook on-kill)
           (condition-case nil (recursive-edit) (quit nil)))
-      (remove-hook 'window-configuration-change-hook check)
-      (remove-hook 'buffer-list-update-hook check))))
+      (remove-hook 'kill-buffer-hook on-kill))))
 
 (provide 'efrit-prompts)
 

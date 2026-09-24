@@ -517,5 +517,77 @@ No word scoring: a same-day event with a shared word does not count."
       (should-not (efrit-documents-gcalendar-related '(:title "Widget")))
       (should-not calls))))
 
+;;;; The Jira source (needs jira.el and its nnjira on the load path)
+
+(ert-deftest test-efrit-documents-jira-source ()
+  "Keys and browse URLs resolve; fetch renders nnjira's block plus comments;
+search is JQL; keys mentioned in an item are related documents; without
+jira.el the source is registered unavailable."
+  (skip-unless (and (locate-library "jira-api") (locate-library "nnjira")))
+  (require 'efrit-documents-jira)
+  (let ((efrit-documents--sources nil)
+        (efrit-documents--cache (make-hash-table :test #'equal))
+        (efrit-documents-related-functions nil)
+        (jira-base-url "https://jira.example.com")
+        (jira-current-url nil)
+        (nnjira-pills nil)
+        (calls nil))
+    (cl-letf (((symbol-function 'jira-api-call)
+               (cl-function
+                (lambda (verb endpoint &key params &allow-other-keys)
+                  (push (list verb endpoint params) calls)
+                  (cond
+                   ((equal endpoint "issue/INFRA-1")
+                    (make-request-response
+                     :status-code 200
+                     :data '((id . "10") (key . "INFRA-1")
+                             (fields . ((summary . "Salt master OOM") (updated . "2026-09-21T10:00:00.000+0000")
+                                        (status . ((name . "Open") (statusCategory . ((name . "To Do")))))
+                                        (issuetype . ((name . "Bug")))
+                                        (description . "It ran out of memory.")
+                                        (comment . ((comments . [((id . "1") (author . ((displayName . "Cara")))
+                                                                  (created . "2026-09-21T11:00:00.000+0000")
+                                                                  (body . "Bumped to 64G."))]))))))))
+                   ((equal endpoint "myself")
+                    (make-request-response :status-code 200 :data '((displayName . "Me"))))
+                   (t (make-request-response :status-code 404 :error-thrown "nope"))))))
+              ((symbol-function 'jira-api-search)
+               (cl-function
+                (lambda (&key params &allow-other-keys)
+                  (push (list 'search params) calls)
+                  (make-request-response
+                   :status-code 200
+                   :data '((issues . [((id . "10") (key . "INFRA-1")
+                                       (fields . ((summary . "Salt master OOM") (updated . "2026-09-21T10:00:00.000+0000")
+                                                  (status . ((name . "Open"))) (issuetype . ((name . "Bug"))))))])))))))
+      (let ((source (efrit-documents-jira-register)))
+        (should-not (efrit-documents-source-unavailable source))
+        (should (memq #'efrit-documents-jira-related efrit-documents-related-functions))
+        (should (equal "INFRA-1" (efrit-documents-source-match source "https://jira.example.com/browse/INFRA-1")))
+        (should (equal "INFRA-1" (efrit-documents-source-match source "https://jira.example.com/jira/software/c/projects/INFRA/boards/3?selectedIssue=INFRA-1")))
+        (should (equal "INFRA-1" (efrit-documents-source-match source "INFRA-1")))
+        (should-not (efrit-documents-source-match source "https://other.example.com/browse/INFRA-1"))
+        (should-not (efrit-documents-source-match source "https://jira.example.com/secure/Dashboard.jspa"))
+        (let ((doc (efrit-documents-fetch "jira:INFRA-1")))
+          (should (equal "INFRA-1: Salt master OOM" (plist-get doc :title)))
+          (should (equal "https://jira.example.com/browse/INFRA-1" (plist-get doc :url)))
+          (should (string-prefix-p "INFRA-1 Bug Open\nURL" (plist-get doc :text)))
+          (should (string-match-p "It ran out of memory\\." (plist-get doc :text)))
+          (should (string-search "--- Comments ---\nCara (2026-09-21T11:00:00.000+0000):\nBumped to 64G." (plist-get doc :text))))
+        (let ((found (efrit-documents-source-search source '(:text ("salt" "oom") :since "2026-09-01" :limit 5))))
+          (should (equal '("INFRA-1") (mapcar (lambda (d) (plist-get d :id)) found)))
+          (let ((jql (cdr (assoc "jql" (cadr (assq 'search calls))))))
+            (should (string-match-p "(text ~ \"salt\" OR text ~ \"oom\") AND updated >= \"2026-09-01\" ORDER BY updated DESC" jql))))
+        ;; Related: keys in the item.
+        (should (equal '("INFRA-1" "OPS-22") (efrit-documents-jira-keys-in "Re: INFRA-1 and OPS-22, not infra-3 or X-1-2 twice INFRA-1")))
+        (let ((related (efrit-documents-related '(:title "About INFRA-1" :body "see also NOPE-9"))))
+          (should (equal '("INFRA-1") (mapcar (lambda (d) (plist-get d :id)) related))))
+        ;; The tool.
+        (should (string-search "\n- INFRA-1 | Open | 2026-09-21" (efrit-documents-jira--tool-search '(("jql" . "project = INFRA")))))))
+    ;; Not configured: unavailable with the reason.
+    (let ((jira-base-url ""))
+      (should (equal "jira-base-url is not set"
+                     (efrit-documents-source-unavailable (efrit-documents-jira-register)))))))
+
 (provide 'test-efrit-documents)
 ;;; test-efrit-documents.el ends here

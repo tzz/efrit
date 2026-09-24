@@ -460,6 +460,19 @@ API-INPUT, when given, is what the model receives in place of INPUT
                             #'efrit-agent--on-turn-complete api-input)
        t))))
 
+(defun efrit-agent-repl-session ()
+  "The REPL session of the agent buffer, created if the buffer has none.
+For packages that drive several turns through `efrit-submit' and need
+the session's history marks (`efrit-repl-session-history-mark')."
+  (require 'efrit-agent)
+  (with-current-buffer (efrit-agent--get-buffer)
+    (unless (derived-mode-p 'efrit-agent-mode)
+      (efrit-agent-mode))
+    (unless efrit-agent--repl-session
+      (setq efrit-agent--repl-session (efrit-repl-session-create default-directory))
+      (setf (efrit-repl-session-buffer efrit-agent--repl-session) (current-buffer)))
+    efrit-agent--repl-session))
+
 ;;;###autoload
 (defun efrit-submit (shown &optional api-input)
   "Start a REPL turn from Lisp: show SHOWN in the conversation, send API-INPUT.

@@ -37,6 +37,7 @@ Confluence.
 | `efrit-documents-gdrive.el` | Google Drive: Docs, Sheets, Slides, text files. Fetch and search. |
 | `efrit-documents-gcalendar.el` | Google Calendar: not a source but a *provider* of related documents (an event's attachments). |
 | `efrit-documents-confluence.el` | Confluence pages and blog posts, Atlassian Cloud and self-hosted. |
+| `efrit-documents-jira.el` | Jira issues with their comments, through the jira.el package and its nnjira backend. Also a related-documents provider: issue keys an article mentions. |
 
 `efrit-documents-sources-libraries` lists the libraries loaded when the
 tools are registered (`efrit-documents-ensure-tools`, which the Gnus
@@ -283,6 +284,30 @@ HEAD to follow the redirect).
 `M-x efrit-documents-confluence-check` (menu `w`) calls `/user/current`
 on each site and says who you are, or why not.
 
+## Jira
+
+Jira comes through [jira.el](https://github.com/unmonoqueteclea/jira.el),
+which already holds the connection: set `jira-base-url` (and
+`jira-api-version 2` for a self-hosted server) and put the token in
+auth-source under the bare host, as jira.el's own README describes.
+Nothing else is configured; without jira.el the source registers as
+unavailable with that reason (`doc_sources` shows it).
+
+What it does: `doc_fetch` on a key (`INFRA-123`, `jira:INFRA-123`) or a
+`/browse/KEY` URL returns the issue as nnjira renders it — key, type,
+status, priority, assignee, sprint, components, versions, labels,
+links, description — followed by every comment with author and date.
+`doc_search` words become `text ~` clauses; the model's `jira_search`
+tool takes raw JQL. As a related-documents provider it takes the issue
+keys mentioned in an article's subject or body and adds those issues,
+exact match only. `M-x efrit-documents-jira-check` (menu `j`) calls
+`myself`.
+
+jira.el's `nnjira.el` is the Gnus side of the same thing: a project,
+sprint, assignee or JQL query as a group, issues as articles, comments
+threaded under them, so `efrit-gnus` can analyze a sprint's issues like
+a mailbox.
+
 ## Gnus
 
 `efrit-gnus` uses the layer in three places:
@@ -339,6 +364,55 @@ A provider or source that fails is a `WARN` line with the reason, and
 \"platform\" (gcalendar: no auth-source entry for Calendar ...)".
 With `efrit-documents-related-search` on, `gdrive q=...` lines show the
 exact Drive query and its hits.
+
+## A worked setup: self-hosted Confluence and Jira
+
+Two Data Center sites, `wiki.example.com` (pages like
+`https://wiki.example.com/spaces/SYS/pages/101510469/Some+Page`) and
+`jira.example.com`, both taking personal access tokens.
+
+1. Mint a PAT on each site: profile picture → *Settings* → *Personal
+   Access Tokens* → *Create token*. Read scope is enough; nothing here
+   writes.
+2. Put them in auth-source under the bare host names. `.authinfo.gpg`:
+   ```
+   machine wiki.example.com login jdoe password <confluence PAT>
+   machine jira.example.com login jdoe password <jira PAT>
+   ```
+   or the JSON form (`~/.authinfo.json.gpg`):
+   ```json
+   [{"machine": "wiki.example.com", "login": "jdoe", "password": "<confluence PAT>"},
+    {"machine": "jira.example.com", "login": "jdoe", "password": "<jira PAT>"}]
+   ```
+   No `auth-type`: a PAT goes as `Bearer`, which is the default. (An
+   Atlassian Cloud API token would add `auth-type basic`.)
+3. Tell efrit where Confluence is (Data Center: no `/wiki`):
+   ```elisp
+   (setq efrit-documents-confluence-sites
+         '(("https://wiki.example.com" . "wiki.example.com")))
+   ```
+4. Tell jira.el where Jira is; efrit's Jira source reads the same
+   variables:
+   ```elisp
+   (setq jira-base-url "https://jira.example.com"
+         jira-api-version 2
+         jira-token-is-personal-access-token t)
+   ```
+5. Check both: `M-x efrit-documents-confluence-check` should say
+   `confluence (https://wiki.example.com) works as Jane Doe`, and
+   `M-x efrit-documents-jira-check` `Jira at jira.example.com works as
+   Jane Doe`. A 401 on either means the PAT is wrong or expired; a 403
+   on Confluence's `/rest/api/user/current` means the token is valid but
+   the REST API is disabled for your user — ask the admin.
+6. Try it: in the efrit REPL, "what does
+   https://wiki.example.com/spaces/SYS/pages/101510469/Some+Page say
+   about rollout?" — the model calls `doc_fetch` on the URL. In Gnus,
+   an article that links that page or mentions `INFRA-123` gets both
+   appended when you `L A a` it.
+
+`M-x efrit-auth-describe wiki.example.com` lists what auth-source holds
+for a host, secrets hidden, if a check fails for a reason you cannot
+see.
 
 ## Failure messages
 
