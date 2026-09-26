@@ -38,6 +38,11 @@
 ;;   tool-start        :tool :input
 ;;   tool-result       :tool :result :success :elapsed
 ;;   permission        :tool :decision
+;;   steer             :text -- the user spoke to a running turn; the
+;;                     REPL loop stores the text and delivers it with
+;;                     the next tool results (`efrit-repl-loop--steer')
+;;   steered           :text -- the text was delivered to the model
+;;   queued            :text :count -- an input waits for the turn to end
 ;;   turn-complete     :stop-reason :completion-message
 ;;   idle              :idle-event (the event that started the idle
 ;;                     timer, e.g. turn-complete) -- fires after

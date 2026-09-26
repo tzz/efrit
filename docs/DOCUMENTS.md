@@ -37,7 +37,7 @@ Confluence.
 | `efrit-documents-gdrive.el` | Google Drive: Docs, Sheets, Slides, text files. Fetch and search. |
 | `efrit-documents-gcalendar.el` | Google Calendar: not a source but a *provider* of related documents (an event's attachments). |
 | `efrit-documents-confluence.el` | Confluence pages and blog posts, Atlassian Cloud and self-hosted. |
-| `efrit-documents-jira.el` | Jira issues with their comments, through the jira.el package and its nnjira backend. Also a related-documents provider: issue keys an article mentions. |
+| `efrit-documents-jira.el` | Jira issues with their comments, through the jira.el package. Also a related-documents provider: issue keys an article mentions. |
 
 `efrit-documents-sources-libraries` lists the libraries loaded when the
 tools are registered (`efrit-documents-ensure-tools`, which the Gnus
@@ -294,7 +294,7 @@ Nothing else is configured; without jira.el the source registers as
 unavailable with that reason (`doc_sources` shows it).
 
 What it does: `doc_fetch` on a key (`INFRA-123`, `jira:INFRA-123`) or a
-`/browse/KEY` URL returns the issue as nnjira renders it — key, type,
+`/browse/KEY` URL returns the issue as text — key, type,
 status, priority, assignee, sprint, components, versions, labels,
 links, description — followed by every comment with author and date.
 `doc_search` words become `text ~` clauses; the model's `jira_search`
@@ -302,11 +302,6 @@ tool takes raw JQL. As a related-documents provider it takes the issue
 keys mentioned in an article's subject or body and adds those issues,
 exact match only. `M-x efrit-documents-jira-check` (menu `j`) calls
 `myself`.
-
-jira.el's `nnjira.el` is the Gnus side of the same thing: a project,
-sprint, assignee or JQL query as a group, issues as articles, comments
-threaded under them, so `efrit-gnus` can analyze a sprint's issues like
-a mailbox.
 
 ## Gnus
 

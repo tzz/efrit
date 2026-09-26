@@ -10,16 +10,15 @@
 ;;; Commentary:
 
 ;; Jira issues for `efrit-documents', on top of the jira.el package
-;; (https://github.com/unmonoqueteclea/jira.el) and its `nnjira'
-;; backend.  Nothing is configured here: the connection is jira.el's
+;; (https://github.com/unmonoqueteclea/jira.el).  Nothing is configured here: the connection is jira.el's
 ;; (`jira-base-url' and the auth-source entry for that host).  Without
 ;; jira.el the source registers as unavailable and says so.
 ;;
 ;; Fetch: an issue by key or by any URL on the Jira host that names
 ;; one (`/browse/KEY', `selectedIssue=KEY', `/issues/KEY').  The text
-;; is what nnjira shows: the attribute block (status, type, priority,
-;; assignee, sprint, components, ...) then the description, then every
-;; comment with its author and date -- so a model sees the whole
+;; is an attribute block (status, type, priority, assignee, sprint,
+;; components, ...) then the description, then every comment with its
+;; author and date -- so a model sees the whole
 ;; conversation, not the description alone.
 ;;
 ;; Search: JQL.  `efrit-documents-search' words become `text ~ "w"'
@@ -41,15 +40,9 @@
 (declare-function jira-api--get-current-url "jira-api")
 (declare-function request-response-data "request")
 (declare-function request-response-status-code "request")
-(declare-function nnjira-issue-text "nnjira")
-(declare-function nnjira-issue-url "nnjira")
-(declare-function nnjira--comments "nnjira")
-(declare-function nnjira--doc-text "nnjira")
-(declare-function nnjira--person "nnjira")
-(declare-function nnjira--field "nnjira")
+(declare-function jira-doc-format "jira-doc")
 (declare-function efrit-register-tool "efrit-tool-registry")
 (defvar jira-base-url)
-(defvar nnjira-issue-fields)
 
 (defgroup efrit-documents-jira nil
   "Jira issues as an efrit document source."
@@ -65,6 +58,13 @@ Keys mentioned in an article make the issue a related document."
   "Most issues taken from the keys an article mentions."
   :type 'integer)
 
+(defcustom efrit-documents-jira-issue-fields
+  '("summary" "status" "issuetype" "priority" "assignee" "reporter" "created" "updated"
+    "resolution" "labels" "components" "fixVersions" "parent" "issuelinks" "description"
+    "comment" "sprint" "customfield_10020")
+  "Fields requested for an issue.  customfield_10020 is Cloud's sprint field."
+  :type '(repeat string))
+
 (defclass efrit-document-source-jira (efrit-document-source) ()
   "Jira, through jira.el.")
 
@@ -72,13 +72,13 @@ Keys mentioned in an article make the issue a related document."
 
 (defun efrit-documents-jira--ready-p ()
   "Non-nil when jira.el is loaded and points at a site."
-  (and (require 'jira-api nil t) (require 'nnjira nil t)
+  (and (require 'jira-api nil t) (require 'jira-doc nil t)
        (boundp 'jira-base-url) (stringp jira-base-url) (not (string-empty-p jira-base-url))))
 
 (defun efrit-documents-jira--why-not ()
   "Why the source cannot work, or nil."
-  (cond ((not (require 'jira-api nil t)) "the jira.el package is not installed")
-        ((not (require 'nnjira nil t)) "jira.el has no nnjira.el (too old)")
+  (cond ((not (and (require 'jira-api nil t) (require 'jira-doc nil t)))
+         "the jira.el package is not installed")
         ((or (not (boundp 'jira-base-url)) (not (stringp jira-base-url)) (string-empty-p jira-base-url))
          "jira-base-url is not set")
         (t nil)))
@@ -98,9 +98,102 @@ Keys mentioned in an article make the issue a related document."
                               (_ ""))))))
      (t (request-response-data response)))))
 
+(defun efrit-documents-jira--url ()
+  "The Jira site URL, without a trailing slash."
+  (string-remove-suffix "/" (or (jira-api--get-current-url) jira-base-url)))
+
 (defun efrit-documents-jira--host ()
   "The Jira host, for URLs and references."
-  (replace-regexp-in-string "\\`https?://\\|/.*\\'" "" (or (jira-api--get-current-url) jira-base-url)))
+  (replace-regexp-in-string "\\`https?://\\|/.*\\'" "" (efrit-documents-jira--url)))
+
+(defun efrit-documents-jira-issue-url (key)
+  "The browse URL of issue KEY."
+  (concat (efrit-documents-jira--url) "/browse/" key))
+
+;;;; Reading an issue
+
+(defun efrit-documents-jira--field (issue &rest path)
+  "The value at PATH under ISSUE's fields."
+  (let ((v (alist-get 'fields issue)))
+    (dolist (k path v)
+      (setq v (and (listp v) (alist-get k v))))))
+
+(defun efrit-documents-jira--person (person)
+  "A display name for PERSON (an alist), or nil."
+  (and person (or (alist-get 'displayName person) (alist-get 'name person) (alist-get 'emailAddress person))))
+
+(defun efrit-documents-jira--names (values)
+  "The `name' of each of VALUES (a vector or list of alists), or the strings."
+  (delq nil (mapcar (lambda (v) (if (stringp v) v (alist-get 'name v)))
+                    (if (vectorp values) (append values nil) values))))
+
+(defun efrit-documents-jira--sprints (issue)
+  "Names of ISSUE's sprints, from either field shape."
+  (let ((raw (or (efrit-documents-jira--field issue 'sprint)
+                 (efrit-documents-jira--field issue 'customfield_10020))))
+    (delq nil (mapcar (lambda (s)
+                        (cond ((stringp s)
+                               (and (string-match "name=\\([^],]+\\)" s) (match-string 1 s)))
+                              ((listp s) (alist-get 'name s))))
+                      (if (vectorp raw) (append raw nil) (if (listp raw) raw (list raw)))))))
+
+(defun efrit-documents-jira--comments (issue)
+  "ISSUE's comments, oldest first."
+  (append (alist-get 'comments (alist-get 'comment (alist-get 'fields issue))) nil))
+
+(defun efrit-documents-jira--links (issue)
+  "ISSUE's links as \"relation KEY: summary\" lines."
+  (delq nil
+        (mapcar (lambda (link)
+                  (let* ((out (alist-get 'outwardIssue link))
+                         (in (alist-get 'inwardIssue link))
+                         (type (alist-get 'type link))
+                         (other (or out in))
+                         (relation (if out (alist-get 'outward type) (alist-get 'inward type))))
+                    (and other
+                         (format "  %s %s: %s" relation (alist-get 'key other)
+                                 (or (alist-get 'summary (alist-get 'fields other)) "")))))
+                (append (efrit-documents-jira--field issue 'issuelinks) nil))))
+
+(defun efrit-documents-jira--doc-text (doc)
+  "DOC (ADF alist, wiki string, or nil) as plain text through jira.el."
+  (cond ((null doc) "")
+        (t (condition-case nil
+               (substring-no-properties (jira-doc-format doc))
+             (error (if (stringp doc) doc (format "%S" doc)))))))
+
+(defun efrit-documents-jira--attribute-line (name values)
+  "One line: NAME then VALUES (strings), or nil when there are none."
+  (when values
+    (concat (format "%-13s" name) (string-join values ", ") "\n")))
+
+(defun efrit-documents-jira-issue-header-block (issue)
+  "ISSUE's attributes as text: key, type, status, priority, people, sprint, links, URL."
+  (let* ((key (alist-get 'key issue))
+         (field (lambda (&rest path) (apply #'efrit-documents-jira--field issue path)))
+         (parent (funcall field 'parent)))
+    (concat
+     (string-join (delq nil (list key (funcall field 'issuetype 'name) (funcall field 'status 'name)
+                                  (funcall field 'priority 'name) (funcall field 'resolution 'name)))
+                  " | ")
+     "\n"
+     (efrit-documents-jira--attribute-line
+      "Assignee" (and (funcall field 'assignee) (list (efrit-documents-jira--person (funcall field 'assignee)))))
+     (efrit-documents-jira--attribute-line
+      "Reporter" (and (funcall field 'reporter) (list (efrit-documents-jira--person (funcall field 'reporter)))))
+     (efrit-documents-jira--attribute-line "Sprint" (efrit-documents-jira--sprints issue))
+     (efrit-documents-jira--attribute-line "Components" (efrit-documents-jira--names (funcall field 'components)))
+     (efrit-documents-jira--attribute-line "Fix versions" (efrit-documents-jira--names (funcall field 'fixVersions)))
+     (efrit-documents-jira--attribute-line "Labels" (efrit-documents-jira--names (funcall field 'labels)))
+     (efrit-documents-jira--attribute-line "Created" (and (funcall field 'created) (list (funcall field 'created))))
+     (efrit-documents-jira--attribute-line "Updated" (and (funcall field 'updated) (list (funcall field 'updated))))
+     (when parent
+       (efrit-documents-jira--attribute-line
+        "Parent" (list (format "%s %s" (alist-get 'key parent)
+                               (or (efrit-documents-jira--field parent 'summary) "")))))
+     (when-let* ((links (efrit-documents-jira--links issue)))
+       (concat "Links\n" (string-join links "\n") "\n"))
+     (format "%-13s" "URL") (efrit-documents-jira-issue-url key) "\n")))
 
 ;;;; Documents
 
@@ -109,24 +202,25 @@ Keys mentioned in an article make the issue a related document."
   (let ((key (alist-get 'key issue)))
     (list :source "jira"
           :id key
-          :title (format "%s: %s" key (or (nnjira--field issue 'summary) ""))
-          :url (nnjira-issue-url key)
-          :modified (nnjira--field issue 'updated)
-          :kind (downcase (or (nnjira--field issue 'issuetype 'name) "issue"))
-          :status (nnjira--field issue 'status 'name))))
+          :title (format "%s: %s" key (or (efrit-documents-jira--field issue 'summary) ""))
+          :url (efrit-documents-jira-issue-url key)
+          :modified (efrit-documents-jira--field issue 'updated)
+          :kind (downcase (or (efrit-documents-jira--field issue 'issuetype 'name) "issue"))
+          :status (efrit-documents-jira--field issue 'status 'name))))
 
 (defun efrit-documents-jira-issue-text (issue)
-  "ISSUE as text for a model: nnjira's block and description, then the comments."
+  "ISSUE as text for a model: the attribute block, the description, then the comments."
   (concat
-   (nnjira-issue-text issue)
-   (let ((comments (nnjira--comments issue)))
+   (efrit-documents-jira-issue-header-block issue)
+   "\n" (efrit-documents-jira--doc-text (efrit-documents-jira--field issue 'description))
+   (let ((comments (efrit-documents-jira--comments issue)))
      (when comments
        (concat "\n\n--- Comments ---\n"
                (mapconcat (lambda (c)
                             (format "%s (%s):\n%s"
-                                    (or (nnjira--person (alist-get 'author c)) "?")
+                                    (or (efrit-documents-jira--person (alist-get 'author c)) "?")
                                     (or (alist-get 'created c) "")
-                                    (nnjira--doc-text (alist-get 'body c))))
+                                    (efrit-documents-jira--doc-text (alist-get 'body c))))
                           comments "\n\n"))))))
 
 ;;;; The protocol
@@ -146,13 +240,15 @@ Keys mentioned in an article make the issue a related document."
 (cl-defmethod efrit-documents-source-metadata ((_source efrit-document-source-jira) id)
   (efrit-documents-jira--doc
    (efrit-documents-jira--data
-    (jira-api-call "GET" (concat "issue/" id) :params '(("fields" . "summary,updated,status,issuetype")) :sync t)
+    (jira-api-call "GET" (concat "issue/" id) :params '(("fields" . "summary,updated,status,issuetype"))
+                   :sync t :error #'ignore)
     (concat "issue " id))))
 
 (cl-defmethod efrit-documents-source-fetch ((_source efrit-document-source-jira) id _format)
   (let ((issue (efrit-documents-jira--data
                 (jira-api-call "GET" (concat "issue/" id)
-                               :params `(("fields" . ,(string-join nnjira-issue-fields ","))) :sync t)
+                               :params `(("fields" . ,(string-join efrit-documents-jira-issue-fields ",")))
+                               :sync t :error #'ignore)
                 (concat "issue " id))))
     (append (efrit-documents-jira--doc issue)
             (list :text (efrit-documents-jira-issue-text issue) :format 'text))))
@@ -178,6 +274,8 @@ Keys mentioned in an article make the issue a related document."
                 (jira-api-search :params `(("jql" . ,jql)
                                            ("maxResults" . ,(or (plist-get query :limit) 10))
                                            ("fields" . "summary,updated,status,issuetype"))
+                                 ;; jira.el's error callback retries `search' when
+                                 ;; `search/jql' 404s; do not replace it.
                                  :sync t)
                 (format "search %s" jql))))
     (efrit-log 'debug "documents: jira jql=%s" jql)
@@ -268,8 +366,8 @@ skipped."
   (let ((source (efrit-documents-jira-register)))
     (if-let* ((why (efrit-documents-source-unavailable source)))
         (message "efrit-documents: Jira is not usable: %s" why)
-      (condition-case err
-          (let ((me (efrit-documents-jira--data (jira-api-call "GET" "myself" :sync t) "myself")))
+      (condition-case-unless-debug err
+          (let ((me (efrit-documents-jira--data (jira-api-call "GET" "myself" :sync t :error #'ignore) "myself")))
             (message "efrit-documents: Jira at %s works as %s" (efrit-documents-jira--host)
                      (or (alist-get 'displayName me) (alist-get 'emailAddress me) (alist-get 'name me) "?")))
         (error

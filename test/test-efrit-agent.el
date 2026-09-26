@@ -39,6 +39,313 @@
        (setq efrit-agent--expanded-items (make-hash-table :test 'equal))
        ,@body)))
 
+;;; Submitting while a turn runs
+
+(defun test-efrit-agent--type (text)
+  "Put TEXT into the input region."
+  (efrit-agent--clear-input)
+  (goto-char (point-max))
+  (insert text))
+
+(ert-deftest test-efrit-agent-busy-submit-queues-then-steers ()
+  "RET on a busy session queues, M-RET steers, both show the line at once
+with their own prefix; the queue drains in order when the turn ends,
+turning the waiting mark into a sent one, and keeps the user's draft;
+a failed turn holds the queue.  `efrit-submit' from Lisp returns nil
+on a busy session without drawing anything."
+  (with-efrit-agent-test-buffer
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions)
+    (let ((session (efrit-agent-repl-session))
+          (sent nil) (events nil))
+      (cl-letf (((symbol-function 'efrit-agent--repl-send)
+                 (lambda (input &optional _api) (push input sent) t))
+                ((symbol-function 'run-at-time)
+                 (lambda (_s _r fn &rest args) (apply fn args) nil))
+                ((symbol-function 'efrit-agent-display) #'ignore))
+        (efrit-subscribe 'steer (lambda (e) (push (cons 'steer (alist-get :text e)) events)))
+        (efrit-subscribe 'queued (lambda (e) (push (cons 'queued (alist-get :text e)) events)))
+        (unwind-protect
+            (progn
+              (efrit-repl-session-set-status session 'working)
+              ;; RET: queued, drawn with the waiting prefix, input cleared
+              (test-efrit-agent--type "second thing")
+              (efrit-agent-input-send)
+              (should (equal '("second thing") (efrit-repl-session-queue session)))
+              (should (equal "" (efrit-agent--get-input)))
+              (should (efrit-agent--find-user-message "second thing" 'queued))
+              (should (equal '(queued . "second thing") (car events)))
+              (should-not sent)
+              ;; M-RET: steer event, drawn as a steer line
+              (test-efrit-agent--type "and be brief")
+              (efrit-agent-input-send-override)
+              (should (equal '(steer . "and be brief") (car events)))
+              (should (efrit-agent--find-user-message "and be brief" 'steer))
+              (should-not sent)
+              ;; Lisp callers get nil and nothing drawn
+              (should-not (efrit-submit "from lisp"))
+              (should-not (efrit-agent--find-user-message "from lisp" nil))
+              ;; Another queued one, then a draft the user is typing
+              (test-efrit-agent--type "third thing")
+              (efrit-agent-input-send)
+              (test-efrit-agent--type "draft in progress")
+              ;; A failed turn holds the queue
+              (efrit-repl-session-set-status session 'idle)
+              (efrit-agent--on-turn-complete session "api-error")
+              (should-not sent)
+              (should (= 2 (length (efrit-repl-session-queue session))))
+              ;; A good turn sends the oldest, keeps the draft, remarks the line
+              (efrit-agent--on-turn-complete session "end_turn")
+              (should (equal '("second thing") sent))
+              (should (equal '("third thing") (efrit-repl-session-queue session)))
+              (should (equal "draft in progress" (efrit-agent--get-input)))
+              (should-not (efrit-agent--find-user-message "second thing" 'queued))
+              (should (efrit-agent--find-user-message "second thing" nil))
+              ;; Resume sends the next by hand
+              (efrit-agent-queue-resume)
+              (should (equal '("third thing" "second thing") sent))
+              (should-not (efrit-repl-session-queue session))
+              ;; Undo history holds only the draft
+              (should (equal (list (cons (marker-position efrit-agent--input-start) (point-max)))
+                             buffer-undo-list)))
+          (dolist (type '(steer queued))
+            (dolist (fn (cdr (assq type efrit-events--subscribers)))
+              (unless (symbolp fn) (efrit-unsubscribe type fn)))))))))
+
+(ert-deftest test-efrit-agent-fold-is-invisible-and-isearch-opens ()
+  "A collapsed tool body stays in the buffer as invisible text; toggling
+flips visibility and the glyph in place; the isearch predicate skips,
+opens, or accepts hidden matches per `search-invisible', and cleanup
+folds back what it opened unless point is there."
+  (with-efrit-agent-test-buffer
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions)
+    (let* ((efrit-agent-display-mode 'minimal)
+           (id (efrit-agent--add-tool-call "eval_sexp" '(("expr" . "(+ 1 1)")))))
+      (efrit-agent--update-tool-result id "the-hidden-answer" t 0.2)
+      (let* ((region (efrit-agent--find-tool-region id))
+             (body (efrit-agent--tool-body-bounds (car region) (cdr region))))
+        (should body)
+        (should (string-match-p "the-hidden-answer" (buffer-substring (car body) (cdr body))))
+        (should (eq 'efrit-tool-body (get-text-property (car body) 'invisible)))
+        (should-not (get-text-property (car region) 'efrit-tool-expanded))
+        ;; Toggle in place: same region start, glyph flips, body visible
+        (goto-char (car region))
+        (should (efrit-agent--toggle-tool-expansion))
+        (should (get-text-property (car region) 'efrit-tool-expanded))
+        (should-not (get-text-property (car body) 'invisible))
+        (should (string-match-p (regexp-quote (efrit-agent--char 'expand-expanded))
+                                (buffer-substring (car region) (+ (car region) 6))))
+        (efrit-agent--toggle-tool-expansion)
+        (should (eq 'efrit-tool-body (get-text-property (car body) 'invisible)))
+        ;; isearch predicate
+        (let ((m (save-excursion (goto-char (car body)) (search-forward "hidden") (point))))
+          (let ((search-invisible nil))
+            (should-not (efrit-agent--isearch-filter (- m 6) m)))
+          (let ((search-invisible t))
+            (should (efrit-agent--isearch-filter (- m 6) m))
+            (should (get-text-property (car body) 'invisible)))
+          (let ((search-invisible 'open))
+            (should (efrit-agent--isearch-filter (- m 6) m))
+            (should-not (get-text-property (car body) 'invisible))
+            (should (equal (list id) efrit-agent--isearch-opened)))
+          ;; Cleanup with point elsewhere folds it back
+          (goto-char (point-max))
+          (efrit-agent--isearch-cleanup)
+          (should (get-text-property (car body) 'invisible))
+          (should-not efrit-agent--isearch-opened)
+          ;; Cleanup with point on the match keeps it open
+          (let ((search-invisible 'open)) (efrit-agent--isearch-filter (- m 6) m))
+          (goto-char m)
+          (efrit-agent--isearch-cleanup)
+          (should-not (get-text-property (car body) 'invisible)))
+        ;; The mode set the buffer up
+        (should (eq isearch-filter-predicate #'efrit-agent--isearch-filter))
+        (should (memq 'efrit-tool-body buffer-invisibility-spec))))))
+
+(ert-deftest test-efrit-agent-copy-last-output-and-restart ()
+  "Copy-last-output takes the newest answer wherever point is; restart
+gives a fresh session in the same windows and drops the queue."
+  (with-efrit-agent-test-buffer
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions)
+    (let ((session (efrit-agent-repl-session))
+          (kill-ring nil))
+      (efrit-agent--add-user-message "q1")
+      (efrit-agent--add-claude-message "first answer")
+      (efrit-agent--stream-end-message)
+      (efrit-agent--add-user-message "q2")
+      (efrit-agent--add-claude-message "second ")
+      (efrit-agent--add-claude-message "answer")
+      (efrit-agent--stream-end-message)
+      (goto-char (point-min))
+      (efrit-agent-copy-last-output)
+      (should (equal "second answer" (car kill-ring)))
+      (should (equal (efrit-repl-session-id session) (efrit-agent-session-id)))
+      (efrit-agent-copy-session-id)
+      (should (equal (efrit-repl-session-id session) (car kill-ring)))
+      (efrit-repl-session-enqueue session "later")
+      (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+        (efrit-agent-restart))
+      (should-not (equal session efrit-agent--repl-session))
+      (should-not (efrit-repl-session-queue efrit-agent--repl-session))
+      (should-not (string-match-p "second answer" (buffer-string)))
+      (should (efrit-agent--in-input-region-p)))))
+
+(ert-deftest test-efrit-agent-streamed-markdown-renders-in-place ()
+  "Chunks of Markdown streamed into the agent buffer come out rendered:
+markup gone, faces on, the conversation-end marker after the message,
+the user's draft in the input untouched, no undo entries for it."
+  (with-efrit-agent-test-buffer
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions)
+    (goto-char (point-max))
+    (insert "my draft")
+    (let ((efrit-markdown-enabled t))
+      (dolist (c '("## Plan\n\nFirst **do" "** this:\n\n```elisp\n(setq x" " 1)\n```\n\nThen *rest*"))
+        (efrit-agent--add-claude-message c))
+      (efrit-agent--stream-end-message))
+    (let* ((end (marker-position efrit-agent--conversation-end))
+           (text (buffer-substring-no-properties (point-min) end)))
+      (should-not (string-match-p "[#*`]" text))
+      (should (string-match-p "Plan\n\nFirst do this:\n\nelisp\n(setq x 1)\n\nThen rest" text))
+      ;; buffer positions are 1-based: string-search + 1
+      (cl-flet ((at (needle) (1+ (string-search needle (buffer-string)))))
+        (should (memq 'efrit-markdown-bold (ensure-list (get-text-property (at "do this") 'face))))
+        (should-not (memq 'efrit-markdown-bold (ensure-list (get-text-property (at "this:") 'face))))
+        (should (get-text-property (at "(setq") 'efrit-markdown-frozen))
+        ;; still tagged as the model's message, read-only
+        (should (eq 'claude-message (get-text-property (at "Plan") 'efrit-type)))
+        (should (get-text-property (at "Plan") 'read-only)))
+      (should (equal "my draft" (efrit-agent--get-input)))
+      (should (equal (list (cons (marker-position efrit-agent--input-start) (point-max)))
+                     buffer-undo-list)))))
+
+(ert-deftest test-efrit-agent-cancel-ends-a-waiting-turn ()
+  "Cancel on a session waiting for an answer ends the turn as interrupted,
+withdraws the question, and leaves the session idle; on a working
+session it sets the interrupt flag for the loop."
+  (with-efrit-agent-test-buffer
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions)
+    (let ((session (efrit-agent-repl-session)) (ended nil))
+      (cl-letf (((symbol-function 'efrit-api-stream-cancel) #'ignore)
+                ((symbol-function 'efrit-session-active) (lambda () nil))
+                ((symbol-function 'efrit-agent--refresh-status-line) #'ignore))
+        (efrit-subscribe 'turn-complete (lambda (e) (push (alist-get :stop-reason e) ended)))
+        (unwind-protect
+            (progn
+              (efrit-repl-session-set-status session 'waiting)
+              (setf (efrit-repl-session-pending-question session) '(:q "which?"))
+              (setq efrit-agent--status 'waiting)
+              (efrit-agent-cancel)
+              (should (eq 'idle (efrit-repl-session-status session)))
+              (should-not (efrit-repl-session-pending-question session))
+              (should (member "interrupted" ended))
+              ;; working: only the flag, the loop finishes on its own
+              (efrit-repl-session-set-status session 'working)
+              (setq efrit-agent--status 'working)
+              (efrit-agent-cancel)
+              (should (efrit-repl-session-interrupt-requested session))
+              (should (eq 'working (efrit-repl-session-status session))))
+          (dolist (fn (cdr (assq 'turn-complete efrit-events--subscribers)))
+            (unless (symbolp fn) (efrit-unsubscribe 'turn-complete fn))))))))
+
+(ert-deftest test-efrit-agent-last-answer-bounds-span-rendered-chrome ()
+  "The last answer's bounds cover the whole message even after the
+Markdown pass inserted a code label and bullets inside it."
+  (with-efrit-agent-test-buffer
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions)
+    (efrit-agent--add-user-message "q")
+    (efrit-agent--add-claude-message "## Report\n\nA **bold** word.\n\n- a\n- b\n\n```elisp\n(defun ok () t)\n```\n\nSee x.")
+    (efrit-agent--stream-end-message)
+    (let* ((b (efrit-agent--last-claude-message-bounds))
+           (text (buffer-substring-no-properties (car b) (cdr b))))
+      (should (string-prefix-p "Report" text))
+      (should (string-suffix-p "See x." (string-trim text)))
+      (should (memq 'efrit-markdown-header (ensure-list (get-text-property (car b) 'face))))
+      ;; the bullet and the code label carry the message's id
+      (let ((id (get-text-property (car b) 'efrit-id)))
+        (should (equal id (get-text-property (1+ (string-search "•" (buffer-string))) 'efrit-id)))
+        (should (equal id (get-text-property (1+ (string-search "elisp\n(defun" (buffer-string))) 'efrit-id)))))))
+
+(ert-deftest test-efrit-agent-user-line-during-stream-closes-the-message ()
+  "A steer or queued line drawn while the model streams ends the message
+first; the next chunk starts a new one below the line, and the line
+keeps its text and kind (it used to land inside the message and get
+rendered as Markdown)."
+  (with-efrit-agent-test-buffer
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions)
+    (let ((session (efrit-agent-repl-session)))
+      (efrit-repl-session-set-status session 'working)
+      (efrit-agent--add-claude-message "I will now")
+      (efrit-agent-busy-submit-steer "Change *of* plan?")
+      (efrit-agent--add-claude-message " compute **it**.")
+      (efrit-agent--stream-end-message)
+      (let ((text (buffer-substring-no-properties (point-min) (marker-position efrit-agent--conversation-end))))
+        (should (string-search "I will now\n\n↳ Change *of* plan?\n\n compute it." text)))
+      (should (efrit-agent--find-user-message "Change *of* plan?" 'steer))
+      ;; the thinking indicator was not touched by the steer line
+      (efrit-repl-session-set-status session 'working)
+      (efrit-agent--show-thinking "waiting")
+      (efrit-agent-busy-submit-queue "later")
+      (should efrit-agent--thinking-indicator)
+      (efrit-agent--hide-thinking))))
+
+(ert-deftest test-efrit-agent-lines-drawn-under-the-thinking-indicator-survive-it ()
+  "A queued or steer line (or a note) drawn while the thinking indicator
+shows goes above the indicator and is still there after the indicator
+is hidden.  It used to land inside the indicator's span and be deleted
+with it: every mark drawn mid-turn vanished (2026-09-25)."
+  (with-efrit-agent-test-buffer
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions)
+    (let ((session (efrit-agent-repl-session)))
+      (efrit-repl-session-set-status session 'working)
+      (efrit-agent--show-thinking "waiting for Claude...")
+      (should efrit-agent--thinking-indicator)
+      (efrit-agent-busy-submit-queue "later please")
+      (efrit-agent-busy-submit-steer "and now this")
+      (efrit-agent--append-to-conversation "  a note\n" '(efrit-type note))
+      (should efrit-agent--thinking-indicator)
+      ;; the indicator is still the last thing
+      (should (< (car (efrit-agent--find-user-message "and now this" 'steer))
+                 (marker-position (car efrit-agent--thinking-indicator))))
+      (efrit-agent--hide-thinking)
+      (should (efrit-agent--find-user-message "later please" 'queued))
+      (should (efrit-agent--find-user-message "and now this" 'steer))
+      (should (string-search "a note" (buffer-string)))
+      ;; and the sent-mark rewrite still finds it afterwards
+      (efrit-agent--unmark-queued-message "later please")
+      (should (efrit-agent--find-user-message "later please" nil)))))
+
+(ert-deftest test-efrit-agent-question-menu-does-not-open-after-the-answer ()
+  "The question menu opens from a timer; an answer before the timer runs
+cancels it, so no menu appears over an answered question."
+  (with-efrit-agent-test-buffer
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions)
+    (let ((opened nil) (timers nil))
+      (cl-letf (((symbol-function 'efrit-agent-question-menu-available-p) (lambda () t))
+                ((symbol-function 'efrit-agent--open-question-menu)
+                 (lambda (&rest _) (setq opened t)))
+                ((symbol-function 'run-at-time)
+                 (lambda (_s _r fn &rest args)
+                   (let ((tm (timer-create)))
+                     (timer-set-function tm fn args)
+                     (push tm timers) tm)))
+                ((symbol-function 'cancel-timer)
+                 (lambda (tm) (setq timers (delq tm timers)))))
+        (efrit-agent--add-question "Which colour?" '("red" "blue"))
+        (should efrit-agent--question-menu-timer)
+        ;; answer arrives before the timer fires
+        (efrit-agent--on-question-answered '((:response . "blue")))
+        (should-not efrit-agent--question-menu-timer)
+        (should-not timers)
+        (should-not opened)))))
+
 ;;; Buffer creation tests
 
 (ert-deftest test-efrit-agent-buffer-creation ()
@@ -563,7 +870,7 @@ the header hint names the keys."
   (efrit)
   (with-current-buffer (efrit-agent--get-buffer)
     (let ((sent nil) (efrit-agent--input-history (list "old")))
-      (cl-letf (((symbol-function 'efrit-agent--repl-send) (lambda (input) (setq sent input))))
+      (cl-letf (((symbol-function 'efrit-agent--repl-send) (lambda (input &optional _api) (setq sent input))))
         (unwind-protect
             (progn
               (goto-char (point-max)) (insert "line one")

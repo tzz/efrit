@@ -89,6 +89,8 @@ CALLBACK and does the remhash)."
   thinking-p          ; Non-nil to drive the agent thinking indicator.
   handles-waiting-p   ; Non-nil if WAITING-FOR-USER pauses the turn.
   on-end-turn-fn      ; (session content) called on end_turn before finish, or nil.
+  before-request-fn   ; (session) called after tool results are stored, before the
+                      ; next request goes out: the seam for steering text, or nil.
   system-prompt-fn    ; (session-id) -> system prompt string.
   tools-fn            ; () -> tools schema for the request.
   dispatch-fn         ; (tool-item) -> result string; runs one tool.
@@ -506,6 +508,10 @@ continues the loop."
     (when results
       (funcall (efrit-loop-adapter-add-tool-results-fn adapter)
                session (nreverse results)))
+    ;; Steering: what the user said while the tools ran goes out with
+    ;; their results, so the model reads it before its next step.
+    (when-let* ((fn (efrit-loop-adapter-before-request-fn adapter)))
+      (funcall fn session))
     (cond
      ;; A C-g mid-tool ends the turn cleanly (ef-lx4c): tool_results
      ;; are already recorded above, so the next user input can

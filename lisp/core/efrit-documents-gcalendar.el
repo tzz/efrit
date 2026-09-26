@@ -238,7 +238,7 @@ fixed subject format does better with its own rule on top of
   "Say which auth-source entry Calendar uses and list the calendars it can read."
   (interactive)
   (setq efrit-documents-gcalendar--host nil)
-  (condition-case err
+  (condition-case-unless-debug err
       (let* ((host (efrit-documents-gcalendar--find-host))
              (list (efrit-documents-gcalendar--request "/users/me/calendarList"
                                                        '(("fields" . "items(id,summary,primary)")))))

@@ -41,6 +41,9 @@
 (autoload 'efrit-menu "efrit-menu" nil t)
 (require 'efrit-agent-tools)
 (require 'efrit-agent-input)
+(require 'efrit-agent-menu)
+(require 'efrit-repl-loop)
+(declare-function efrit-session-active "efrit-session")
 (require 'efrit-agent-integration)
 
 ;; Forward declarations to silence byte-compiler
@@ -261,11 +264,18 @@
     (define-key map (kbd "C-c C-p") #'efrit-agent-pause)       ; Pause session
     (define-key map (kbd "C-c C-g") #'efrit-agent-refresh)     ; Refresh display
     (define-key map (kbd "C-c C-h") #'efrit-agent-browse-sessions) ; Browse sessions history
-    (define-key map (kbd "C-c ?")   #'efrit-agent-help)        ; Help
+    (define-key map (kbd "C-c ?")   #'efrit-agent-menu)        ; The buffer's menu
+    ;; `?' in the read-only conversation opens the menu; in the input
+    ;; it types a ? (the input minor mode shadows it)
+    (define-key map (kbd "?") #'efrit-agent-menu)
 
     ;; Tool-call expansion.  `d' (details) works in the transcript,
     ;; which is read-only; in the input region it inserts a d as usual
     ;; because the input minor-mode map shadows it.
+    ;; RET in the read-only conversation toggles the row at point (the
+    ;; input minor mode shadows it with send); it used to fall through
+    ;; to `newline' and say "text is read-only"
+    (define-key map (kbd "RET") #'efrit-agent-toggle-expand)
     (define-key map (kbd "d") #'efrit-agent-toggle-expand)
     (define-key map (kbd "o") #'efrit-agent-open-at-point)
     (define-key map (kbd "C-c C-t") #'efrit-agent-toggle-expand)
@@ -275,6 +285,9 @@
     (define-key map (kbd "C-c C-o") #'efrit-agent-cycle-display-mode)
     (define-key map (kbd "C-c C-l") #'efrit-agent-cycle-header-style)
     (define-key map (kbd "C-c C-m") #'efrit-menu)
+    (define-key map (kbd "C-c C-w") #'efrit-agent-copy-last-output)
+    (define-key map (kbd "C-c C-i") #'efrit-agent-copy-session-id)
+    (define-key map (kbd "C-c C-x") #'efrit-agent-restart)
 
     ;; Input handling
     (define-key map (kbd "C-c C-s") #'efrit-agent-send-input)
@@ -311,6 +324,12 @@ Status is shown in the header-line at top of window.
   (setq-local cursor-in-non-selected-windows nil)
   ;; Initialize state
   (setq efrit-agent--expanded-items (make-hash-table :test 'equal))
+  ;; Folded tool bodies are `invisible' text; let ellipses off and
+  ;; make isearch honour `search-invisible' over them
+  (add-to-invisibility-spec 'efrit-tool-body)
+  (efrit-agent--setup-isearch)
+  ;; @file mentions, /commands, drag and drop
+  (efrit-agent-mentions-setup)
   ;; Initialize user expansion state tracking (persists across buffer updates)
   (unless efrit-agent--expansion-state
     (setq efrit-agent--expansion-state (make-hash-table :test 'equal)))
@@ -339,15 +358,33 @@ Status is shown in the header-line at top of window.
   (quit-window))
 
 (defun efrit-agent-cancel ()
-  "Cancel the current session."
+  "Cancel the running turn.
+For the REPL session: an in-flight request is aborted, a turn between
+requests or running a tool is asked to stop at the next check, and a
+turn waiting on a question is ended so the next input is a new turn
+\(the model's question is withdrawn).  The efrit-do session, when one
+is active, is cancelled as before."
   (interactive)
   (if (memq efrit-agent--status '(working paused waiting))
-      (progn
+      (let ((session efrit-agent--repl-session))
         ;; Abort any in-flight streaming request first so the model
         ;; actually stops, not just the UI
         (when (fboundp 'efrit-api-stream-cancel)
           (efrit-api-stream-cancel))
-        (efrit-executor-cancel)
+        (when session
+          (pcase (efrit-repl-session-status session)
+            ;; Between requests or inside a tool: the loop checks the
+            ;; flag before its next request and finishes "paused"
+            ('working (setf (efrit-repl-session-interrupt-requested session) t))
+            ;; Waiting on request_user_input: nothing is in flight,
+            ;; the loop is gone; just end the turn
+            ((or 'waiting 'paused)
+             (setf (efrit-repl-session-pending-question session) nil)
+             (setq efrit-agent--pending-question nil)
+             (efrit-agent--reset-input-prompt)
+             (efrit-repl-loop-abandon-turn session))))
+        (when (efrit-session-active)
+          (efrit-executor-cancel))
         (efrit-agent-set-status 'failed)
         ;; Update status in place: a full render here erased the
         ;; incrementally rendered conversation (ef-7t0)
@@ -704,7 +741,8 @@ Navigation:
    C-c C-d        Collapse all tool calls
    C-c C-v        Cycle verbosity (minimal/normal/verbose)
    C-c C-o        Cycle display mode (minimal/smart/verbose)
-   C-c ?          This help
+   C-c ?  (or ? in the transcript)  The command menu
+   M-x efrit-agent-help             This text
 
  Session Management (canonical keybindings):
    C-c C-c        Send input / Continue session

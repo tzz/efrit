@@ -333,6 +333,10 @@ Executes all ERT tests and displays results in a buffer."
 ;;;###autoload
 (autoload 'efrit-submit "efrit-agent-input"
   "Start a REPL turn from Lisp with a prepared prompt.")
+(autoload 'efrit-testdrive-tour "efrit-testdrive"
+  "Walk through what only eyes can check in the agent buffer." t)
+(autoload 'efrit-agent-menu "efrit-agent-menu"
+  "The agent buffer's command menu." t)
 (autoload 'efrit-agent-repl-session "efrit-agent-input"
   "The agent buffer's REPL session, created if needed.")
 ;;;###autoload

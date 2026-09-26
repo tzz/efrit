@@ -285,7 +285,7 @@ format is refused, naming the last reason."
   (interactive)
   (let ((source (or efrit-documents-gdrive--source (efrit-documents-gdrive-register))))
     (setf (efrit-documents-gdrive-host source) nil)
-    (condition-case err
+    (condition-case-unless-debug err
         (let* ((host (efrit-documents-gdrive--find-host source))
                (about (efrit-auth-request host "GET" "https://www.googleapis.com/drive/v3/about"
                                           :user efrit-documents-gdrive-user

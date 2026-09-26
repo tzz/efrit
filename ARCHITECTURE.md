@@ -87,6 +87,31 @@ each answer with `efrit-repl-session-last-answer`; efrit-gnus does this
 per batch, so the model never rereads earlier batches, and sends the
 stitched answers to the closing turn.
 
+While a turn runs the prompt stays writable.  RET routes through
+`efrit-agent-busy-submit-default-function` (queue: the text is kept on
+the session, `efrit-repl-session-queue`, and sent when the turn ends
+well) and M-RET through the override function (steer: the agent buffer
+publishes a `steer` event; `efrit-repl-loop--on-steer` keeps the text
+on the session and the adapter's `before-request-fn`,
+`efrit-repl-loop--deliver-steering`, appends it as text blocks to the
+user message that carries the next tool results, publishing
+`steered`).  Steering that finds no tool round is queued at turn end.
+Both are drawn in the conversation at once, with their own prefix.
+
+Rendering discipline: every programmatic edit of the conversation goes
+through `efrit-agent--with-render` (no undo entries, read-only lifted;
+afterwards the undo list is reset to one entry for the input region)
+and `efrit-agent--seal-rendered` (read-only, `field', `font-lock-face'
+mirrored, `fontified').  Tool bodies fold with the `invisible' property
+(`efrit-tool-body'), and `efrit-agent--isearch-filter' honours
+`search-invisible'.  The model's text is rendered as Markdown in place
+by `efrit-markdown.el` (lisp/interfaces): markup deleted, faces and
+links as text properties, a watermark offset on the first character so
+each streamed chunk renders only from the last safe frontier; fenced
+blocks are fontified with the language's mode and frozen.
+`efrit-agent-mentions.el` adds `@path` completion and expansion,
+`/commands` (`efrit-agent-define-slash-command`), and drag and drop.
+
 The REPL history is also bounded by size: before every request
 `efrit-repl-session-fit-context` estimates the history against the
 model's window (`efrit-usage-window`, per-model via
@@ -111,7 +136,7 @@ related-documents lookup (title words near a date), and the
 is the Google Drive source and `efrit-documents-confluence.el` the
 Confluence one (Atlassian Cloud and self-hosted, one source per site in
 `efrit-documents-confluence-sites`).  `efrit-documents-jira.el` wraps
-the jira.el package (and its nnjira renderer) as a source and a
+the jira.el package as a source and a
 key-mention provider. `efrit-documents-gcalendar.el` is
 not a source but a related-documents provider
 (`efrit-documents-related-functions`): it finds the calendar event an

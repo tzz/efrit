@@ -181,6 +181,13 @@ Claude messages are rendered inline; errors with the error face."
      (concat (propertize (concat "  " (alist-get :text event)) 'face (alist-get :face event)) "\n")
      (list 'efrit-type (intern (format "%s-note" (alist-get :kind event)))))))
 
+(defun efrit-agent--on-steered (event)
+  "Subscriber: the steering text was handed to the model; say so under its line."
+  (efrit-agent--in-agent-buffer
+    (efrit-agent--append-to-conversation
+     (concat (propertize "  ↳ delivered with the tool results" 'face 'shadow) "\n")
+     (list 'efrit-type 'steer-note 'efrit-steer-text (alist-get :text event)))))
+
 (defun efrit-agent--on-status (event)
   (efrit-agent-set-status (alist-get :status event)))
 
@@ -211,6 +218,7 @@ Claude messages are rendered inline; errors with the error face."
     (when-let* ((response (alist-get :response event)))
       (efrit-agent--add-user-message (format "%s" response)))
     (setq efrit-agent--pending-question nil)
+    (efrit-agent--close-question-menu)
     (setq efrit-agent--status 'working)
     (efrit-agent--reset-input-prompt)))
 
@@ -228,6 +236,7 @@ Claude messages are rendered inline; errors with the error face."
     (error . efrit-agent--on-error)
     (status . efrit-agent--on-status)
     (note . efrit-agent--on-note)
+    (steered . efrit-agent--on-steered)
     (session-start . efrit-agent--on-session-start)
     (session-end . efrit-agent--on-session-end)
     (question . efrit-agent--on-question)

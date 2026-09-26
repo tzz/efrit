@@ -125,6 +125,73 @@ follow-up response is delivered."
           (should (eq (alist-get 'is_error block) t))
           (should (string-prefix-p efrit-sandbox-denied-prefix (alist-get 'content block))))))))
 
+(ert-deftest test-repl-loop-steer-delivered-with-tool-results ()
+  "A `steer' event during a turn puts its text into the user message
+that carries the next tool results, as a text block after them; a
+`steered' event says so.  Steering that finds no tool round is queued
+when the turn ends."
+  (let* ((session (efrit-repl-session-create))
+         (turn-reason nil) (steered nil)
+         (listener (lambda (e) (push (alist-get :text e) steered))))
+    (efrit-subscribe 'steered listener)
+    (unwind-protect
+        (test-repl-loop--with-mocks
+            (list (test-repl-loop--make-response
+                   (vector (test-repl-loop--make-tool-use
+                            "tool-1" "eval_sexp" '(("expr" . "(+ 2 2)"))))
+                   "tool_use")
+                  (test-repl-loop--make-response
+                   (vector (test-repl-loop--make-text "Done, in French."))
+                   "end_turn"))
+            "4"
+          ;; The mock API is synchronous, so steer before the turn: the
+          ;; event lands on the working session as soon as it exists.
+          (cl-letf* ((orig (symbol-function 'efrit-repl-loop--api-call))
+                     ((symbol-function 'efrit-repl-loop--api-call)
+                      (lambda (s messages callback)
+                        (when (= 1 (length messages))
+                          (efrit-publish 'steer `((:session-id . ,(efrit-repl-session-id s))
+                                                  (:text . "answer in French"))))
+                        (funcall orig s messages callback))))
+            (efrit-repl-continue session "what is 2+2?"
+                                 (lambda (_s reason) (setq turn-reason reason))))
+          (should (equal turn-reason "end_turn"))
+          (should (equal '("answer in French") steered))
+          (let* ((messages (efrit-repl-session-api-messages session))
+                 (results (nth 2 messages))
+                 (blocks (append (alist-get 'content results) nil)))
+            (should (= 4 (length messages)))
+            (should (equal "user" (alist-get 'role results)))
+            (should (= 2 (length blocks)))
+            (should (equal "tool_result" (alist-get 'type (nth 0 blocks))))
+            (should (equal "text" (alist-get 'type (nth 1 blocks))))
+            (should (string-prefix-p efrit-repl-steering-frame (alist-get 'text (nth 1 blocks))))
+            (should (string-suffix-p "answer in French" (alist-get 'text (nth 1 blocks)))))
+          (should-not (efrit-repl-session-steering session))
+          ;; A steer with no tool round left: queued at turn end
+          (efrit-repl-session-steer session "and shorter")
+          (efrit-repl-loop--end-turn session "end_turn")
+          (should (equal '("and shorter") (efrit-repl-session-queue session)))
+          (should-not (efrit-repl-session-steering session)))
+      (efrit-unsubscribe 'steered listener))))
+
+(ert-deftest test-repl-loop-cancelled-request-publishes-turn-complete ()
+  "A stream cancelled by the user ends the turn as interrupted AND
+publishes turn-complete, like every other ending."
+  (let* ((session (efrit-repl-session-create))
+         (seen nil)
+         (listener (lambda (e) (push (alist-get :stop-reason e) seen))))
+    (efrit-subscribe 'turn-complete listener)
+    (unwind-protect
+        (progn
+          (puthash (efrit-repl-session-id session) (list session nil 1) efrit-repl-loop--active)
+          (efrit-repl-session-set-status session 'working)
+          (efrit-repl-loop--on-api-error session "interrupted")
+          (should (equal '("interrupted") seen))
+          (should (eq 'idle (efrit-repl-session-status session))))
+      (efrit-unsubscribe 'turn-complete listener)
+      (clrhash efrit-repl-loop--active))))
+
 (ert-deftest test-repl-loop-c-g-ends-turn ()
   "C-g during a tool still ends the turn as interrupted."
   (let ((session (efrit-repl-session-create))

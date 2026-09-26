@@ -64,6 +64,15 @@ messages stay.  nil means `efrit-usage-window' less
   :type 'number
   :group 'efrit-repl)
 
+(defcustom efrit-repl-steering-frame
+  "INSTRUCTION FROM THE USER, sent while you were working. It takes priority over the original request and over the tool results above: follow it from your very next step on, and honor it in your final message. The instruction: "
+  "Text put before what the user typed to steer a running turn.
+It arrives in the same message as the tool results, which models
+weight low; a plain \"the user says\" was ignored three runs out of
+three (2026-09-25), hence the emphasis."
+  :type 'string
+  :group 'efrit-repl)
+
 (defconst efrit-repl-elided-marker "[elided: %s, %d characters, to fit the context window]"
   "Text that replaces a message body the context guard removed.")
 
@@ -107,6 +116,8 @@ session persists and accumulates conversation context."
 
   ;; Pending input handling
   (pending-question nil)                  ; Question waiting for answer
+  (queue nil)                             ; Inputs to send after this turn, oldest first
+  (steering nil)                          ; Texts to inject before the next request, oldest first
 
   ;; Interrupt control
   (interrupt-requested nil))              ; Signal graceful pause
@@ -180,7 +191,9 @@ prepended (see `efrit-context-wrap-user-input')."
       ;; Track tokens
       (efrit-budget-record-usage (efrit-repl-session-budget session)
                                  'user-message
-                                 (efrit-budget-estimate-tokens api-content))
+                                 (efrit-budget-estimate-tokens
+                                  (if (stringp api-content) api-content
+                                    (efrit-repl-session--content-text api-content))))
       ;; Update activity timestamp
       (setf (efrit-repl-session-last-activity session) timestamp)
       (efrit-log 'debug "REPL session %s: added user message (%d chars)"
@@ -446,6 +459,74 @@ number of messages changed, 0 when nothing was needed."
                                            (efrit-usage-compact-number tokens)))))))
     changed))
 
+;;; Queue and steering
+;;
+;; Two ways to talk to a busy session.  The QUEUE holds whole inputs
+;; that start their own turn once this one ends (`efrit-repl-session-
+;; dequeue' is called by the turn-complete handler).  STEERING holds
+;; text the loop folds into the running turn: `efrit-loop-execute-tools'
+;; drains it into the user message that carries the tool results, so
+;; the model reads it before its next step.  Both are lists of strings,
+;; oldest first.
+
+(defun efrit-repl-session-enqueue (session input)
+  "Queue INPUT to start a turn after SESSION's current turn ends.
+Returns the queue length."
+  (setf (efrit-repl-session-queue session)
+        (append (efrit-repl-session-queue session) (list input)))
+  (efrit-log 'debug "REPL session %s: queued input (%d waiting)"
+             (efrit-repl-session-id session) (length (efrit-repl-session-queue session)))
+  (length (efrit-repl-session-queue session)))
+
+(defun efrit-repl-session-dequeue (session)
+  "Pop the oldest queued input of SESSION, or nil."
+  (when-let* ((input (car (efrit-repl-session-queue session))))
+    (setf (efrit-repl-session-queue session) (cdr (efrit-repl-session-queue session)))
+    input))
+
+(defun efrit-repl-session-steer (session text)
+  "Add TEXT to what SESSION's running turn reads before its next request.
+Returns the number of steering texts pending."
+  (setf (efrit-repl-session-steering session)
+        (append (efrit-repl-session-steering session) (list text)))
+  (length (efrit-repl-session-steering session)))
+
+(defun efrit-repl-session-take-steering (session)
+  "Return and clear SESSION's pending steering texts, oldest first."
+  (prog1 (efrit-repl-session-steering session)
+    (setf (efrit-repl-session-steering session) nil)))
+
+(defun efrit-repl-session-add-steering-blocks (session texts)
+  "Append TEXTS as text blocks to the last user message of SESSION.
+That message carries the tool results of the step that just ran, so
+the steering arrives with them; when the last message is not a user
+message (nothing ran yet), a new user message is added.  This is how
+`efrit-loop-execute-tools' delivers steering."
+  (when texts
+    (let* ((messages (efrit-repl-session-api-messages session))
+           (last (car (last messages)))
+           (blocks (mapcar (lambda (text)
+                             `((type . "text")
+                               (text . ,(concat efrit-repl-steering-frame text))))
+                           texts)))
+      (if (and last (equal (efrit-repl-session--block-get last "role") "user")
+               (vectorp (efrit-repl-session--block-get last "content")))
+          (setf (efrit-repl-session-api-messages session)
+                (append (butlast messages)
+                        (list `((role . "user")
+                                (content . ,(vconcat (efrit-repl-session--block-get last "content")
+                                                     blocks))))))
+        (setf (efrit-repl-session-api-messages session)
+              (append messages
+                      (list `((role . "user") (content . ,(vconcat blocks)))))))
+      (dolist (text texts)
+        (setf (efrit-repl-session-conversation session)
+              (append (efrit-repl-session-conversation session)
+                      (list (list :role 'user :content text :steer t
+                                  :timestamp (current-time))))))
+      (efrit-log 'info "REPL session %s: %d steering text(s) delivered"
+                 (efrit-repl-session-id session) (length texts)))))
+
 ;;; Session State Management
 
 (defun efrit-repl-session-set-status (session status)
@@ -481,6 +562,8 @@ Use this to start a fresh conversation in the same buffer."
     (setf (efrit-repl-session-api-messages session) nil)
     (setf (efrit-repl-session-current-turn-tools session) nil)
     (setf (efrit-repl-session-pending-question session) nil)
+    (setf (efrit-repl-session-queue session) nil)
+    (setf (efrit-repl-session-steering session) nil)
     (setf (efrit-repl-session-interrupt-requested session) nil)
     (setf (efrit-repl-session-budget session) (efrit-budget-create))
     (efrit-repl-session-set-status session 'idle)

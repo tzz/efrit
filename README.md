@@ -21,8 +21,22 @@ Execute natural language commands that Claude translates to actions:
 A structured, real-time view of agentic sessions with:
 - Session status and elapsed time in header-line
 - Task progress tracking (TODOs) updated by Claude
-- Conversation view with expandable tool calls
-- Interactive input for follow-up commands and mid-session guidance
+- Conversation view with expandable tool calls (folded bodies are
+  searchable: `isearch` honours `search-invisible`)
+- The model's answers rendered as Markdown in place: headers, emphasis,
+  code blocks with the language's fontification, links, and file
+  references like `lisp/efrit.el:120` that open the file
+- A prompt that is writable at all times.  `RET` while a turn runs
+  queues the input for the next turn; `M-RET` (or `C-u RET`) steers
+  the running turn: the model reads the text with its next tool
+  results.  Both are `efrit-agent-busy-submit-*-function`.  `C-c C-q`
+  lists and drops queued inputs.
+- `@path` mentions complete over the project's files and inline the
+  file for the model; images are attached.  Drag a file onto the buffer
+  to mention it (a screenshot dragged from the OS is kept under
+  `.efrit/dropped/`).
+- `/commands` at the start of the input run efrit's own commands:
+  `/help` lists them (`/new`, `/model`, `/mode`, `/queue`, ...).
 
 **Agent Buffer Keybindings:**
 
@@ -34,7 +48,14 @@ Actions use the `C-c` prefix so standard editing keys (`C-k`, `C-g`,
 | `TAB` / `S-TAB` | Move between sections |
 | `M-n` / `M-p` | Next / previous tool call |
 | `RET` | Expand/collapse tool at point |
+| `RET` (input) | Send; queue while a turn runs |
+| `M-RET` / `C-u RET` (input) | Steer the running turn |
+| `S-RET` / `C-j` (input) | Newline |
 | `C-c C-c` | Send input / continue session |
+| `C-c C-q` (input) | Show / drop queued inputs |
+| `C-c C-w` | Copy the last answer |
+| `C-c C-i` | Copy the session id |
+| `C-c C-x` | Restart: fresh session, same windows |
 | `C-c C-k` | Cancel session |
 | `C-c C-n` | New session |
 | `C-c C-r` | Resume paused session |
@@ -46,9 +67,9 @@ Actions use the `C-c` prefix so standard editing keys (`C-k`, `C-g`,
 | `C-c C-v` | Cycle verbosity (minimal/normal/verbose) |
 | `C-c C-o` | Cycle display mode (minimal/smart/verbose) |
 | `C-c C-g` | Refresh display |
-| `C-c C-q` | Quit buffer (session continues) |
+| `C-c C-q` (conversation) | Quit buffer (session continues) |
 | `1`-`4` | Select option when Claude asks (in input region) |
-| `C-c ?` | Show help |
+| `C-c ?` / `?` (transcript) | The buffer's command menu (transient) |
 
 ### Rich Tool Suite
 Efrit provides Claude with 35+ tools:

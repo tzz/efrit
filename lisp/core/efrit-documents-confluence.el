@@ -332,7 +332,7 @@ stay; shr renders the rest when libxml is available, else tags go."
   (if (null efrit-documents-confluence--sources)
       (message "efrit-documents: no Confluence sites; set `efrit-documents-confluence-sites'")
     (dolist (source efrit-documents-confluence--sources)
-      (condition-case err
+      (condition-case-unless-debug err
           (let ((me (efrit-documents-confluence--request source "/user/current")))
             (setf (efrit-documents-source-unavailable source) nil)
             (message "efrit-documents: %s (%s) works as %s"

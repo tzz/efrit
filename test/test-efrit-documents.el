@@ -517,20 +517,19 @@ No word scoring: a same-day event with a shared word does not count."
       (should-not (efrit-documents-gcalendar-related '(:title "Widget")))
       (should-not calls))))
 
-;;;; The Jira source (needs jira.el and its nnjira on the load path)
+;;;; The Jira source (needs jira.el on the load path)
 
 (ert-deftest test-efrit-documents-jira-source ()
-  "Keys and browse URLs resolve; fetch renders nnjira's block plus comments;
+  "Keys and browse URLs resolve; fetch renders the attribute block plus comments;
 search is JQL; keys mentioned in an item are related documents; without
 jira.el the source is registered unavailable."
-  (skip-unless (and (locate-library "jira-api") (locate-library "nnjira")))
+  (skip-unless (and (locate-library "jira-api") (locate-library "jira-doc")))
   (require 'efrit-documents-jira)
   (let ((efrit-documents--sources nil)
         (efrit-documents--cache (make-hash-table :test #'equal))
         (efrit-documents-related-functions nil)
         (jira-base-url "https://jira.example.com")
         (jira-current-url nil)
-        (nnjira-pills nil)
         (calls nil))
     (cl-letf (((symbol-function 'jira-api-call)
                (cl-function
@@ -571,7 +570,7 @@ jira.el the source is registered unavailable."
         (let ((doc (efrit-documents-fetch "jira:INFRA-1")))
           (should (equal "INFRA-1: Salt master OOM" (plist-get doc :title)))
           (should (equal "https://jira.example.com/browse/INFRA-1" (plist-get doc :url)))
-          (should (string-prefix-p "INFRA-1 Bug Open\nURL" (plist-get doc :text)))
+          (should (string-prefix-p "INFRA-1 | Bug | Open\nUpdated      2026-09-21T10:00:00.000+0000\nURL          https://jira.example.com/browse/INFRA-1\n" (plist-get doc :text)))
           (should (string-match-p "It ran out of memory\\." (plist-get doc :text)))
           (should (string-search "--- Comments ---\nCara (2026-09-21T11:00:00.000+0000):\nBumped to 64G." (plist-get doc :text))))
         (let ((found (efrit-documents-source-search source '(:text ("salt" "oom") :since "2026-09-01" :limit 5))))

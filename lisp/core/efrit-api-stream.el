@@ -331,7 +331,13 @@ Returns the `efrit-api-stream' handle, for `efrit-api-stream-cancel'."
       (set-buffer-multibyte nil)
       (insert (efrit-api-encode-request (plist-get req :body))))
     (set-file-modes body-file #o600)
-    (let ((proc
+    (let* ((default-directory (if (file-directory-p default-directory)
+                                  default-directory
+                                temporary-file-directory))
+           (proc
+           ;; curl inherits `default-directory'; a caller whose buffer
+           ;; sits in a directory that no longer exists (a deleted
+           ;; project) must not fail the request
            (make-process
             :name "efrit-stream"
             :buffer nil

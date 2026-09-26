@@ -123,6 +123,7 @@ requiring an active efrit-do session (ef-dcn).")
    ;; Store Claude's final message so the conversation context carries
    ;; into the next turn
    :on-end-turn-fn #'efrit-repl-session-add-assistant-message
+   :before-request-fn #'efrit-repl-loop--deliver-steering
    :api-call-fn 'efrit-repl-loop--api-call
    :continue-fn 'efrit-repl-loop--continue-iteration
    :execute-tools-fn 'efrit-repl-loop--execute-tools
@@ -196,6 +197,52 @@ Returns the session ID."
 
       session-id)))
 
+;;; Steering: talking to a running turn
+;;
+;; The agent buffer publishes a `steer' event when the user submits
+;; while a turn runs and chose to steer rather than queue.  The loop
+;; keeps the text on the session and hands it to the model together
+;; with the next tool results.  There is no other seam: a request in
+;; flight cannot be changed, and the model only reads new input as a
+;; user message.  Text that arrives after the last tool round is not
+;; lost: `efrit-repl-loop--flush-steering' turns it into the next input
+;; when the turn ends.
+
+(defun efrit-repl-loop--session-for-event (event)
+  "The working REPL session EVENT's :session-id names, or nil."
+  (when-let* ((id (alist-get :session-id event))
+              (state (gethash id efrit-repl-loop--active)))
+    (nth 0 state)))
+
+(defun efrit-repl-loop--on-steer (event)
+  "Subscriber: keep EVENT's :text for the running turn of its session."
+  (when-let* ((session (efrit-repl-loop--session-for-event event))
+              (text (alist-get :text event)))
+    (efrit-repl-session-steer session text)
+    (efrit-log 'info "REPL session %s: steering text pending (%d chars)"
+               (efrit-repl-session-id session) (length text))))
+
+(efrit-subscribe 'steer #'efrit-repl-loop--on-steer)
+
+(defun efrit-repl-loop--deliver-steering (session)
+  "Fold SESSION's pending steering into the message the model reads next.
+The adapter's before-request hook."
+  (when-let* ((texts (efrit-repl-session-take-steering session)))
+    (efrit-repl-session-add-steering-blocks session texts)
+    (dolist (text texts)
+      (efrit-publish 'steered `((:session-id . ,(efrit-repl-session-id session))
+                                (:text . ,text))))))
+
+(defun efrit-repl-loop--flush-steering (session)
+  "Steering that never found a tool round becomes queued input.
+Called when a turn ends: a turn that answered without tools had no
+seam, so the text starts the next turn instead of vanishing."
+  (when-let* ((texts (efrit-repl-session-take-steering session)))
+    (dolist (text texts)
+      (efrit-repl-session-enqueue session text))
+    (efrit-log 'info "REPL session %s: %d steering text(s) had no seam; queued"
+               (efrit-repl-session-id session) (length texts))))
+
 ;;; Internal Loop Implementation
 
 (defun efrit-repl-loop--continue-iteration (session)
@@ -232,6 +279,12 @@ a user action, not a failure."
       (progn
         (efrit-log 'info "REPL session %s: request cancelled by user"
                    (efrit-repl-session-id session))
+        ;; This path skips `efrit-loop--finish', which is what publishes
+        ;; turn-complete; subscribers (the test drive, efrit-gnus's
+        ;; batch driver) must still hear that the turn ended
+        (efrit-publish 'turn-complete
+                       `((:session-id . ,(efrit-repl-session-id session))
+                         (:stop-reason . "interrupted")))
         (efrit-repl-loop--end-turn session "interrupted"))
     (efrit-log 'error "REPL session %s: API error: %s"
                (efrit-repl-session-id session) error)
@@ -280,6 +333,11 @@ Unlike efrit-do-async--stop-loop, this transitions to idle, not complete."
 
     ;; End the turn (transitions to idle, NOT complete)
     (efrit-repl-session-end-turn session)
+    (efrit-repl-loop--flush-steering session)
+    ;; Whatever path ended the turn (a response, an error, a cancel
+    ;; during review), the activity indicator stops with it.  The
+    ;; cancel path did not publish this and left the spinner turning.
+    (efrit-publish 'thinking-stop `((:session-id . ,session-id)))
 
     ;; A turn paused on request_user_input stays in waiting state so the
     ;; next input is routed as the answer (ef-dcn).
@@ -306,6 +364,15 @@ Unlike efrit-do-async--stop-loop, this transitions to idle, not complete."
 
     (efrit-log 'info "REPL session %s: turn ended (%s, %d iterations)"
                session-id stop-reason iteration-count)))
+
+(defun efrit-repl-loop-abandon-turn (session)
+  "End SESSION's turn that waits on the user, as interrupted.
+For a turn paused on a question: nothing is in flight, so this is the
+whole cancel.  The next input starts a new turn."
+  (efrit-publish 'turn-complete
+                 `((:session-id . ,(efrit-repl-session-id session))
+                   (:stop-reason . "interrupted")))
+  (efrit-repl-loop--end-turn session "interrupted"))
 
 ;;; Query Functions
 
