@@ -108,12 +108,37 @@
   "Badge of a built-in prompt you changed.")
 
 (defface efrit-prompts-section
-  '((t :inherit font-lock-keyword-face :weight bold :overline t))
+  '((t :inherit font-lock-keyword-face :weight bold))
   "Section headings in the editor.")
 
 (defface efrit-prompts-hint
   '((t :inherit shadow))
   "The first line of a prompt shown beside its name in the chooser.")
+
+(defface efrit-prompts-kind-on
+  '((((background dark)) :foreground "#1b1b1b" :background "#8fbc8f" :weight bold)
+    (t :foreground "white" :background "#2e8b57" :weight bold))
+  "The selected kind in the editor's kind switch.")
+
+(defface efrit-prompts-kind-off
+  '((((background dark)) :foreground "#a0a0a0" :background "#3a3a3a")
+    (t :foreground "#505050" :background "#e0e0e0"))
+  "An unselected kind in the editor's kind switch.")
+
+(defface efrit-prompts-field
+  '((((background dark)) :background "#1e1e1e" :extend t)
+    (t :background "#f7f7f7" :extend t))
+  "Background of an editable field in the prompt editor.")
+
+(defface efrit-prompts-review-old
+  '((((background dark)) :foreground "#c08080")
+    (t :foreground "#a04040"))
+  "Your current text in a suggestion review.")
+
+(defface efrit-prompts-review-new
+  '((((background dark)) :foreground "#80c080")
+    (t :foreground "#2e7d32"))
+  "The suggested text in a suggestion review.")
 
 ;;;; The library
 
@@ -448,7 +473,11 @@ nil summary.  `e' opens the manager and asks again when it closes."
 SUMMARY nil means a single prompt: the model is asked to leave the
 SUMMARY block empty."
   `(("model" . ,(or efrit-prompts-suggest-model efrit-default-model))
-    ("max_tokens" . 1200)
+    ;; Two parts under 120 words each need ~400 tokens.  The rest is
+    ;; room for thinking when the endpoint or `efrit-api-extra-body'
+    ;; turns it on: at 1200 a thinking model spent it all and returned
+    ;; no text (2026-09-26).
+    ("max_tokens" . 4096)
     ("system" . ,(efrit-api-cacheable-system efrit-prompts-suggest-instructions))
     ("messages" . [(("role" . "user")
                     ("content" . ,(format "Prompt name: %s\n%s\nCurrent ITEM part:\n%s\n\n%s"
@@ -470,6 +499,7 @@ SUMMARY block empty."
           (string-trim (match-string 2 text)))))
 
 (defun efrit-prompts--response-text (response)
+  "The concatenated text blocks of RESPONSE."
   (let ((content (efrit-response-content response)) (texts nil))
     (when content
       (dotimes (i (length content))
@@ -477,6 +507,22 @@ SUMMARY block empty."
           (when (and (hash-table-p item) (equal (gethash "type" item) "text"))
             (push (gethash "text" item) texts)))))
     (string-join (nreverse texts) "")))
+
+(defun efrit-prompts--describe-bad-answer (response text)
+  "Why RESPONSE with TEXT could not be parsed, for the user."
+  (let* ((content (efrit-response-content response))
+         (types (and content (mapcar (lambda (b) (and (hash-table-p b) (gethash "type" b)))
+                                     (append content nil))))
+         (stop (efrit-response-stop-reason response)))
+    (cond
+     ((equal stop "max_tokens")
+      (format "the answer was cut at max_tokens before any text (blocks: %s)"
+              (mapconcat (lambda (x) (format "%s" x)) types ", ")))
+     ((string-empty-p text)
+      (format "the model returned no text (stop_reason %s, blocks: %s)"
+              stop (mapconcat (lambda (x) (format "%s" x)) types ", ")))
+     (t (format "the model did not answer in the expected format: %s"
+                (truncate-string-to-width text 200 nil nil "…"))))))
 
 (defun efrit-prompts-suggest (name item summary purpose callback)
   "Ask the model for a better version of prompt NAME's ITEM and SUMMARY.
@@ -493,8 +539,7 @@ PURPOSE is optional free text on what the user wants.  CALLBACK gets
                   (efrit-error-message (efrit-response-error response)))
                  (t (let ((text (efrit-prompts--response-text response)))
                       (or (efrit-prompts-parse-suggestion text)
-                          (format "the model did not answer in the expected format: %s"
-                                  (truncate-string-to-width text 200 nil nil "…"))))))))
+                          (efrit-prompts--describe-bad-answer response text)))))))
      (lambda (error-message) (funcall callback (format "%s" error-message))))))
 
 ;;;; The editor
@@ -509,10 +554,103 @@ PURPOSE is optional free text on what the user wants.  CALLBACK gets
 (defconst efrit-prompts-edit--sections
   '((:name "Name" "One short label; it is what you pick in the chooser.")
     (:description "What it is for" "Optional. Shown in the manager.")
-    (:kind "Kind" "single: one task, done per batch of items.  summarizing: the per-item part runs per batch, then the over-everything part runs once over all the answers.")
     (:item "Per item" "Asked of every batch of items. Ask for a short, specific answer per item.")
-    (:summary "Over everything" "Summarizing prompts only: asked once at the end, over all the per-item answers. Ask for one consolidated answer."))
-  "The editor's sections: (KEY HEADING HELP).")
+    (:summary "Over everything" "Asked once at the end, over all the per-item answers. Ask for one consolidated answer."))
+  "The editor's sections: (KEY HEADING HELP).  The kind is a switch, not a section.")
+
+(defvar-local efrit-prompts-edit--kind 'summarizing
+  "The kind chosen in the editor: `single' or `summarizing'.")
+
+(defun efrit-prompts-edit--protect (start end)
+  "Make START..END read-only as one block: no insertion before, inside,
+or between its characters, only after its last one.
+`read-only' with `rear-nonsticky' on every character (the first
+version) refused nothing: Emacs allows an insertion when the character
+before is rear-nonsticky and the one after is not front-sticky, so the
+headings were editable (2026-09-26).  So: `front-sticky' on the whole
+block, `rear-nonsticky' only on its last character."
+  (add-text-properties start end '(read-only t front-sticky (read-only)))
+  (put-text-property (1- end) end 'rear-nonsticky t))
+
+(defun efrit-prompts--mirror-faces (start end)
+  "Copy each `face' run in START..END to `font-lock-face'.
+The editor derives from `text-mode'.  A user hook that turns
+`font-lock-mode' on there (tzz has one) makes jit-lock strip the
+`face' property from everything it fontifies, so headings, pills and
+field backgrounds vanished (2026-09-26).  `font-lock-face' survives
+that and displays whenever font-lock is on; `face' covers the case
+where it is off."
+  (let ((pos start))
+    (while (< pos end)
+      (let ((next (min end (next-single-property-change pos 'face nil end)))
+            (face (get-text-property pos 'face)))
+        (when face
+          (put-text-property pos next 'font-lock-face face))
+        (setq pos next)))))
+
+(defvar efrit-prompts-edit-kind-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mouse-1] #'efrit-prompts-edit-toggle-kind-at-mouse)
+    (define-key map (kbd "RET") #'efrit-prompts-edit-toggle-kind)
+    (define-key map (kbd "SPC") #'efrit-prompts-edit-toggle-kind)
+    map)
+  "Keys on the kind switch in the editor.")
+
+(defun efrit-prompts-edit--kind-line ()
+  "The kind switch: heading, two pills with the chosen one lit, then
+one line on what the choice means."
+  (let ((mk (lambda (kind label)
+              (let ((on (eq efrit-prompts-edit--kind kind)))
+                (propertize (efrit-ui-badge (if on (concat "✓ " label) label)
+                                            (if on 'efrit-prompts-kind-on 'efrit-prompts-kind-off))
+                            'efrit-prompts-kind kind
+                            'keymap efrit-prompts-edit-kind-map
+                            'mouse-face 'highlight
+                            'help-echo "mouse-1, RET, SPC: switch the kind (also C-c C-t)")))))
+    (concat (propertize "Kind" 'face 'efrit-prompts-section 'efrit-prompts-section :kind)
+            "  " (funcall mk 'single "single") "  " (funcall mk 'summarizing "summarizing")
+            "\n"
+            (propertize (if (eq efrit-prompts-edit--kind 'single)
+                            "  One task, asked of each batch of items. The over-everything part is not used."
+                          "  The per-item part runs on each batch. The over-everything part then runs once over all the answers.")
+                        'face 'shadow)
+            "\n")))
+
+(defun efrit-prompts-edit--redraw-kind ()
+  "Redraw the kind switch (two lines) and hide the summary section for a
+single prompt."
+  (let ((inhibit-read-only t))
+    (save-excursion
+      (when-let* ((pos (text-property-any (point-min) (point-max) 'efrit-prompts-section :kind)))
+        (goto-char pos)
+        (delete-region pos (line-beginning-position 3))
+        (insert (efrit-prompts-edit--kind-line))
+        (efrit-prompts-edit--protect pos (point))
+        (efrit-prompts--mirror-faces pos (point)))
+      ;; A single prompt has no summary: hide the section, heading and
+      ;; text, but keep it in the buffer so switching back restores
+      ;; whatever the user typed
+      (when-let* ((pos (text-property-any (point-min) (point-max) 'efrit-prompts-section :summary)))
+        (put-text-property pos (point-max) 'invisible
+                           (and (eq efrit-prompts-edit--kind 'single) 'efrit-prompts-summary))
+        (when (and (eq efrit-prompts-edit--kind 'single) (>= (point) pos))
+          (goto-char (1- pos)))))))
+
+(defun efrit-prompts-edit-toggle-kind ()
+  "Switch the prompt between single and summarizing."
+  (interactive)
+  (setq efrit-prompts-edit--kind (if (eq efrit-prompts-edit--kind 'single) 'summarizing 'single))
+  (efrit-prompts-edit--redraw-kind)
+  (message "Kind: %s%s" efrit-prompts-edit--kind
+           (if (eq efrit-prompts-edit--kind 'single) " (the over-everything part will not be used)" "")))
+
+(defun efrit-prompts-edit-toggle-kind-at-mouse (event)
+  "Set the kind to the pill under the mouse EVENT."
+  (interactive "e")
+  (when-let* ((pos (posn-point (event-end event)))
+              (kind (get-text-property pos 'efrit-prompts-kind)))
+    (unless (eq kind efrit-prompts-edit--kind)
+      (efrit-prompts-edit-toggle-kind))))
 
 (defun efrit-prompts--sections-of (p)
   "The (KEY . HEADING) sections the view shows for prompt P."
@@ -521,46 +659,54 @@ PURPOSE is optional free text on what the user wants.  CALLBACK gets
     '((:item . "Per item"))))
 
 (defun efrit-prompts-edit--insert (plist)
-  "Fill the editor buffer from PLIST."
+  "Fill the editor buffer from PLIST.
+Each section is a heading line (name, then its help in shadow), the
+editable text on a field background, and a blank line.  The kind
+switch sits between the description and the two parts."
   (let ((inhibit-read-only t))
     (erase-buffer)
+    (setq efrit-prompts-edit--kind (efrit-prompts-kind plist))
     (dolist (section efrit-prompts-edit--sections)
       (pcase-let ((`(,key ,heading ,help) section))
-        (insert (propertize (format "%-18s" heading)
-                            'face 'efrit-prompts-section
-                            'efrit-prompts-section key
-                            'read-only t 'rear-nonsticky t)
-                (propertize (concat "  " help "\n") 'face 'shadow 'read-only t
-                            'rear-nonsticky t))
-        (insert (if (eq key :kind)
-                    (symbol-name (efrit-prompts-kind plist))
-                  (or (plist-get plist key) ""))
-                "\n\n")))
+        (when (eq key :item)
+          (let ((start (point)))
+            (insert (efrit-prompts-edit--kind-line))
+            (efrit-prompts-edit--protect start (point)))
+          (insert "\n"))
+        (let ((start (point)))
+          (insert (propertize heading
+                              'face 'efrit-prompts-section
+                              'efrit-prompts-section key)
+                  (propertize (concat "  " help "\n")
+                              'face 'shadow 'efrit-prompts-section key))
+          (efrit-prompts-edit--protect start (point)))
+        (let ((start (point)))
+          (insert (or (plist-get plist key) "") "\n")
+          (add-face-text-property start (point) 'efrit-prompts-field t))
+        (insert "\n")))
+    (efrit-prompts--mirror-faces (point-min) (point-max))
+    (efrit-prompts-edit--redraw-kind)
     (goto-char (point-min))
     (forward-line 1)
     (set-buffer-modified-p nil)))
 
 (defun efrit-prompts-edit--read ()
-  "The editor buffer's content as a plist."
+  "The editor buffer's content as a plist, :kind from the switch."
   (save-excursion
-    (let ((out nil) (pos (point-min)))
+    (let ((out (list :kind efrit-prompts-edit--kind)) (pos (point-min)))
       (while (setq pos (text-property-not-all pos (point-max) 'efrit-prompts-section nil))
         (let* ((key (get-text-property pos 'efrit-prompts-section))
                (start (save-excursion (goto-char pos) (forward-line 1) (point)))
                (next (or (text-property-not-all start (point-max) 'efrit-prompts-section nil)
-                         (point-max)))
-               (text (string-trim (buffer-substring-no-properties start next))))
-          (setq out (plist-put out key text))
+                         (point-max))))
+          (unless (eq key :kind)
+            (setq out (plist-put out key (string-trim (buffer-substring-no-properties start next)))))
           (setq pos next)))
       out)))
 
 (defun efrit-prompts-edit--kind (p)
-  "The kind typed in the editor's Kind section of P, checked."
-  (let ((text (string-trim (or (plist-get p :kind) ""))))
-    (cond ((string-empty-p text) nil)
-          ((member text (mapcar #'symbol-name efrit-prompts-kinds)) (intern text))
-          (t (user-error "Kind must be one of: %s"
-                         (mapconcat #'symbol-name efrit-prompts-kinds ", "))))))
+  "The kind of the editor's content P (from the switch)."
+  (plist-get p :kind))
 
 (defun efrit-prompts-edit-save ()
   "Save the prompt in this editor and close it."
@@ -602,7 +748,11 @@ PURPOSE is optional free text on what the user wants.  CALLBACK gets
       (goto-char start)
       (let ((inhibit-read-only t))
         (delete-region start end)
-        (insert text "\n\n")))))
+        (let ((s (point)))
+          (insert text "\n")
+          (add-face-text-property s (point) 'efrit-prompts-field t)
+          (efrit-prompts--mirror-faces s (point)))
+        (insert "\n")))))
 
 (defun efrit-prompts-edit-suggest (&optional purpose)
   "Ask efrit to improve both parts; review the answer as a diff.
@@ -627,49 +777,96 @@ which the model is told."
              (setq efrit-prompts-edit--suggestion result))
            (efrit-prompts--show-suggestion editor p result)))))))
 
-(defun efrit-prompts--diff-text (label old new)
-  "A unified diff of OLD against NEW, headed LABEL, or a note when equal."
-  (if (equal (string-trim old) (string-trim new))
-      (format "--- %s: unchanged\n" label)
-    (let ((a (make-temp-file "efrit-prompt-old")) (b (make-temp-file "efrit-prompt-new")))
-      (unwind-protect
-          (progn
-            (with-temp-file a (insert old "\n"))
-            (with-temp-file b (insert new "\n"))
-            (with-temp-buffer
-              (call-process diff-command nil t nil "-u" "--label" (concat label " (yours)")
-                            "--label" (concat label " (suggested)") a b)
-              (buffer-string)))
-        (delete-file a) (delete-file b)))))
-
-(defvar efrit-prompts-review-map
+(defvar efrit-prompts-review-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "a") #'efrit-prompts-review-accept)
-    (define-key map (kbd "q") #'quit-window)
-    map))
+    (define-key map (kbd "q") #'efrit-prompts-review-discard)
+    (define-key map (kbd "n") #'efrit-prompts-review-next)
+    (define-key map (kbd "p") #'efrit-prompts-review-previous)
+    map)
+  "Keys of the suggestion review.")
+
+(define-derived-mode efrit-prompts-review-mode special-mode "Efrit-Suggestion"
+  "Review efrit's suggested prompt, part by part.
+`a' accepts it into the editor, `q' discards it.  Its own mode, not
+`diff-mode' over a preview: the preview helper installed its map after
+the content ran, so `a' fell through to `diff-apply-hunk' on a
+read-only buffer (2026-09-26)."
+  (setq-local truncate-lines nil)
+  (visual-line-mode 1))
 
 (defvar-local efrit-prompts-review--editor nil)
 
+(defconst efrit-prompts--review-gutter 12
+  "Columns from the left edge to the text in a review: label plus padding.")
+
+(defun efrit-prompts--review-part (label old new)
+  "Insert one part of the review: LABEL, then OLD and NEW side by side
+with their labels.  The text is not hard-filled: `visual-line-mode'
+wraps it to the window and a `wrap-prefix' keeps the continuation
+lines under the first one, whatever the window width."
+  (insert (propertize label 'face 'efrit-prompts-section) "\n")
+  (if (equal (string-trim old) (string-trim new))
+      (insert (propertize "  unchanged\n" 'face 'shadow))
+    (dolist (side (list (cons "yours" old) (cons "suggested" new)))
+      (let* ((face (if (equal (car side) "yours") 'efrit-prompts-review-old 'efrit-prompts-review-new))
+             (gutter (make-string efrit-prompts--review-gutter ?\s))
+             (start (point)))
+        (insert (propertize (format "  %-10s" (car side)) 'face 'shadow))
+        ;; Newlines the model wrote stay as line breaks, indented to the gutter
+        (insert (propertize (string-join (split-string (string-trim (cdr side)) "\n")
+                                         (concat "\n" gutter))
+                            'face face)
+                "\n")
+        (add-text-properties start (point) (list 'wrap-prefix gutter)))))
+  (insert "\n"))
+
 (defun efrit-prompts--show-suggestion (editor p result)
   "Show RESULT (ITEM . SUMMARY) against P's parts, with EDITOR to accept into."
-  (require 'efrit-ui-helpers)
-  (require 'diff-mode)
-  (let ((win (efrit-show-popup
-              "*efrit prompt suggestion*"
-              (lambda ()
-                (insert (propertize (format "Suggested changes to %s" (plist-get p :name))
-                                    'face 'efrit-prompts-name)
-                        (propertize "   a accepts them into the editor, q discards\n\n" 'face 'shadow))
-                (insert (efrit-prompts--diff-text "Per item" (plist-get p :item) (car result)))
-                (insert "\n")
-                (insert (efrit-prompts--diff-text "Over everything" (plist-get p :summary) (cdr result)))
-                (when (fboundp 'diff-mode) (diff-mode))
-                (setq efrit-prompts-review--editor editor)
-                (use-local-map (make-composed-keymap efrit-prompts-review-map (current-local-map))))
-              #'fundamental-mode)))
-    (with-current-buffer (window-buffer win)
-      (setq efrit-prompts-review--editor editor))
-    win))
+  (let ((buf (get-buffer-create "*efrit prompt suggestion*")))
+    (with-current-buffer buf
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (efrit-prompts-review-mode)
+        (setq efrit-prompts-review--editor editor)
+        (setq header-line-format
+              (concat " " (propertize (format "Suggested changes to %s" (plist-get p :name))
+                                      'face 'efrit-prompts-name)
+                      (propertize "    a accept into the editor   q discard" 'face 'shadow)))
+        (efrit-prompts--review-part "Per item" (or (plist-get p :item) "") (car result))
+        (when (or (cdr result) (not (string-empty-p (or (plist-get p :summary) ""))))
+          (efrit-prompts--review-part "Over everything" (or (plist-get p :summary) "") (or (cdr result) "")))
+        (efrit-prompts--mirror-faces (point-min) (point-max))
+        (goto-char (point-min))))
+    (pop-to-buffer buf '((display-buffer-reuse-window display-buffer-at-bottom)
+                         (window-height . fit-window-to-buffer)))
+    (when-let* ((w (get-buffer-window buf)))
+      (fit-window-to-buffer w (/ (frame-height) 2) 6))
+    buf))
+
+(defun efrit-prompts-review-discard ()
+  "Close the review; the editor keeps what it had."
+  (interactive)
+  (let ((editor efrit-prompts-review--editor))
+    (quit-window t)
+    (when (buffer-live-p editor)
+      (with-current-buffer editor (setq efrit-prompts-edit--suggestion nil))
+      (pop-to-buffer editor))))
+
+(defun efrit-prompts-review-next ()
+  "Move to the next part."
+  (interactive)
+  (forward-line 1)
+  (when-let* ((p (text-property-any (point) (point-max) 'face 'efrit-prompts-section)))
+    (goto-char p)))
+
+(defun efrit-prompts-review-previous ()
+  "Move to the previous part."
+  (interactive)
+  (forward-line -1)
+  (while (and (> (point) (point-min))
+              (not (eq (get-text-property (point) 'face) 'efrit-prompts-section)))
+    (forward-line -1)))
 
 (defun efrit-prompts-review-accept ()
   "Put the suggestion into the editor and close this review."
@@ -680,7 +877,8 @@ which the model is told."
     (with-current-buffer editor
       (pcase-let ((`(,item . ,summary) efrit-prompts-edit--suggestion))
         (efrit-prompts-edit--replace-section :item item)
-        (efrit-prompts-edit--replace-section :summary summary)
+        (when summary
+          (efrit-prompts-edit--replace-section :summary summary))
         (setq efrit-prompts-edit--suggestion nil))
       (message "Suggestion in place; C-c C-c saves it, C-c C-k abandons"))
     (pop-to-buffer editor)))
@@ -690,16 +888,19 @@ which the model is told."
     (define-key map (kbd "C-c C-c") #'efrit-prompts-edit-save)
     (define-key map (kbd "C-c C-k") #'efrit-prompts-edit-abandon)
     (define-key map (kbd "C-c C-s") #'efrit-prompts-edit-suggest)
+    (define-key map (kbd "C-c C-t") #'efrit-prompts-edit-toggle-kind)
     map))
 
 (define-derived-mode efrit-prompts-edit-mode text-mode "Efrit-Prompt"
-  "Edit one two-part prompt.
+  "Edit one prompt: its name, what it is for, its kind, and its parts.
 \\{efrit-prompts-edit-mode-map}"
+  (require 'efrit-ui-helpers)
+  (add-to-invisibility-spec 'efrit-prompts-summary)
   (setq-local fill-column 78)
   (visual-line-mode 1)
   (setq header-line-format
         (substitute-command-keys
-         " \\[efrit-prompts-edit-save] save   \\[efrit-prompts-edit-abandon] abandon   \\[efrit-prompts-edit-suggest] ask efrit for a better version (C-u: say what you want)")))
+         " \\[efrit-prompts-edit-save] save   \\[efrit-prompts-edit-abandon] abandon   \\[efrit-prompts-edit-toggle-kind] kind   \\[efrit-prompts-edit-suggest] ask efrit for a better version (C-u: say what you want)")))
 
 ;;;###autoload
 (defun efrit-prompts-edit (&optional name on-save)

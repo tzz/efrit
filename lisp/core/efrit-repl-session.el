@@ -116,11 +116,14 @@ session persists and accumulates conversation context."
 
   ;; Pending input handling
   (pending-question nil)                  ; Question waiting for answer
-  (queue nil)                             ; Inputs to send after this turn, oldest first
-  (steering nil)                          ; Texts to inject before the next request, oldest first
 
   ;; Interrupt control
-  (interrupt-requested nil))              ; Signal graceful pause
+  (interrupt-requested nil)               ; Signal graceful pause
+
+  ;; Added 2026-09-25 -- new slots go at the end, see the upgrade
+  ;; section below
+  (queue nil)                             ; Inputs to send after this turn, oldest first
+  (steering nil))                         ; Texts to inject before the next request, oldest first
 
 ;;; Session ID Generation
 
@@ -140,6 +143,70 @@ session persists and accumulates conversation context."
 
 (defvar efrit-repl-session--active nil
   "The currently active REPL session (if any).")
+
+;;; Upgrading a session from an older struct definition
+;;
+;; `efrit-reload' loads this file again while sessions exist.  A
+;; `cl-defstruct' instance is a record whose slots are indexed by
+;; position; an instance made before a slot was added is shorter than
+;; the new accessors expect and the first new accessor signals
+;; args-out-of-range (2026-09-26: `queue' and `steering' added, and
+;; `efrit-repl-session-should-interrupt-p' broke every turn until the
+;; buffer was recreated).  Records are fixed-size, so an old instance
+;; cannot grow: `efrit-repl-session-upgrade' builds a fresh one with
+;; the old values copied BY SLOT NAME (positions differ between the
+;; layouts) and re-points the registry at it; `efrit-reload' then
+;; swaps the agent buffers' references.  Add new slots at the END of
+;; the struct and list every historical layout here.
+
+(defconst efrit-repl-session--layouts
+  '((14 id created-at last-activity status buffer conversation api-messages budget
+        current-turn-tools current-turn-start project-root title pending-question
+        interrupt-requested))
+  "Slot names of earlier `efrit-repl-session' definitions, by slot count.
+The current definition is read from `cl-struct-slot-info'.")
+
+(defun efrit-repl-session--slot-names (record)
+  "The slot names of RECORD's layout, current or historical, or nil."
+  (let ((n (1- (length record))))
+    (if (= n (length (cdr (cl-struct-slot-info 'efrit-repl-session))))
+        (mapcar #'car (cdr (cl-struct-slot-info 'efrit-repl-session)))
+      (cdr (assq n efrit-repl-session--layouts)))))
+
+(defun efrit-repl-session-upgrade (session)
+  "A fresh `efrit-repl-session' with SESSION's values, when SESSION is an old record.
+Returns nil when SESSION already has the current layout (or is not a
+record this file knows).  The fresh session replaces the old one in
+the registry and as the active session."
+  (let ((current (mapcar #'car (cdr (cl-struct-slot-info 'efrit-repl-session)))))
+    (when (and (recordp session)
+               (eq (type-of session) 'efrit-repl-session)
+               (/= (1- (length session)) (length current)))
+      (let ((old-names (efrit-repl-session--slot-names session)))
+        (unless old-names
+          (error "efrit-repl-session: no known layout with %d slots" (1- (length session))))
+        (let ((fresh (make-efrit-repl-session)))
+          (cl-loop for name in old-names
+                   for i from 1
+                   for j = (cl-position name current)
+                   when j do (aset fresh (1+ j) (aref session i)))
+          (puthash (efrit-repl-session-id fresh) fresh efrit-repl-session--registry)
+          (when (eq efrit-repl-session--active session)
+            (setq efrit-repl-session--active fresh))
+          (efrit-log 'info "REPL session %s: upgraded from %d to %d slots"
+                     (efrit-repl-session-id fresh) (length old-names) (length current))
+          fresh)))))
+
+(defun efrit-repl-session-upgrade-all ()
+  "Upgrade every registered session whose record predates the current definition.
+Returns an alist (OLD . NEW) of the sessions that were rebuilt, so
+holders of the old object (the agent buffer's local variable) can swap."
+  (let (swapped)
+    (maphash (lambda (_id session)
+               (when-let* ((fresh (efrit-repl-session-upgrade session)))
+                 (push (cons session fresh) swapped)))
+             efrit-repl-session--registry)
+    swapped))
 
 ;;; Session Lifecycle
 

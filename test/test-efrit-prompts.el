@@ -91,14 +91,100 @@ pair has no summary; a summarizing prompt needs one."
       (let ((row (seq-find (lambda (e) (equal (car e) "quicker")) tabulated-list-entries)))
         (should (equal "single" (substring-no-properties (aref (cadr row) 2))))
         (should (equal "" (aref (cadr row) 4)))))
-    ;; The editor round-trips the kind and rejects an unknown one
+    ;; The editor round-trips the kind through its switch, and the
+    ;; switch toggles it
     (with-temp-buffer
       (efrit-prompts-edit-mode)
       (efrit-prompts-edit--insert (efrit-prompts-get "quicker"))
-      (should (equal "single" (plist-get (efrit-prompts-edit--read) :kind)))
       (should (eq 'single (efrit-prompts-edit--kind (efrit-prompts-edit--read))))
-      (efrit-prompts-edit--replace-section :kind "weekly")
-      (should-error (efrit-prompts-edit--kind (efrit-prompts-edit--read)) :type 'user-error))))
+      (should (text-property-any (point-min) (point-max) 'efrit-prompts-kind 'summarizing))
+      (efrit-prompts-edit-toggle-kind)
+      (should (eq 'summarizing (efrit-prompts-edit--kind (efrit-prompts-edit--read))))
+      ;; The lit pill follows the kind
+      (let ((lit (text-property-any (point-min) (point-max) 'face 'efrit-prompts-kind-on)))
+        (should (eq 'summarizing (get-text-property lit 'efrit-prompts-kind))))
+      (efrit-prompts-edit-toggle-kind)
+      (should (eq 'single (efrit-prompts-edit--kind (efrit-prompts-edit--read)))))
+    ;; For a single prompt the summary section is hidden, not gone
+    (with-temp-buffer
+      (efrit-prompts-edit-mode)
+      (efrit-prompts-edit--insert '(:name "t" :kind single :item "i" :summary "kept summary"))
+      (let ((pos (text-property-any (point-min) (point-max) 'efrit-prompts-section :summary)))
+        (should (eq 'efrit-prompts-summary (get-text-property pos 'invisible)))
+        (should (invisible-p pos))
+        (should (equal "kept summary" (plist-get (efrit-prompts-edit--read) :summary)))
+        (efrit-prompts-edit-toggle-kind)
+        (should-not (get-text-property pos 'invisible))
+        (efrit-prompts-edit-toggle-kind)
+        (should (invisible-p pos))))))
+
+(ert-deftest test-efrit-prompts-editor-headings-are-not-editable ()
+  "Typing anywhere on a heading, help line or the kind switch is refused;
+typing in a field, at its start and at its end, works."
+  (with-temp-buffer
+    (efrit-prompts-edit-mode)
+    (efrit-prompts-edit--insert '(:name "n" :description "d" :kind summarizing
+                                  :item "item text" :summary "sum"))
+    (let ((refused 0) (allowed 0))
+      (cl-flet ((try (pos) (goto-char pos)
+                     (condition-case nil
+                         (progn (insert "X") (delete-char -1) (cl-incf allowed))
+                       (text-read-only (cl-incf refused)))))
+        ;; every position on protected text, including the boundary
+        ;; between a heading and its help, and before the first heading
+        (let ((pos (point-min)))
+          (while (< pos (point-max))
+            (when (and (get-text-property pos 'read-only)
+                       (not (get-text-property (max 1 (1- pos)) 'rear-nonsticky)))
+              (try pos))
+            (setq pos (1+ pos))))
+        (should (> refused 20))
+        (should (= allowed 0))
+        ;; the fields
+        (dolist (key '(:name :description :item :summary))
+          (let* ((heading (text-property-any (point-min) (point-max) 'efrit-prompts-section key))
+                 (start (save-excursion (goto-char heading) (forward-line 1) (point))))
+            (try start)
+            (try (save-excursion (goto-char start) (line-end-position)))
+            (try (save-excursion (goto-char start) (forward-line 1) (point)))))
+        (should (= allowed 12))))
+    ;; and the read-back is unchanged
+    (should (equal "item text" (plist-get (efrit-prompts-edit--read) :item)))))
+
+(ert-deftest test-efrit-prompts-review-accept-into-editor ()
+  "`a' in the review puts the suggestion into the editor (it errored with
+\"Buffer is read-only\" when the review was a diff-mode preview)."
+  (let ((editor (generate-new-buffer "*efrit prompt: t*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer editor
+            (efrit-prompts-edit-mode)
+            (efrit-prompts-edit--insert '(:name "t" :description "" :kind summarizing
+                                          :item "old item" :summary "old sum"))
+            (setq efrit-prompts-edit--suggestion '("new item" . "new sum")))
+          (cl-letf (((symbol-function 'quit-window) #'ignore)
+                    ((symbol-function 'pop-to-buffer) #'ignore)
+                    ((symbol-function 'fit-window-to-buffer) #'ignore))
+            (let ((review (efrit-prompts--show-suggestion
+                           editor '(:name "t" :item "old item" :summary "old sum")
+                           '("new item" . "new sum"))))
+              (with-current-buffer review
+                (should (derived-mode-p 'efrit-prompts-review-mode))
+                (should (eq (key-binding "a") #'efrit-prompts-review-accept))
+                (should (string-match-p "^  yours     old item$" (buffer-string)))
+                (should (string-match-p "^  suggested new item$" (buffer-string)))
+                ;; continuation lines line up under the text, not the label
+                (should (equal (make-string efrit-prompts--review-gutter ?\s)
+                               (get-text-property
+                                (string-match "old item" (buffer-string)) 'wrap-prefix
+                                (current-buffer))))
+                (efrit-prompts-review-accept))))
+          (with-current-buffer editor
+            (should (equal "new item" (plist-get (efrit-prompts-edit--read) :item)))
+            (should (equal "new sum" (plist-get (efrit-prompts-edit--read) :summary)))
+            (should (null efrit-prompts-edit--suggestion))))
+      (kill-buffer editor)
+      (when (get-buffer "*efrit prompt suggestion*") (kill-buffer "*efrit prompt suggestion*")))))
 
 (ert-deftest test-efrit-prompts-pair-and-names ()
   "Pairs resolve from a name, a plist, a pair or a question; the last
@@ -182,9 +268,10 @@ parts; the callback gets the parsed pair, or the failure as a string."
             (efrit-prompts-edit-mode)
             (efrit-prompts-edit--insert '(:name "one" :description "first"
                                           :item "Item one." :summary "Summary one."))
-            (should (equal '(:name "one" :description "first" :kind "summarizing"
-                             :item "Item one." :summary "Summary one.")
-                           (efrit-prompts-edit--read)))
+            (let ((read (efrit-prompts-edit--read)))
+              (dolist (kv '((:name . "one") (:description . "first") (:kind . summarizing)
+                            (:item . "Item one.") (:summary . "Summary one.")))
+                (should (equal (cdr kv) (plist-get read (car kv))))))
             (efrit-prompts-edit--replace-section :item "New item.")
             (efrit-prompts-edit--replace-section :summary "New summary.")
             (should (equal "New item." (plist-get (efrit-prompts-edit--read) :item)))

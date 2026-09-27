@@ -133,5 +133,34 @@ message was written as null."
             (should (= 4 (length (efrit-repl-session-get-api-messages loaded))))))
       (delete-directory efrit-session-persist-dir t))))
 
+(ert-deftest test-repl-session-upgrade-from-old-layout ()
+  "A record from the 14-slot layout is rebuilt with its values in the
+right slots by name and the new slots at their defaults; the registry
+and the active session point at the new one; a current record is left
+alone."
+  (let* ((old (record 'efrit-repl-session
+                      "repl-old" '(1 2) '(3 4) 'working 'buf '(conv) '(api) 'budget
+                      '(tools) '(start) "/root/" "title" '(q) t))
+         (efrit-repl-session--registry (make-hash-table :test 'equal))
+         (efrit-repl-session--active old))
+    (puthash "repl-old" old efrit-repl-session--registry)
+    (should (= 15 (length old)))
+    ;; the new accessor is exactly what broke live
+    (should-error (efrit-repl-session-queue old) :type 'args-out-of-range)
+    (let ((new (efrit-repl-session-upgrade old)))
+      (should new)
+      (should (equal "repl-old" (efrit-repl-session-id new)))
+      (should (eq 'working (efrit-repl-session-status new)))
+      (should (equal "/root/" (efrit-repl-session-project-root new)))
+      (should (equal '(q) (efrit-repl-session-pending-question new)))
+      (should (eq t (efrit-repl-session-interrupt-requested new)))
+      (should-not (efrit-repl-session-queue new))
+      (should-not (efrit-repl-session-steering new))
+      (should (eq new (gethash "repl-old" efrit-repl-session--registry)))
+      (should (eq new efrit-repl-session--active))
+      (should-not (efrit-repl-session-upgrade new))
+      (should (equal (list (cons old new)) (progn (puthash "x" old efrit-repl-session--registry)
+                                                  (efrit-repl-session-upgrade-all)))))))
+
 (provide 'test-repl-session)
 ;;; test-repl-session.el ends here
