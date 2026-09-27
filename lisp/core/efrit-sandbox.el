@@ -399,8 +399,21 @@ An always-ask LINE is covered only by an exact (command . LINE) grant."
            (or (eq gt t)
                ;; a fileless-buffer target: (buffer . NAME), matched exactly
                (and (consp target) (consp gt) (equal target gt))
+               ;; a network host: (host . NAME) covers NAME and its subdomains
+               (and (efrit-sandbox-host-target-p target) (efrit-sandbox-host-target-p gt)
+                    (efrit-sandbox-host-under-p (cdr target) (cdr gt)))
                (and (stringp target) (stringp gt)
                     (efrit-sandbox--under-p target gt)))))))
+
+(defun efrit-sandbox-host-target-p (target)
+  "Non-nil if TARGET is a network host grant target, (host . NAME)."
+  (and (consp target) (eq (car target) 'host) (stringp (cdr target))))
+
+(defun efrit-sandbox-host-under-p (host domain)
+  "Non-nil if HOST is DOMAIN or a subdomain of it."
+  (let ((host (downcase host)) (domain (downcase domain)))
+    (or (string= host domain)
+        (string-suffix-p (concat "." domain) host))))
 
 (defun efrit-sandbox--always-denied-p (target)
   (and (stringp target)
@@ -472,7 +485,10 @@ For a path outside the root, suggest its directory (so the next file
 alongside is covered) but never anything above the user's home for
 write."
   (cond
-   ((memq cap '(elisp net)) t)
+   ((eq cap 'elisp) t)
+   ;; net: the host asked for, so a grant covers that site and its
+   ;; subdomains, not the whole internet; t stays t
+   ((eq cap 'net) target)
    ;; shell: the commands on the line; an always-ask line is granted
    ;; exactly, once (see `efrit-sandbox-shell-always-ask')
    ((eq cap 'shell)
@@ -702,6 +718,7 @@ With `efrit-sandbox-enabled' nil this is a no-op that returns t."
          (mapconcat #'identity (cdr target) ", "))
         ((and (consp target) (eq (car target) 'command))
          (format "exactly: %s" (cdr target)))
+        ((efrit-sandbox-host-target-p target) (cdr target))
         ((stringp target) (abbreviate-file-name target))
         ((eq target t) "any")
         (t (format "%s" target))))
