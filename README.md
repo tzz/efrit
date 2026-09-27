@@ -24,8 +24,17 @@ A structured, real-time view of agentic sessions with:
 - Conversation view with expandable tool calls (folded bodies are
   searchable: `isearch` honours `search-invisible`)
 - The model's answers rendered as Markdown in place: headers, emphasis,
-  code blocks with the language's fontification, links, and file
+  code blocks with the language's fontification, links, block quotes,
+  pipe tables as aligned columns, images (`![alt](file-or-url)`, drawn
+  in the buffer; `+` / `-` / `=` resize the one at point), and file
   references like `lisp/efrit.el:120` that open the file
+- Select part of an earlier answer and `C-c C-y` quotes it into the
+  input as a `>` block (queued for the next turn when one is running);
+  `C-c C-z` narrows to the last turn (`C-u 3 C-c C-z` the last three),
+  `C-c C-a` widens
+- A Markdown transcript of every session is written as it goes under
+  `efrit-data-directory/transcripts/` (`efrit-transcript-enabled`);
+  `C-c C-f` opens this session's
 - A prompt that is writable at all times.  `RET` while a turn runs
   queues the input for the next turn; `M-RET` (or `C-u RET`) steers
   the running turn: the model reads the text with its next tool
@@ -37,6 +46,11 @@ A structured, real-time view of agentic sessions with:
   `.efrit/dropped/`).
 - `/commands` at the start of the input run efrit's own commands:
   `/help` lists them (`/new`, `/model`, `/mode`, `/queue`, ...).
+- Lists in the input: `S-RET` on a `- ` or `1. ` line continues the
+  list (on an empty item it ends it), `TAB` / `S-TAB` indent and dedent
+  the item.
+- The diff preview (`show_diff_preview`) opens the file at the change
+  on `o` or `RET`; it finds the hunk by its text, not its line numbers.
 
 **Agent Buffer Keybindings:**
 
@@ -56,6 +70,11 @@ Actions use the `C-c` prefix so standard editing keys (`C-k`, `C-g`,
 | `C-c C-w` | Copy the last answer |
 | `C-c C-i` | Copy the session id |
 | `C-c C-x` | Restart: fresh session, same windows |
+| `C-c C-y` | Quote the region into the input (queued when busy) |
+| `C-c C-z` / `C-c C-a` | Narrow to the last N turns / widen |
+| `C-c C-f` | Open this session's transcript file |
+| `+` / `-` / `=` (transcript), `C-c +` etc. | Resize the image at point, else all |
+| `S-RET` on a list item | Continue the list; `TAB` / `S-TAB` indent it |
 | `C-c C-k` | Cancel session |
 | `C-c C-n` | New session |
 | `C-c C-r` | Resume paused session |

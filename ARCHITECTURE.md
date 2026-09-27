@@ -108,9 +108,30 @@ mirrored, `fontified').  Tool bodies fold with the `invisible' property
 by `efrit-markdown.el` (lisp/interfaces): markup deleted, faces and
 links as text properties, a watermark offset on the first character so
 each streamed chunk renders only from the last safe frontier; fenced
-blocks are fontified with the language's mode and frozen.
+blocks are fontified with the language's mode and frozen.  Pipe
+tables are a block pass like fences (held back while the last row may
+still grow), each cell rendered on its own before the columns are
+measured; images (`![alt](src)`) keep the alt text and put the picture
+on it as a `display' property, local files and `data:` URLs at once,
+http(s) fetched with `url-retrieve` into a cache, width per image in
+`efrit-markdown-image-width` so `+`/`-`/`=` rescale in place.
 `efrit-agent-mentions.el` adds `@path` completion and expansion,
 `/commands` (`efrit-agent-define-slash-command`), and drag and drop.
+
+`efrit-transcript.el` (lisp/interfaces) subscribes to the same events
+(`turn-start`, `text-delta`/`text-end`, `tool-start`/`tool-result`,
+`steer`, `question`, `error`, `turn-complete`) and appends a Markdown
+file per session under `efrit-data-directory/transcripts/`, so turns
+started from Lisp are recorded too and nothing is held in memory.
+
+A REPL session's `working' status is only meaningful while
+`efrit-repl-loop--active` has its loop.  A reload replaces that table,
+so `efrit-repl-loop-recover-stale` (called from
+`efrit-agent--session-busy-p`) ends such a turn as interrupted instead
+of refusing every later submit as busy; the struct upgrade on reload
+does the same.  Tests and the test drive that need a pretend-busy
+session use `efrit-repl-loop-hold` / `-release`, which register a
+placeholder loop.
 
 The REPL history is also bounded by size: before every request
 `efrit-repl-session-fit-context` estimates the history against the

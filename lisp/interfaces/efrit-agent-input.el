@@ -357,6 +357,8 @@ Returns nil if no options or N is out of range."
     (define-key map (kbd "S-<return>") #'efrit-agent-input-newline)
     (define-key map (kbd "M-<return>") #'efrit-agent-input-send-override)
     (define-key map (kbd "C-j") #'efrit-agent-input-newline)
+    (define-key map (kbd "<backtab>") #'efrit-agent-input-dedent-item)
+    (define-key map (kbd "S-TAB") #'efrit-agent-input-dedent-item)
     (define-key map (kbd "C-c C-q") #'efrit-agent-queue-show)
     (define-key map (kbd "C-c C-c") #'efrit-agent-input-send)
     (define-key map (kbd "C-c C-s") #'efrit-agent-input-send)
@@ -370,6 +372,9 @@ Returns nil if no options or N is out of range."
     (define-key map (kbd "d") #'self-insert-command)
     (define-key map (kbd "o") #'self-insert-command)
     (define-key map (kbd "?") #'self-insert-command)
+    (define-key map (kbd "+") #'self-insert-command)
+    (define-key map (kbd "-") #'self-insert-command)
+    (define-key map (kbd "=") #'self-insert-command)
     ;; comint conventions: C-a goes to just after the prompt, C-c C-u
     ;; kills the whole input, C-c C-a is the true beginning of line
     (define-key map (kbd "C-a") #'efrit-agent-input-bol)
@@ -383,7 +388,7 @@ Returns nil if no options or N is out of range."
     (define-key map (kbd "<up>") #'efrit-agent-input-up)
     (define-key map (kbd "<down>") #'efrit-agent-input-down)
     ;; Completion
-    (define-key map (kbd "TAB") #'completion-at-point)
+    (define-key map (kbd "TAB") #'efrit-agent-input-tab)
     ;; Quick option selection (1-4 when waiting for question response)
     ;; Only effective when status is 'waiting' (checked in handler)
     (define-key map (kbd "1") #'efrit-agent-input-select-option-1)
@@ -427,10 +432,74 @@ it sends like RET."
   (interactive)
   (efrit-agent-input-send t))
 
+(defconst efrit-agent-input--bullet-regexp
+  "\\([ \t]*\\)\\([-*+]\\)[ \t]+\\(.*\\)$"
+  "A bullet item: indent, marker, content.  Matched with `looking-at'
+from the line's start; no `^': the first input line starts after the
+prompt field, where `beginning-of-line' stops but `^' does not match.")
+
+(defconst efrit-agent-input--numbered-regexp
+  "\\([ \t]*\\)\\([0-9]+\\)\\.[ \t]+\\(.*\\)$"
+  "A numbered item: indent, number, content.")
+
+(defconst efrit-agent-input-list-indent 2
+  "Columns a list item moves on TAB / S-TAB in the input.")
+
+(defun efrit-agent-input--list-item ()
+  "The Markdown list item on the current input line, or nil.
+A plist (:type bullet|numbered :indent STRING :marker STRING :content STRING)."
+  (when (efrit-agent--in-input-region-p)
+    (save-excursion
+      (beginning-of-line)
+      (cond ((looking-at efrit-agent-input--bullet-regexp)
+             (list :type 'bullet :indent (match-string-no-properties 1)
+                   :marker (match-string-no-properties 2) :content (match-string-no-properties 3)))
+            ((looking-at efrit-agent-input--numbered-regexp)
+             (list :type 'numbered :indent (match-string-no-properties 1)
+                   :marker (match-string-no-properties 2) :content (match-string-no-properties 3)))))))
+
 (defun efrit-agent-input-newline ()
-  "Insert a newline in the input without sending."
+  "Insert a newline in the input without sending.
+On a Markdown list item the new line continues the list (`- ' again,
+or the next number); on an empty item the marker is removed and the
+list ends.  Idea from agent-shell's list-edit mode."
   (interactive "*")
-  (newline))
+  (let ((item (efrit-agent-input--list-item)))
+    (cond
+     ((and item (string-empty-p (string-trim (plist-get item :content))))
+      (delete-region (line-beginning-position) (line-end-position))
+      (newline))
+     (item
+      (newline)
+      (insert (plist-get item :indent)
+              (if (eq (plist-get item :type) 'bullet)
+                  (concat (plist-get item :marker) " ")
+                (format "%d. " (1+ (string-to-number (plist-get item :marker)))))))
+     (t (newline)))))
+
+(defun efrit-agent-input-indent-item ()
+  "Indent the list item on this input line one step."
+  (interactive "*")
+  (save-excursion
+    (beginning-of-line)
+    (insert (make-string efrit-agent-input-list-indent ?\s))))
+
+(defun efrit-agent-input-tab ()
+  "TAB in the input: indent a list item, else complete (@file, /command)."
+  (interactive "*")
+  (if (efrit-agent-input--list-item)
+      (efrit-agent-input-indent-item)
+    (completion-at-point)))
+
+(defun efrit-agent-input-dedent-item ()
+  "Move the list item on this input line left one step; nothing elsewhere."
+  (interactive "*")
+  (when-let* ((item (efrit-agent-input--list-item))
+              (indent (plist-get item :indent)))
+    (when (>= (length indent) efrit-agent-input-list-indent)
+      (save-excursion
+        (beginning-of-line)
+        (delete-char efrit-agent-input-list-indent)))))
 
 ;;; Submitting while a turn runs
 ;;
@@ -470,9 +539,12 @@ See `efrit-agent-busy-submit-default-function'."
   :group 'efrit-agent)
 
 (defun efrit-agent--session-busy-p ()
-  "Non-nil when the buffer's REPL session is in the middle of a turn."
+  "Non-nil when the buffer's REPL session is in the middle of a turn.
+A session marked working that no loop drives (after a reload) is
+recovered first, so it does not read as busy forever."
   (and efrit-agent--repl-session
-       (eq (efrit-repl-session-status efrit-agent--repl-session) 'working)))
+       (progn (efrit-repl-loop-recover-stale efrit-agent--repl-session)
+              (eq (efrit-repl-session-status efrit-agent--repl-session) 'working))))
 
 (defun efrit-agent-busy-submit-queue (input)
   "Queue INPUT: it starts a turn of its own when the running one ends.
@@ -609,7 +681,9 @@ API-INPUT, when given, is what the model receives in place of INPUT
        t)
 
       ;; Working: the interactive path never gets here (it queues or
-      ;; steers first); a Lisp caller learns the session is busy
+      ;; steers first); a Lisp caller learns the session is busy.  A
+      ;; stale working status was already recovered by
+      ;; `efrit-agent--session-busy-p'.
       ('working
        (message "Efrit: session is busy")
        nil)
@@ -854,6 +928,31 @@ over `efrit-type' runs stopped short and returned a tail (2026-09-25)."
         (kill-new text)
         (message "Copied %d characters of the last answer" (length text)))
     (message "Efrit: no answer to copy yet")))
+
+(defun efrit-agent-block-quote (text)
+  "TEXT as a Markdown block quote: every line prefixed with \"> \"."
+  (concat "> " (replace-regexp-in-string "\n" "\n> " (string-trim text) t t)))
+
+(defun efrit-agent-quote-region (start end)
+  "Put the region START..END into the input as a block quote.
+Idle: the quote goes to the end of the input with point below it,
+ready for the question about it.  Busy: the quote is queued at once
+for the next turn, with a trailer read from the minibuffer (empty
+trailer: the quote alone).  Meant for the transcript: select part of
+an earlier answer and ask about it."
+  (interactive (if (use-region-p)
+                   (list (region-beginning) (region-end))
+                 (user-error "Select the text to quote first")))
+  (let ((quoted (efrit-agent-block-quote (buffer-substring-no-properties start end))))
+    (deactivate-mark)
+    (if (efrit-agent--session-busy-p)
+        (let* ((trailer (string-trim (read-string "Queue with the quote (empty: the quote alone): ")))
+               (input (if (string-empty-p trailer) quoted (concat quoted "\n\n" trailer))))
+          (efrit-agent--add-to-history input)
+          (efrit-agent-busy-submit-queue input))
+      (goto-char (point-max))
+      (let ((draft (efrit-agent--get-input)))
+        (insert (if (or (null draft) (string-empty-p draft)) "" "\n\n") quoted "\n\n")))))
 
 (defun efrit-agent-session-id ()
   "The REPL session id of the agent buffer, or nil."

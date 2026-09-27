@@ -67,7 +67,8 @@
        ("p" efrit-agent-pause :description (lambda () (efrit-agent-menu--desc "pause at the next step" 'efrit-agent-pause)))
        ("u" efrit-agent-queue-show :description (lambda () (efrit-agent-menu--desc "queued inputs: show / drop" 'efrit-agent-queue-show)))
        ("U" efrit-agent-queue-resume :description (lambda () (efrit-agent-menu--desc "send the next queued input" 'efrit-agent-queue-resume)))
-       ("y" efrit-agent-copy-last-output :description (lambda () (efrit-agent-menu--desc "copy the last answer" 'efrit-agent-copy-last-output)))]
+       ("y" efrit-agent-copy-last-output :description (lambda () (efrit-agent-menu--desc "copy the last answer" 'efrit-agent-copy-last-output)))
+       ("Q" efrit-agent-quote-region :description (lambda () (efrit-agent-menu--desc "quote the region into the input" 'efrit-agent-quote-region)))]
       ["Tool rows"
        ("RET" efrit-agent-toggle-expand :description (lambda () (efrit-agent-menu--desc "fold / unfold the row at point" 'efrit-agent-toggle-expand)))
        ("e" efrit-agent-expand-all :description (lambda () (efrit-agent-menu--desc "unfold every row" 'efrit-agent-expand-all)) :transient t)
@@ -80,7 +81,13 @@
        ("v" efrit-agent-cycle-verbosity :description (lambda () (efrit-agent-menu--desc "verbosity" 'efrit-agent-cycle-verbosity)) :transient t)
        ("m" efrit-agent-cycle-display-mode :description (lambda () (efrit-agent-menu--desc "which rows unfold by default" 'efrit-agent-cycle-display-mode)) :transient t)
        ("h" efrit-agent-cycle-header-style :description (lambda () (efrit-agent-menu--desc "header style" 'efrit-agent-cycle-header-style)) :transient t)
-       ("g" efrit-agent-refresh :description (lambda () (efrit-agent-menu--desc "refresh the header" 'efrit-agent-refresh)))]
+       ("g" efrit-agent-refresh :description (lambda () (efrit-agent-menu--desc "refresh the header" 'efrit-agent-refresh)))
+       ("z" efrit-agent-narrow-to-turns :description (lambda () (efrit-agent-menu--desc "narrow to the last turn (C-u N: last N)" 'efrit-agent-narrow-to-turns)))
+       ("a" efrit-agent-widen :description (lambda () (efrit-agent-menu--desc "widen: the whole conversation" 'efrit-agent-widen)))
+       ("f" efrit-transcript-open :description (lambda () (efrit-agent-menu--desc "open this session's transcript file" 'efrit-transcript-open)))
+       ("+" efrit-markdown-image-scale-increase :description (lambda () (efrit-agent-menu--desc "image at point (else all) larger" 'efrit-markdown-image-scale-increase)) :transient t)
+       ("-" efrit-markdown-image-scale-decrease :description (lambda () (efrit-agent-menu--desc "image smaller" 'efrit-markdown-image-scale-decrease)) :transient t)
+       ("=" efrit-markdown-image-scale-reset :description (lambda () (efrit-agent-menu--desc "image default size" 'efrit-markdown-image-scale-reset)) :transient t)]
       ["Session"
        ("N" efrit-agent-new-conversation :description (lambda () (efrit-agent-menu--desc "new conversation here" 'efrit-agent-new-conversation)))
        ("R" efrit-agent-restart :description (lambda () (efrit-agent-menu--desc "restart: fresh session, same windows" 'efrit-agent-restart)))

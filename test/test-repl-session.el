@@ -135,9 +135,9 @@ message was written as null."
 
 (ert-deftest test-repl-session-upgrade-from-old-layout ()
   "A record from the 14-slot layout is rebuilt with its values in the
-right slots by name and the new slots at their defaults; the registry
-and the active session point at the new one; a current record is left
-alone."
+right slots by name and the new slots at their defaults (a stale
+`working' becomes idle); the registry and the active session point at
+the new one; a current record is left alone."
   (let* ((old (record 'efrit-repl-session
                       "repl-old" '(1 2) '(3 4) 'working 'buf '(conv) '(api) 'budget
                       '(tools) '(start) "/root/" "title" '(q) t))
@@ -150,7 +150,9 @@ alone."
     (let ((new (efrit-repl-session-upgrade old)))
       (should new)
       (should (equal "repl-old" (efrit-repl-session-id new)))
-      (should (eq 'working (efrit-repl-session-status new)))
+      ;; a turn cannot survive the reload that made the upgrade
+      ;; necessary: working becomes idle, or every submit says busy
+      (should (eq 'idle (efrit-repl-session-status new)))
       (should (equal "/root/" (efrit-repl-session-project-root new)))
       (should (equal '(q) (efrit-repl-session-pending-question new)))
       (should (eq t (efrit-repl-session-interrupt-requested new)))

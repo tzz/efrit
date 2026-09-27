@@ -102,6 +102,47 @@ every event.  FN is added at most once per TYPE.  Returns FN."
                                     (if (> (length s) 60) (concat (substring s 0 60) "…") s)))))))
              data " "))
 
+;;; Time spent waiting on the user
+;;
+;; Every prompt (sandbox, permission, limits, confirm_action, the
+;; diff preview, a question) goes through `efrit-with-user-waiting'.
+;; The time inside is recorded, and every deadline that measures a
+;; turn or a tool subtracts it: reading a prompt for ten minutes must
+;; not time out the turn, or the tool, the moment it is answered
+;; (2026-09-27).  Tool `with-timeout's are suspended as well, the way
+;; the debugger does it.
+
+(defvar efrit-user-waiting-seconds 0
+  "Seconds spent inside `efrit-with-user-waiting' so far in this Emacs.
+Clocks take a reading at their start and subtract the difference.")
+
+(defvar efrit-user-waiting-depth 0
+  "How many `efrit-with-user-waiting' forms are active.")
+
+(defmacro efrit-with-user-waiting (&rest body)
+  "Run BODY, a prompt to the user, with efrit's clocks paused.
+Adds the time BODY takes to `efrit-user-waiting-seconds' and suspends
+any enclosing `with-timeout'.  Nested uses count the time once."
+  (declare (indent 0) (debug t))
+  (let ((start (make-symbol "start")) (suspended (make-symbol "suspended")))
+    `(let ((,start (float-time))
+           (,suspended (with-timeout-suspend)))
+       (cl-incf efrit-user-waiting-depth)
+       (unwind-protect
+           (progn ,@body)
+         (cl-decf efrit-user-waiting-depth)
+         (when (zerop efrit-user-waiting-depth)
+           (cl-incf efrit-user-waiting-seconds (- (float-time) ,start)))
+         (with-timeout-unsuspend ,suspended)))))
+
+(defun efrit-elapsed-working (since &optional waiting-at-start)
+  "Seconds since SINCE (a time value) minus time spent waiting on the user.
+WAITING-AT-START is `efrit-user-waiting-seconds' when the clock
+started; nil means all waiting so far is subtracted, which is right
+for a clock that started before any prompt of its own."
+  (max 0 (- (float-time (time-since since))
+            (- efrit-user-waiting-seconds (or waiting-at-start 0)))))
+
 (defun efrit-publish (type &optional data)
   "Publish an event of TYPE with DATA (an alist of :keyword . value).
 :type and :time are added.  Subscribers to TYPE and to `t' are called

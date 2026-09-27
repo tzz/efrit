@@ -41,6 +41,10 @@
 
 ;;; Submitting while a turn runs
 
+(defun efrit-agent--get-input-raw ()
+  "The input text with trailing whitespace kept (the trimmed getter hides list edits)."
+  (buffer-substring-no-properties efrit-agent--input-start (point-max)))
+
 (defun test-efrit-agent--type (text)
   "Put TEXT into the input region."
   (efrit-agent--clear-input)
@@ -67,7 +71,7 @@ on a busy session without drawing anything."
         (efrit-subscribe 'queued (lambda (e) (push (cons 'queued (alist-get :text e)) events)))
         (unwind-protect
             (progn
-              (efrit-repl-session-set-status session 'working)
+              (efrit-repl-loop-hold session)
               ;; RET: queued, drawn with the waiting prefix, input cleared
               (test-efrit-agent--type "second thing")
               (efrit-agent-input-send)
@@ -90,7 +94,7 @@ on a busy session without drawing anything."
               (efrit-agent-input-send)
               (test-efrit-agent--type "draft in progress")
               ;; A failed turn holds the queue
-              (efrit-repl-session-set-status session 'idle)
+              (efrit-repl-loop-release session)
               (efrit-agent--on-turn-complete session "api-error")
               (should-not sent)
               (should (= 2 (length (efrit-repl-session-queue session))))
@@ -243,7 +247,7 @@ session it sets the interrupt flag for the loop."
               (should-not (efrit-repl-session-pending-question session))
               (should (member "interrupted" ended))
               ;; working: only the flag, the loop finishes on its own
-              (efrit-repl-session-set-status session 'working)
+              (efrit-repl-loop-hold session)
               (setq efrit-agent--status 'working)
               (efrit-agent-cancel)
               (should (efrit-repl-session-interrupt-requested session))
@@ -279,7 +283,7 @@ rendered as Markdown)."
     (efrit-agent--init-regions)
     (efrit-agent--setup-regions)
     (let ((session (efrit-agent-repl-session)))
-      (efrit-repl-session-set-status session 'working)
+      (efrit-repl-loop-hold session)
       (efrit-agent--add-claude-message "I will now")
       (efrit-agent-busy-submit-steer "Change *of* plan?")
       (efrit-agent--add-claude-message " compute **it**.")
@@ -288,7 +292,7 @@ rendered as Markdown)."
         (should (string-search "I will now\n\n↳ Change *of* plan?\n\n compute it." text)))
       (should (efrit-agent--find-user-message "Change *of* plan?" 'steer))
       ;; the thinking indicator was not touched by the steer line
-      (efrit-repl-session-set-status session 'working)
+      (efrit-repl-loop-hold session)
       (efrit-agent--show-thinking "waiting")
       (efrit-agent-busy-submit-queue "later")
       (should efrit-agent--thinking-indicator)
@@ -303,7 +307,7 @@ with it: every mark drawn mid-turn vanished (2026-09-25)."
     (efrit-agent--init-regions)
     (efrit-agent--setup-regions)
     (let ((session (efrit-agent-repl-session)))
-      (efrit-repl-session-set-status session 'working)
+      (efrit-repl-loop-hold session)
       (efrit-agent--show-thinking "waiting for Claude...")
       (should efrit-agent--thinking-indicator)
       (efrit-agent-busy-submit-queue "later please")
@@ -906,6 +910,79 @@ the header hint names the keys."
                 (should (string-match-p "RET sends" hint))
                 (should (string-match-p "S-<return> newline" hint))))
           (efrit-agent--clear-input))))))
+
+(ert-deftest test-efrit-agent-quote-region ()
+  "A region of the transcript lands in the input as a `> ' quote when
+idle; when busy it is queued with an optional trailer."
+  (with-efrit-agent-test-buffer
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions)
+    (efrit-agent--add-user-message "earlier question")
+    (let* ((session (efrit-agent-repl-session))
+           (start (progn (goto-char (point-min)) (search-forward "earlier") (match-beginning 0)))
+           (end (line-end-position)))
+      (efrit-agent-quote-region start end)
+      (should (equal "> earlier question" (efrit-agent--get-input)))
+      (should (= (point) (point-max)))
+      (efrit-agent--clear-input)
+      (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "why?"))
+                ((symbol-function 'efrit-agent-display) #'ignore))
+        (efrit-repl-loop-hold session)
+        (efrit-agent-quote-region start end)
+        (should (equal '("> earlier question\n\nwhy?") (efrit-repl-session-queue session)))
+        (should (efrit-agent--find-user-message "> earlier question\n\nwhy?" 'queued))
+        ;; the quote line is drawn with a bar in place of the `> '
+        (goto-char (point-min))
+        (search-forward "why?")
+        (search-backward "> earlier")
+        (should (get-text-property (point) 'display))
+        (efrit-repl-loop-release session)))))
+
+(ert-deftest test-efrit-agent-narrow-to-turns ()
+  "C-c C-z shows the last N turns; the input stays; C-c C-a widens."
+  (with-efrit-agent-test-buffer
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions)
+    (dolist (q '("first" "second" "third"))
+      (efrit-agent--add-user-message q))
+    (should (= 3 (length (efrit-agent--turn-starts))))
+    (efrit-agent-narrow-to-turns 1)
+    (should (buffer-narrowed-p))
+    (let ((visible (buffer-substring-no-properties (point-min) (point-max))))
+      (should (string-match-p "third" visible))
+      (should-not (string-match-p "second" visible))
+      (should (>= (point-max) (marker-position efrit-agent--input-start))))
+    (efrit-agent-narrow-to-turns 2)
+    (should (string-match-p "second" (buffer-substring-no-properties (point-min) (point-max))))
+    (efrit-agent-widen)
+    (should-not (buffer-narrowed-p))))
+
+(ert-deftest test-efrit-agent-input-list-edit ()
+  "S-RET continues a list item, ends it when empty; TAB / S-TAB move an item."
+  (with-efrit-agent-test-buffer
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions)
+    (test-efrit-agent--type "- one")
+    (efrit-agent-input-newline)
+    (should (equal "- one\n- " (efrit-agent--get-input-raw)))
+    (insert "two")
+    (efrit-agent-input-tab)
+    (should (equal "- one\n  - two" (efrit-agent--get-input-raw)))
+    (efrit-agent-input-dedent-item)
+    (should (equal "- one\n- two" (efrit-agent--get-input-raw)))
+    ;; empty item: the marker goes and the list ends
+    (efrit-agent-input-newline)
+    (efrit-agent-input-newline)
+    (should (equal "- one\n- two\n\n" (efrit-agent--get-input-raw)))
+    ;; numbered
+    (test-efrit-agent--type "3. c")
+    (efrit-agent-input-newline)
+    (should (equal "3. c\n4. " (efrit-agent--get-input-raw)))
+    ;; plain text: a plain newline, and TAB completes rather than indents
+    (test-efrit-agent--type "plain")
+    (efrit-agent-input-newline)
+    (should (equal "plain\n" (efrit-agent--get-input-raw)))
+    (efrit-agent--clear-input)))
 
 (ert-deftest test-efrit-agent-user-turn-keeps-prefix-and-text-faces ()
   "The user block background is layered under the prompt/text faces, not over them."

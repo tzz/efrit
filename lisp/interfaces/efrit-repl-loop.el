@@ -105,7 +105,10 @@ requiring an active efrit-do session (ef-dcn).")
    :elapsed-fn (lambda (session)
                  (when-let* ((start (efrit-repl-session-current-turn-start
                                      session)))
-                   (float-time (time-since start))))
+                   ;; Minus the time the user spent on prompts and
+                   ;; questions: a slow answer is not a slow turn
+                   (efrit-elapsed-working
+                    start (efrit-repl-session-turn-waiting-mark session))))
    :timeout-fn (lambda () efrit-session-timeout)
    :record-tool-fn #'efrit-repl-session-record-tool
    :wrap-dispatch-fn (lambda (session thunk)
@@ -380,6 +383,36 @@ whole cancel.  The next input starts a new turn."
   "Return non-nil if SESSION has an active loop running."
   (when session
     (gethash (efrit-repl-session-id session) efrit-repl-loop--active)))
+
+(defun efrit-repl-loop-hold (session)
+  "Mark SESSION working with a placeholder loop entry, so it reads as busy.
+For tests and the test drive, which pretend a turn runs without
+starting one; without the entry `efrit-repl-loop-recover-stale' would
+end the pretend turn at once.  `efrit-repl-loop-release' undoes it."
+  (puthash (efrit-repl-session-id session) (list session nil 0) efrit-repl-loop--active)
+  (efrit-repl-session-set-status session 'working))
+
+(defun efrit-repl-loop-release (session)
+  "Undo `efrit-repl-loop-hold' on SESSION: idle, no loop entry."
+  (remhash (efrit-repl-session-id session) efrit-repl-loop--active)
+  (efrit-repl-session-set-status session 'idle))
+
+(defun efrit-repl-loop-recover-stale (session)
+  "End SESSION's turn when it says `working' but no loop is running it.
+Returns non-nil when it did.  How a session gets there: a reload
+replaced `efrit-repl-loop--active' with an empty table (or a request
+died without its callback) while a turn was in flight, so nothing was
+left to call `efrit-repl-loop--end-turn' and every later submit was
+refused with \"busy\" (2026-09-27).  Ending the turn publishes
+`status' and `turn-complete' as an interruption, so subscribers (a
+batch driver) hear it too."
+  (when (and session
+             (eq (efrit-repl-session-status session) 'working)
+             (not (efrit-repl-loop-active-p session)))
+    (efrit-log 'warn "REPL session %s: working with no loop; ending the stale turn"
+               (efrit-repl-session-id session))
+    (efrit-repl-loop-abandon-turn session)
+    t))
 
 (provide 'efrit-repl-loop)
 

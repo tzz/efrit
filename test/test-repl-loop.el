@@ -222,6 +222,28 @@ publishes turn-complete, like every other ending."
       (should (eq (efrit-repl-session-status session) 'waiting))
       (should-not (efrit-repl-loop-active-p session)))))
 
+(ert-deftest test-repl-loop-recovers-a-stale-working-session ()
+  "A session left `working' with no loop (a reload dropped the loop
+table) is ended as interrupted the next time something asks whether
+it is busy; a held (pretend-busy) session is left alone."
+  (let ((session (efrit-repl-session-create)) (seen nil))
+    (cl-letf (((symbol-function 'efrit-agent-set-status) #'ignore))
+      (let ((listener (lambda (e) (push (alist-get :stop-reason e) seen))))
+        (efrit-subscribe 'turn-complete listener)
+        (unwind-protect
+            (progn
+              (efrit-repl-session-set-status session 'working)
+              (should (efrit-repl-loop-recover-stale session))
+              (should (eq 'idle (efrit-repl-session-status session)))
+              (should (equal '("interrupted") seen))
+              ;; held: not stale
+              (efrit-repl-loop-hold session)
+              (should-not (efrit-repl-loop-recover-stale session))
+              (should (eq 'working (efrit-repl-session-status session)))
+              (efrit-repl-loop-release session)
+              (should (eq 'idle (efrit-repl-session-status session))))
+          (efrit-unsubscribe 'turn-complete listener))))))
+
 (ert-deftest test-repl-loop-api-error-fails-turn ()
   "An API error ends the turn with the api-error reason."
   (let ((session (efrit-repl-session-create))

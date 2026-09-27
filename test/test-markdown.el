@@ -122,6 +122,90 @@ spans; paths that do not exist stay text."
                     (should (= 3 (line-number-at-pos)))))))))
       (delete-directory dir t))))
 
+(ert-deftest test-markdown-block-quotes ()
+  "`> ' lines keep their text, show a bar for the marker, and take the quote face."
+  (let ((s (efrit-markdown-render-string "a\n> quoted\n>bare\nb")))
+    (should (equal "a\n> quoted\n>bare\nb" (substring-no-properties s)))
+    (should (get-text-property (string-search "> quoted" s) 'display s))
+    (should (get-text-property (string-search ">bare" s) 'display s))
+    (should (test-md--has-face s 'efrit-markdown-quote "quoted"))
+    (should-not (get-text-property (string-search "b" s) 'display s))))
+
+(ert-deftest test-markdown-tables ()
+  "A pipe table becomes aligned columns: header face, dim bars, a
+rule, alignment per the separator, inline markup inside cells; an
+unfinished table is held back while streaming."
+  (let ((s (efrit-markdown-render-string
+            "| Name | Qty |\n|:-----|----:|\n| apple | 3 |\n| **kiwi** | 12 |\n\nafter")))
+    ;; widths come from the rendered cells: `kiwi', not `**kiwi**'
+    (should (equal "Name  │ Qty\n───────────\napple │   3\nkiwi  │  12\n\nafter"
+                   (substring-no-properties s)))
+    (should (test-md--has-face s 'efrit-markdown-table-header "Name"))
+    (should (test-md--has-face s 'efrit-markdown-bold "kiwi"))
+    (should (test-md--has-face s 'efrit-markdown-table-border "│")))
+  (with-temp-buffer
+    (insert "| a | b |\n|---|---|\n| 1 | 2 |")
+    (efrit-markdown-render (point-min) (point-max) nil)
+    (should (equal "| a | b |\n|---|---|\n| 1 | 2 |" (buffer-string)))
+    (goto-char (point-max)) (insert "\n\nend\n")
+    (efrit-markdown-render (point-min) (point-max) t)
+    (should (string-prefix-p "a │ b\n─────\n1 │ 2\n" (substring-no-properties (buffer-string)))))
+  ;; a lone bar line without a separator is not a table
+  (should (equal "| not | table |" (substring-no-properties (efrit-markdown-render-string "| not | table |"))))
+  (let ((efrit-markdown-tables nil))
+    (should (equal "| a |\n|---|\n| 1 |"
+                   (substring-no-properties (efrit-markdown-render-string "| a |\n|---|\n| 1 |"))))))
+
+(ert-deftest test-markdown-images ()
+  "![alt](src): the alt stays as text carrying the source; on a graphic
+display a local file is drawn over it and +/-/= scale it; a missing
+file or a text display shows the alt only; remote sources are fetched."
+  (let* ((dir (make-temp-file "efrit-md-img-" t))
+         (png (expand-file-name "pic.png" dir))
+         (default-directory dir)
+         (fetched nil))
+    (unwind-protect
+        (progn
+          (with-temp-file png (insert "not really a png"))
+          ;; text display: alt only
+          (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) nil)))
+            (let ((s (efrit-markdown-render-string "see ![the pic](pic.png).")))
+              (should (equal "see [the pic]." (substring-no-properties s)))
+              (should (equal "pic.png" (get-text-property 5 'efrit-markdown-image-source s)))
+              (should-not (get-text-property 5 'display s))))
+          ;; graphic display, image creation stubbed
+          (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
+                    ((symbol-function 'create-image)
+                     (lambda (file &rest props) (list 'image :file file :max-width (plist-get props :max-width))))
+                    ((symbol-function 'url-retrieve)
+                     (lambda (url &rest _) (setq fetched url) nil)))
+            (with-temp-buffer
+              (insert "a ![p](pic.png) b ![](missing.png) c ![r](https://example.invalid/i.png)")
+              (efrit-markdown-render (point-min) (point-max) t)
+              (should (equal "a [p] b [missing.png] c [r]" (substring-no-properties (buffer-string))))
+              (let ((img (get-text-property 4 'display)))
+                (should (equal png (plist-get (cdr img) :file)))
+                (should (= efrit-markdown-image-max-width (plist-get (cdr img) :max-width))))
+              (should-not (get-text-property 10 'display))
+              (should (equal "https://example.invalid/i.png" fetched))
+              ;; scaling at point, then reset
+              (goto-char 4)
+              (efrit-markdown-image-scale-increase)
+              (should (= (round (* efrit-markdown-image-scale-step efrit-markdown-image-max-width))
+                         (plist-get (cdr (get-text-property 4 'display)) :max-width)))
+              (efrit-markdown-image-scale-decrease)
+              (efrit-markdown-image-scale-reset)
+              (should (= efrit-markdown-image-max-width
+                         (plist-get (cdr (get-text-property 4 'display)) :max-width)))))
+          ;; data: URL lands in the cache
+          (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
+                    ((symbol-function 'create-image) (lambda (file &rest _) (list 'image :file file))))
+            (let* ((efrit-markdown-image-cache-directory (expand-file-name "cache" dir))
+                   (s (efrit-markdown-render-string
+                       (concat "![d](data:image/png;base64," (base64-encode-string "xyz") ")"))))
+              (should (file-exists-p (plist-get (cdr (get-text-property 1 'display s)) :file))))))
+      (delete-directory dir t))))
+
 (ert-deftest test-markdown-disabled-and-plain ()
   "Disabled, nothing changes; text without markup is returned as is."
   (let ((efrit-markdown-enabled nil))

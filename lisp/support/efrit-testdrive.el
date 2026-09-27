@@ -98,6 +98,25 @@
 (declare-function efrit-agent-slash-completion-at-point "efrit-agent-mentions")
 (declare-function efrit-agent-slash-run "efrit-agent-mentions")
 (declare-function efrit-agent-dnd-handle "efrit-agent-mentions")
+(declare-function efrit-agent-quote-region "efrit-agent-input")
+(declare-function efrit-agent-input-newline "efrit-agent-input")
+(declare-function efrit-agent-input-tab "efrit-agent-input")
+(declare-function efrit-agent--session-busy-p "efrit-agent-input")
+(declare-function efrit-agent--turn-starts "efrit-agent")
+(declare-function efrit-agent-narrow-to-turns "efrit-agent")
+(declare-function efrit-agent-widen "efrit-agent")
+(declare-function efrit-transcript-file "efrit-transcript")
+(declare-function efrit-repl-loop-hold "efrit-repl-loop")
+(declare-function efrit-repl-loop-release "efrit-repl-loop")
+(declare-function efrit-diff-preview--display "efrit-tool-show-diff-preview")
+(declare-function efrit-diff-preview-open-file "efrit-tool-show-diff-preview")
+(declare-function efrit-loop-adapter-elapsed-fn "efrit-loop")
+(defvar efrit-repl-loop--adapter)
+(defvar efrit-transcript-enabled)
+(defvar efrit-diff-preview--root)
+(defvar efrit-diff-preview--apply-mode)
+(defvar efrit-diff-preview-buffer-name)
+(defvar efrit-agent--input-start)
 (declare-function efrit-repl-session-queue "efrit-repl-session")
 (declare-function efrit-repl-session-status "efrit-repl-session")
 (declare-function efrit-repl-session-dequeue "efrit-repl-session")
@@ -290,6 +309,10 @@ BODY returns PASS/FAIL/SKIP or (STATUS . NOTE).  Errors become FAIL."
     ("notes.txt" . "The secret word is PELICAN.\n"))
   "Files of the throwaway project: (RELATIVE-NAME . CONTENT).")
 
+(defconst efrit-testdrive--png-base64
+  "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/P8Fu7N9hAAAAAElFTkSuQmCC"
+  "An 8x8 red PNG, for the image rendering steps.")
+
 (defun efrit-testdrive--make-project ()
   "Create the throwaway project; return its canonical directory.
 Canonical because the sandbox keys grants on `efrit-sandbox-canonical'
@@ -297,6 +320,10 @@ Canonical because the sandbox keys grants on `efrit-sandbox-canonical'
   (let ((dir (file-name-as-directory (make-temp-file "efrit-testdrive-" t))))
     (dolist (f efrit-testdrive--files)
       (with-temp-file (expand-file-name (car f) dir) (insert (cdr f))))
+    (let ((coding-system-for-write 'binary))
+      (with-temp-file (expand-file-name "red.png" dir)
+        (set-buffer-multibyte nil)
+        (insert (base64-decode-string efrit-testdrive--png-base64))))
     (file-name-as-directory (efrit-sandbox-canonical dir))))
 
 (defun efrit-testdrive--file (rel)
@@ -792,13 +819,143 @@ Anything here is a step that did not grant what its turn needed.")
                                 (format "session %s -> %s, windows %d -> %d"
                                         (car before) (car after) (cadr before) (cadr after)))))))
 
+(defun efrit-testdrive--section-6 ()
+  "Transcript tools: quote, narrow, transcript file, list edit, tables and images, stale busy, diff open."
+  (efrit-testdrive--out "\n## 6. Transcript tools")
+  (efrit-testdrive--step 6 "A region of the transcript is quoted into the input; while busy it is queued"
+    (with-current-buffer (efrit-testdrive--agent-buffer)
+      (efrit-testdrive--type-input "")
+      (let* ((bounds (or (efrit-agent--last-claude-message-bounds) (cons (point-min) (point-min))))
+             (start (car bounds))
+             (end (min (cdr bounds) (save-excursion (goto-char start) (line-end-position))))
+             (session (efrit-testdrive--session))
+             (idle-input (progn (efrit-agent-quote-region start end) (efrit-agent--get-input)))
+             (queued nil))
+        (efrit-testdrive--type-input "")
+        (efrit-repl-loop-hold session)
+        (unwind-protect
+            (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "and why?")))
+              (efrit-agent-quote-region start end)
+              (setq queued (copy-sequence (efrit-repl-session-queue session))))
+          (while (efrit-repl-session-dequeue session))
+          (efrit-repl-loop-release session)
+          (when queued (efrit-agent--unmark-queued-message (car queued) 'dropped)))
+        (efrit-testdrive--check
+         (and (string-prefix-p "> " idle-input)
+              (= 1 (length queued)) (string-suffix-p "\n\nand why?" (car queued)))
+         (format "idle input %S; queued %S" (truncate-string-to-width idle-input 50 nil nil "…")
+                 (and queued (truncate-string-to-width (car queued) 50 nil nil "…")))))))
+  (efrit-testdrive--step 6 "Narrow to the last turn hides earlier ones; widen brings them back"
+    (with-current-buffer (efrit-testdrive--agent-buffer)
+      (let* ((turns (length (efrit-agent--turn-starts)))
+             (_ (efrit-agent-narrow-to-turns 1))
+             (narrowed (buffer-narrowed-p))
+             (shown (length (efrit-agent--turn-starts)))
+             (input-visible (>= (point-max) (marker-position efrit-agent--input-start))))
+        (efrit-agent-widen)
+        (efrit-testdrive--check
+         (and (> turns 1) narrowed (= shown 1) input-visible (not (buffer-narrowed-p)))
+         (format "%d turns, narrowed %s, %d shown, input visible %s, widened %s"
+                 turns narrowed shown input-visible (not (buffer-narrowed-p)))))))
+  (efrit-testdrive--step 6 "The transcript file has this session's turns and tool calls"
+    (let* ((session (efrit-testdrive--session))
+           (file (efrit-transcript-file session))
+           (text (and file (file-exists-p file)
+                      (with-temp-buffer (insert-file-contents file) (buffer-string)))))
+      (cond
+       ((not efrit-transcript-enabled) (cons 'SKIP "efrit-transcript-enabled is nil"))
+       ((not text) (cons 'FAIL (format "no transcript at %s" file)))
+       (t (efrit-testdrive--check
+           (and (string-match-p "^## [0-9:]+ You$" text)
+                (string-match-p "^### tool `" text)
+                (string-match-p "^### efrit$" text))
+           (format "%s: %d chars, %d turns, %d tool calls" (abbreviate-file-name file) (length text)
+                   (cl-count-if (lambda (l) (string-match-p "^## [0-9:]+ You$" l)) (split-string text "\n"))
+                   (cl-count-if (lambda (l) (string-prefix-p "### tool `" l)) (split-string text "\n"))))))))
+  (efrit-testdrive--step 6 "S-RET continues a list item in the input; TAB indents it"
+    (with-current-buffer (efrit-testdrive--agent-buffer)
+      (efrit-testdrive--type-input "- one")
+      (goto-char (point-max))
+      (efrit-agent-input-newline)
+      (insert "two")
+      (efrit-agent-input-tab)
+      (let ((a (buffer-substring-no-properties efrit-agent--input-start (point-max))))
+        (efrit-agent-input-newline)
+        (efrit-agent-input-newline)
+        (let ((b (buffer-substring-no-properties efrit-agent--input-start (point-max))))
+          (efrit-testdrive--type-input "")
+          (efrit-testdrive--check (and (equal a "- one\n  - two") (equal b "- one\n  - two\n\n"))
+                                  (format "after TAB %S, after two S-RET %S" a b))))))
+  (efrit-testdrive--step 6 "A table and an image in the answer render as columns and a picture"
+    (let ((ev (efrit-testdrive--turn
+               "Reply with exactly this Markdown and nothing else: a pipe table with header `Fruit | Count`, a separator row, rows `apple | 3` and `kiwi | 12`; then a blank line; then the image `![red square](red.png)`.")))
+      (if (not ev)
+          (cons 'FAIL "timed out")
+        (with-current-buffer (efrit-testdrive--agent-buffer)
+          (let* ((b (efrit-agent--last-claude-message-bounds))
+                 (text (if b (buffer-substring-no-properties (car b) (cdr b)) ""))
+                 (border (and b (text-property-any (car b) (cdr b) 'face 'efrit-markdown-table-border)))
+                 (header (and b (cl-loop for p from (car b) below (cdr b)
+                                         thereis (memq 'efrit-markdown-table-header
+                                                       (ensure-list (get-text-property p 'face))))))
+                 (img-pos (and b (text-property-not-all (car b) (cdr b) 'efrit-markdown-image-source nil)))
+                 (img (and img-pos (get-text-property img-pos 'display))))
+            (cond
+             ((string-empty-p text) (cons 'FAIL "no rendered answer"))
+             ((string-match-p "^|" text) (cons 'FAIL "raw pipe rows still visible"))
+             ((not (and border header)) (cons 'FAIL "no table faces"))
+             ((not img-pos) (cons 'FAIL "no image reference found in the answer"))
+             ((and (display-graphic-p) (not (eq (car-safe img) 'image)))
+              (cons 'FAIL (format "image not drawn at %d (display %S)" img-pos img)))
+             (t (cons 'PASS (format "table drawn; image %s" (if (display-graphic-p) "drawn" "alt only (text display)"))))))))))
+  (efrit-testdrive--step 6 "A session left `working' with no loop is recovered instead of saying busy"
+    (let ((session (efrit-testdrive--session)))
+      (efrit-repl-session-set-status session 'working)
+      (let ((busy (with-current-buffer (efrit-testdrive--agent-buffer) (efrit-agent--session-busy-p))))
+        (efrit-testdrive--check (and (not busy) (eq 'idle (efrit-repl-session-status session)))
+                                (format "busy-p %s, status %s" busy (efrit-repl-session-status session))))))
+  (efrit-testdrive--step 6 "Time spent on a prompt does not count against the turn clock"
+    (let* ((session (efrit-testdrive--session))
+           (efrit-user-waiting-seconds efrit-user-waiting-seconds)
+           (efrit-user-waiting-depth 0))
+      ;; Pretend a turn began 1 s ago and the user then read a prompt for 3 s
+      (setf (efrit-repl-session-current-turn-start session) (time-subtract (current-time) 1)
+            (efrit-repl-session-turn-waiting-mark session) efrit-user-waiting-seconds)
+      ;; The prompt itself is simulated: three seconds booked as waiting
+      (cl-incf efrit-user-waiting-seconds 3)
+      (let ((elapsed (funcall (efrit-loop-adapter-elapsed-fn efrit-repl-loop--adapter) session)))
+        (efrit-testdrive--check (< elapsed 2)
+                                (format "turn clock reads %.1fs after 1 s of work + 3 s of prompt" elapsed)))))
+  (efrit-testdrive--step 6 "The diff preview opens the file at the changed line, found by text"
+    (require 'efrit-tool-show-diff-preview)
+    (let ((efrit-diff-preview--root (efrit-testdrive--file ""))
+          (efrit-diff-preview--apply-mode 'all_or_nothing)
+          (line nil))
+      (cl-letf (((symbol-function 'pop-to-buffer) (lambda (b &rest _) (set-buffer b)))
+                ((symbol-function 'find-file-other-window)
+                 (lambda (f) (set-buffer (find-file-noselect f))))
+                ((symbol-function 'recenter) #'ignore))
+        (efrit-diff-preview--display
+         '(((file . "greet.el") (old_content . "  (format \"Hello, %s!\" name))\n")
+            (new_content . "  (format \"Howdy, %s!\" name))\n")))
+         "greeting" 'all_or_nothing)
+        (with-current-buffer efrit-diff-preview-buffer-name
+          (goto-char (point-min))
+          (re-search-forward "^-")
+          (efrit-diff-preview-open-file))
+        (setq line (line-number-at-pos))
+        (when-let* ((b (get-file-buffer (efrit-testdrive--file "greet.el")))) (kill-buffer b))
+        (kill-buffer efrit-diff-preview-buffer-name))
+      (efrit-testdrive--check (= line 5) (format "landed on line %s (expected 5)" line)))))
+
 (defconst efrit-testdrive--sections
   '((0 "Setup" efrit-testdrive--section-0)
     (1 "A round trip" efrit-testdrive--section-1)
     (2 "Tools and the sandbox" efrit-testdrive--section-2)
     (3 "Interaction: question, cancel, queue, steer" efrit-testdrive--section-3)
     (4 "Rendering" efrit-testdrive--section-4)
-    (5 "Input: mentions, commands, drop, restart" efrit-testdrive--section-5))
+    (5 "Input: mentions, commands, drop, restart" efrit-testdrive--section-5)
+    (6 "Transcript tools: quote, narrow, transcript, lists, tables, images" efrit-testdrive--section-6))
   "The automatic drive's sections.")
 
 ;;;; The tour: what needs eyes
@@ -830,7 +987,7 @@ Anything here is a step that did not grant what its turn needed.")
   (efrit-testdrive--step 'tour "C-c C-q lists queued inputs and drops one"
     ;; A pretend busy state: nothing runs, so there is no race
     (let ((session (efrit-testdrive--session)))
-      (efrit-repl-session-set-status session 'working)
+      (efrit-repl-loop-hold session)
       (with-current-buffer (efrit-testdrive--agent-buffer)
         (efrit-agent-busy-submit-queue "first queued")
         (efrit-agent-busy-submit-queue "second queued"))
@@ -843,7 +1000,7 @@ Anything here is a step that did not grant what its turn needed.")
         (while (efrit-repl-session-dequeue session))
         (with-current-buffer (efrit-testdrive--agent-buffer)
           (efrit-agent--unmark-queued-message "second queued" 'dropped))
-        (efrit-repl-session-set-status session 'idle)))))
+        (efrit-repl-loop-release session)))))
 
 (defun efrit-testdrive--tour-sandbox ()
   (efrit-testdrive--out "\n## Sandbox prompt")
@@ -870,13 +1027,23 @@ Anything here is a step that did not grant what its turn needed.")
         (efrit-testdrive--check (string-match-p "@" input)
                                 (format "input after the drop: %S" (truncate-string-to-width input 80 nil nil "…")))))))
 
+(defun efrit-testdrive--tour-images ()
+  (efrit-testdrive--out "\n## Images and the transcript file")
+  (efrit-testdrive--step 'tour "+ and - resize the picture in the last answer; = resets"
+    (if (not (display-graphic-p))
+        (cons 'SKIP "text display")
+      (efrit-testdrive--ask "Put point on the red square in the last answer.  Press + twice: does it grow?  - once: smaller?  = back to normal?  (C-c + / C-c - / C-c = work from the input too.)")))
+  (efrit-testdrive--step 'tour "C-c C-f opens the session transcript as readable Markdown"
+    (efrit-testdrive--ask "Press C-c C-f in the agent buffer.  A Markdown file with `## HH:MM:SS You` headings, tool calls in fences and the answers?  q closes it.")))
+
 (defconst efrit-testdrive--tour-stops
   '(("Header" efrit-testdrive--tour-header)
     ("Folding" efrit-testdrive--tour-folding)
     ("Menus" efrit-testdrive--tour-menu)
     ("Queue view" efrit-testdrive--tour-queue)
     ("Sandbox prompt" efrit-testdrive--tour-sandbox)
-    ("Drag and drop" efrit-testdrive--tour-drop))
+    ("Drag and drop" efrit-testdrive--tour-drop)
+    ("Images and the transcript file" efrit-testdrive--tour-images))
   "The tour's stops: (TITLE FUNCTION).")
 
 ;;;; Driver

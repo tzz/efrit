@@ -42,6 +42,7 @@
 (require 'efrit-agent-tools)
 (require 'efrit-agent-input)
 (require 'efrit-agent-menu)
+(require 'efrit-transcript)
 (require 'efrit-repl-loop)
 (declare-function efrit-session-active "efrit-session")
 (require 'efrit-agent-integration)
@@ -288,6 +289,18 @@
     (define-key map (kbd "C-c C-w") #'efrit-agent-copy-last-output)
     (define-key map (kbd "C-c C-i") #'efrit-agent-copy-session-id)
     (define-key map (kbd "C-c C-x") #'efrit-agent-restart)
+    (define-key map (kbd "C-c C-y") #'efrit-agent-quote-region)
+    (define-key map (kbd "C-c C-f") #'efrit-transcript-open)
+    (define-key map (kbd "C-c C-z") #'efrit-agent-narrow-to-turns)
+    (define-key map (kbd "C-c C-a") #'efrit-agent-widen)
+    ;; Image size: bare keys in the read-only transcript (the input
+    ;; minor mode shadows them back to self-insert), C-c forms anywhere
+    (define-key map (kbd "+") #'efrit-markdown-image-scale-increase)
+    (define-key map (kbd "-") #'efrit-markdown-image-scale-decrease)
+    (define-key map (kbd "=") #'efrit-markdown-image-scale-reset)
+    (define-key map (kbd "C-c +") #'efrit-markdown-image-scale-increase)
+    (define-key map (kbd "C-c -") #'efrit-markdown-image-scale-decrease)
+    (define-key map (kbd "C-c =") #'efrit-markdown-image-scale-reset)
 
     ;; Input handling
     (define-key map (kbd "C-c C-s") #'efrit-agent-send-input)
@@ -534,6 +547,36 @@ refreshed; a full render destroyed the transcript (ef-7t0)."
   (efrit-agent--refresh-status-line)
   (force-mode-line-update))
 
+(defun efrit-agent--turn-starts ()
+  "Positions where user turns start, in buffer order."
+  ;; Two user lines in a row share `efrit-type', so the run boundary
+  ;; is the message id, not the type
+  (let ((starts nil) (pos (point-min)))
+    (while (setq pos (text-property-any pos (point-max) 'efrit-type 'user-message))
+      (push pos starts)
+      (setq pos (or (next-single-property-change pos 'efrit-id) (point-max))))
+    (nreverse starts)))
+
+(defun efrit-agent-narrow-to-turns (count)
+  "Narrow the buffer to the last COUNT turns (prefix argument, default 1).
+A turn is a user line and everything after it up to the next one;
+the input stays visible.  `efrit-agent-widen' undoes it."
+  (interactive "p")
+  (widen)
+  (let* ((starts (efrit-agent--turn-starts))
+         (n (max 1 (or count 1)))
+         (start (or (nth (max 0 (- (length starts) n)) starts) (point-min))))
+    (unless starts (user-error "No turns yet"))
+    (narrow-to-region start (point-max))
+    (message "Showing the last %d turn%s; C-c C-a widens" (min n (length starts))
+             (if (= 1 (min n (length starts))) "" "s"))))
+
+(defun efrit-agent-widen ()
+  "Show the whole conversation again."
+  (interactive)
+  (widen)
+  (goto-char (point-max)))
+
 (defun efrit-agent-next-section ()
   "Move to the next section in the buffer."
   (interactive)
@@ -773,7 +816,8 @@ Display Style:
 
 Input (when in input region):
   RET            Send the input (from any line of it)
-  S-RET          Insert a newline (also M-RET, C-j)
+  S-RET          Insert a newline (also C-j); on a list item, the next item
+  TAB / S-TAB    On a list item: indent / dedent it (TAB completes elsewhere)
   S-<arrows>     Extend the selection (shift-select works in the input)
   C-c C-c        Send input
   C-c C-s        Send input

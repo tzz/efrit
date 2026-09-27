@@ -123,7 +123,9 @@ session persists and accumulates conversation context."
   ;; Added 2026-09-25 -- new slots go at the end, see the upgrade
   ;; section below
   (queue nil)                             ; Inputs to send after this turn, oldest first
-  (steering nil))                         ; Texts to inject before the next request, oldest first
+  (steering nil)                          ; Texts to inject before the next request, oldest first
+  ;; Added 2026-09-27
+  (turn-waiting-mark 0))                  ; `efrit-user-waiting-seconds' when the turn began
 
 ;;; Session ID Generation
 
@@ -162,7 +164,10 @@ session persists and accumulates conversation context."
 (defconst efrit-repl-session--layouts
   '((14 id created-at last-activity status buffer conversation api-messages budget
         current-turn-tools current-turn-start project-root title pending-question
-        interrupt-requested))
+        interrupt-requested)
+    (16 id created-at last-activity status buffer conversation api-messages budget
+        current-turn-tools current-turn-start project-root title pending-question
+        interrupt-requested queue steering))
   "Slot names of earlier `efrit-repl-session' definitions, by slot count.
 The current definition is read from `cl-struct-slot-info'.")
 
@@ -190,6 +195,13 @@ the registry and as the active session."
                    for i from 1
                    for j = (cl-position name current)
                    when j do (aset fresh (1+ j) (aref session i)))
+          ;; No loop survives a reload (`efrit-repl-loop--active' is a
+          ;; fresh table), so a `working' status would never be
+          ;; cleared and every later submit would be refused as busy
+          (when (eq (efrit-repl-session-status fresh) 'working)
+            (setf (efrit-repl-session-status fresh) 'idle)
+            (efrit-log 'warn "REPL session %s: was working across the reload; now idle"
+                       (efrit-repl-session-id fresh)))
           (puthash (efrit-repl-session-id fresh) fresh efrit-repl-session--registry)
           (when (eq efrit-repl-session--active session)
             (setq efrit-repl-session--active fresh))
@@ -649,6 +661,7 @@ Resets per-turn state."
   (when session
     (setf (efrit-repl-session-current-turn-tools session) nil)
     (setf (efrit-repl-session-current-turn-start session) (current-time))
+    (setf (efrit-repl-session-turn-waiting-mark session) efrit-user-waiting-seconds)
     (efrit-repl-session-set-status session 'working)))
 
 (defun efrit-repl-session-end-turn (session)

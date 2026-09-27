@@ -45,6 +45,17 @@
     (dropped "✗ " efrit-agent-queued-prefix))
   "Prefix and face of a user line by KIND: a turn, a steer, a queued input.")
 
+(defun efrit-agent--user-line (line)
+  "LINE of a user message with its face; a `> ' quote line gets a bar.
+The `> ' stays in the text (the model and the kill ring see Markdown)."
+  (if (string-match "\\`> ?" line)
+      (concat (propertize (match-string 0 line)
+                          'display (propertize "▌ " 'face 'efrit-markdown-quote-bar)
+                          'face 'efrit-agent-user-message)
+              (propertize (substring line (match-end 0))
+                          'face '(efrit-markdown-quote efrit-agent-user-message)))
+    (propertize line 'face 'efrit-agent-user-message)))
+
 (defun efrit-agent--add-user-message (text &optional kind)
   "Add a user message with TEXT to the conversation region.
 The turn is rendered as a shaded block with a `❯' prefix on the
@@ -67,7 +78,7 @@ for the turn to end (see `efrit-agent--unmark-queued-message')."
                   (let ((first (car pair)) (line (cdr pair)))
                     (concat (propertize (if first (nth 1 prefix) "  ")
                                         'face (nth 2 prefix) 'efrit-user-prefix t)
-                            (propertize line 'face 'efrit-agent-user-message))))
+                            (efrit-agent--user-line line))))
                 (cl-loop for l in lines for i from 0 collect (cons (zerop i) l))
                 "\n"))
          (formatted-text

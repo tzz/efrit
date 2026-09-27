@@ -44,6 +44,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'browse-url)
+(require 'url)
 
 (defgroup efrit-markdown nil
   "Rendering of the model's Markdown in efrit buffers."
@@ -74,6 +75,29 @@ nil shows the raw text."
 (defcustom efrit-markdown-open-file-function #'find-file-other-window
   "How a file reference is opened; called with the file name."
   :type 'function)
+
+(defcustom efrit-markdown-images t
+  "Whether `![alt](source)' shows the image (on a graphic display).
+Local files and data: URLs show at once; http(s) images are fetched
+in the background into `efrit-markdown-image-cache-directory'."
+  :type 'boolean)
+
+(defcustom efrit-markdown-image-max-width 600
+  "Widest an image is drawn, in pixels, before scaling by the user."
+  :type 'integer)
+
+(defcustom efrit-markdown-image-scale-step 1.25
+  "Factor one scale step multiplies an image's width by."
+  :type 'number)
+
+(defcustom efrit-markdown-image-cache-directory
+  (expand-file-name "efrit-images" temporary-file-directory)
+  "Where fetched remote images are kept."
+  :type 'directory)
+
+(defcustom efrit-markdown-tables t
+  "Whether pipe tables are drawn as aligned columns."
+  :type 'boolean)
 
 ;;;; Faces
 
@@ -110,6 +134,26 @@ nil shows the raw text."
 (defface efrit-markdown-rule
   '((t :inherit shadow :strike-through t))
   "Horizontal rules.")
+
+(defface efrit-markdown-quote
+  '((t :inherit italic))
+  "Text of a block quote.")
+
+(defface efrit-markdown-table-header
+  '((t :inherit bold :underline t))
+  "Header cells of a table.")
+
+(defface efrit-markdown-table-border
+  '((t :inherit shadow))
+  "The bars between table cells.")
+
+(defface efrit-markdown-image-alt
+  '((t :inherit shadow :slant italic))
+  "Alt text of an image that cannot be shown, or is loading.")
+
+(defface efrit-markdown-quote-bar
+  '((t :inherit shadow))
+  "The bar drawn in place of a block quote's `> '.")
 
 ;;;; Properties and helpers
 
@@ -208,6 +252,117 @@ nil.  With COMPLETE, an open fence at the end is rendered as is."
           (goto-char fence-start)))))
     open))
 
+(defconst efrit-markdown--table-row-regexp "^[ \t]*|.*|[ \t]*$"
+  "A pipe table row: starts and ends with a bar.")
+
+(defconst efrit-markdown--table-separator-regexp
+  "^[ \t]*|\\(?:[ \t]*:?-+:?[ \t]*|\\)+[ \t]*$"
+  "The row under the header: bars, dashes, optional colons.")
+
+(defun efrit-markdown--table-cells (line)
+  "LINE's cells, trimmed, without the outer bars; `\\|' stays a bar."
+  (let* ((inner (string-trim (string-trim line) "|" "|"))
+         (parts (split-string (replace-regexp-in-string "\\\\|" "\x00" inner t t) "|")))
+    (mapcar (lambda (c) (string-trim (replace-regexp-in-string "\x00" "|" c t t))) parts)))
+
+(defun efrit-markdown--table-alignments (separator)
+  "Each column's alignment from SEPARATOR: `left', `right' or `center'."
+  (mapcar (lambda (cell)
+            (let ((l (string-prefix-p ":" cell)) (r (string-suffix-p ":" cell)))
+              (cond ((and l r) 'center) (r 'right) (t 'left))))
+          (efrit-markdown--table-cells separator)))
+
+(defun efrit-markdown--table-pad (text width align)
+  "TEXT padded to WIDTH columns per ALIGN."
+  (let* ((w (string-width text)) (pad (max 0 (- width w))))
+    (pcase align
+      ('right (concat (make-string pad ?\s) text))
+      ('center (concat (make-string (/ pad 2) ?\s) text (make-string (- pad (/ pad 2)) ?\s)))
+      (_ (concat text (make-string pad ?\s))))))
+
+(defun efrit-markdown--render-cell (text)
+  "TEXT with its inline Markdown rendered, as a propertized string."
+  (with-temp-buffer
+    (insert text)
+    (let ((end (copy-marker (point-max) t)))
+      (efrit-markdown--pass-inline-code (point-min) end)
+      (efrit-markdown--pass-links (point-min) end)
+      (efrit-markdown--pass-emphasis (point-min) end))
+    (buffer-string)))
+
+(defun efrit-markdown--render-table (start end)
+  "Redraw the pipe table in START..END as aligned columns.
+Each cell's inline Markdown is rendered first so the columns line up
+on what is shown; bars are dimmed, the header row gets its face, the
+separator row goes."
+  (let* ((lines (split-string (buffer-substring-no-properties start end) "\n" t))
+         (header (car lines))
+         (separator (cadr lines))
+         (body (cddr lines))
+         (aligns (efrit-markdown--table-alignments separator))
+         (rows (mapcar (lambda (line) (mapcar #'efrit-markdown--render-cell
+                                              (efrit-markdown--table-cells line)))
+                       (cons header body)))
+         (ncol (apply #'max (length aligns) (mapcar #'length rows)))
+         (widths (make-list ncol 1)))
+    (dolist (row rows)
+      (setq widths (cl-loop for i below ncol
+                            collect (max (nth i widths) (string-width (or (nth i row) ""))))))
+    (let ((bar (propertize " │ " 'face 'efrit-markdown-table-border))
+          (props (text-properties-at start)))
+      (delete-region start end)
+      (goto-char start)
+      (cl-loop for row in rows for r from 0 do
+               (let ((line-start (point)))
+                 (cl-loop for i below ncol do
+                          (when (> i 0) (insert bar))
+                          (let ((cell-start (point)))
+                            (insert (if (and (= i (1- ncol)) (eq (or (nth i aligns) 'left) 'left))
+                                        (or (nth i row) "")
+                                      (efrit-markdown--table-pad (or (nth i row) "") (nth i widths)
+                                                                 (or (nth i aligns) 'left))))
+                            (when (= r 0)
+                              (efrit-markdown--add-face cell-start (point) 'efrit-markdown-table-header))))
+                 (insert "\n")
+                 (ignore line-start)))
+      ;; Under the header: a rule as wide as the table
+      (save-excursion
+        (goto-char start) (forward-line 1)
+        (let ((rule (propertize (make-string (+ (apply #'+ widths) (* 3 (1- ncol))) ?─)
+                                'face 'efrit-markdown-table-border)))
+          (insert rule "\n")))
+      (let ((keep (cl-loop for (k v) on props by #'cddr
+                           unless (memq k '(face font-lock-face fontified efrit-markdown-frozen))
+                           append (list k v))))
+        (when keep (add-text-properties start (point) keep))))))
+
+(defun efrit-markdown--pass-tables (start end complete)
+  "Render pipe tables in START..END; return the start of a table that
+may still grow (its last row touches END) unless COMPLETE."
+  (goto-char start)
+  (let ((open nil))
+    (while (and (not open) efrit-markdown-tables
+                (re-search-forward efrit-markdown--table-row-regexp end t))
+      (let ((table-start (match-beginning 0)))
+        (forward-line 1)
+        (if (not (and (< (point) end) (looking-at efrit-markdown--table-separator-regexp)
+                      (not (efrit-markdown--span-frozen-p table-start (point)))))
+            (goto-char (max (1+ table-start) (point)))
+          (forward-line 1)
+          (while (and (< (point) end) (looking-at efrit-markdown--table-row-regexp))
+            (forward-line 1))
+          (let ((table-end (point)))
+            (if (and (not complete) (>= table-end end))
+                (setq open table-start)
+              (efrit-markdown--render-table table-start table-end)
+              (efrit-markdown--set-frozen table-start (point) t))))))
+    open))
+
+(defun efrit-markdown--set-frozen (start end value)
+  "Mark START..END frozen (VALUE non-nil) for the inline passes.
+A rendered table's bars and padding must not be re-read as emphasis."
+  (put-text-property start end efrit-markdown--frozen value))
+
 (defun efrit-markdown--language-mode (lang)
   "The major mode for fence language LANG, or nil."
   (when (and lang (not (string-empty-p lang)))
@@ -262,6 +417,20 @@ leave point where scanning continues."
     (if (efrit-markdown--span-frozen-p (match-beginning 0) (match-end 0))
         (goto-char (match-end 0))
       (funcall function))))
+
+(defun efrit-markdown--pass-quotes (start end)
+  "Block quotes: the `> ' shows as a bar, the line in the quote face.
+The `> ' stays in the buffer (copying gives Markdown back); only its
+display changes."
+  (efrit-markdown--pass-regexp
+   start end "^\\(> ?\\)\\([^\n]*\\)$"
+   (lambda ()
+     (let ((mark-start (match-beginning 1)) (mark-end (match-end 1))
+           (text-start (match-beginning 2)) (text-end (match-end 2)))
+       (put-text-property mark-start mark-end 'display
+                          (propertize "▌ " 'face 'efrit-markdown-quote-bar))
+       (efrit-markdown--add-face text-start text-end 'efrit-markdown-quote)
+       (goto-char text-end)))))
 
 (defun efrit-markdown--pass-headers (start end)
   "ATX headers: the hashes go, the line gets the header face."
@@ -350,6 +519,95 @@ Runs until nothing changes, so nested `***x***' resolves."
              (efrit-markdown--add-face whole-s (- text-e before) (cdr spec))
              (goto-char (- whole-e before after))
              (setq changed t))))))))
+
+(defun efrit-markdown--image-file (source)
+  "A local file for SOURCE: a path, a file: URL, or a data: URL written
+to the cache.  nil for http(s) (fetched separately) or nothing usable."
+  (cond
+   ((string-match "\\`data:image/\\([a-z+]+\\);base64,\\(.*\\)\\'" source)
+    (let* ((ext (match-string 1 source))
+           (data (ignore-errors (base64-decode-string (match-string 2 source))))
+           (file (and data (expand-file-name (format "data-%s.%s" (md5 source) ext)
+                                             efrit-markdown-image-cache-directory))))
+      (when file
+        (make-directory efrit-markdown-image-cache-directory t)
+        (unless (file-exists-p file)
+          (let ((coding-system-for-write 'binary))
+            (with-temp-file file (set-buffer-multibyte nil) (insert data))))
+        file)))
+   ((string-match-p "\\`https?://" source) nil)
+   (t (let ((path (if (string-prefix-p "file://" source) (substring source 7) source)))
+        (efrit-markdown--file-ref-file path)))))
+
+(defun efrit-markdown--image-cache-file (url)
+  "Where URL's image is cached."
+  (expand-file-name (format "url-%s%s" (md5 url)
+                            (let ((ext (file-name-extension (car (split-string url "[?#]")))))
+                              (if (and ext (< (length ext) 6)) (concat "." ext) "")))
+                    efrit-markdown-image-cache-directory))
+
+(defun efrit-markdown--make-image (file width)
+  "FILE as an image WIDTH pixels wide at most, or nil."
+  (ignore-errors
+    (create-image file nil nil :max-width width :ascent 'center)))
+
+(defun efrit-markdown--show-image (start end file)
+  "Put FILE's image on START..END, keeping the alt text under it."
+  (let ((width (or (get-text-property start 'efrit-markdown-image-width)
+                   efrit-markdown-image-max-width)))
+    (if-let* ((image (efrit-markdown--make-image file width)))
+        (add-text-properties start end (list 'display image
+                                             'efrit-markdown-image file
+                                             'efrit-markdown-image-width width
+                                             'help-echo (abbreviate-file-name file)))
+      (efrit-markdown--add-face start end 'efrit-markdown-image-alt))))
+
+(defun efrit-markdown--fetch-image (url buffer start end)
+  "Fetch URL in the background; on success show it on START..END of BUFFER.
+START and END are markers."
+  (make-directory efrit-markdown-image-cache-directory t)
+  (let ((file (efrit-markdown--image-cache-file url)))
+    (if (file-exists-p file)
+        (with-current-buffer buffer
+          (let ((inhibit-read-only t)) (efrit-markdown--show-image start end file)))
+      (url-retrieve
+       url
+       (lambda (status)
+         (unwind-protect
+             (unless (plist-get status :error)
+               (goto-char (point-min))
+               (when (re-search-forward "\n\n" nil t)
+                 (let ((coding-system-for-write 'binary))
+                   (write-region (point) (point-max) file nil 'quiet)))
+               (when (and (buffer-live-p buffer) (marker-position start))
+                 (with-current-buffer buffer
+                   (let ((inhibit-read-only t))
+                     (efrit-markdown--show-image start end file)))))
+           (kill-buffer (current-buffer))))
+       nil t t))))
+
+(defun efrit-markdown--pass-images (start end)
+  "![alt](source): the alt text stays; on a graphic display the image
+is drawn over it (`display'), fetched first when remote."
+  (efrit-markdown--pass-regexp
+   start end "!\\[\\([^][\n]*\\)\\](\\(<[^>\n]+>\\|[^()[:space:]\n]+\\))"
+   (lambda ()
+     (let* ((s (match-beginning 0)) (e (match-end 0))
+            (alt (match-string 1))
+            (source (string-trim (match-string 2) "<" ">"))
+            (label (if (string-empty-p alt) (file-name-nondirectory source) alt)))
+       (delete-region s e)
+       (efrit-markdown--insert-like s (concat "[" label "]"))
+       (let ((ls s) (le (point)))
+         (efrit-markdown--add-face ls le 'efrit-markdown-image-alt)
+         (put-text-property ls le 'efrit-markdown-image-source source)
+         (efrit-markdown--set-frozen ls le t)
+         (when (and efrit-markdown-images (display-graphic-p))
+           (if-let* ((file (efrit-markdown--image-file source)))
+               (efrit-markdown--show-image ls le file)
+             (when (string-match-p "\\`https?://" source)
+               (efrit-markdown--fetch-image source (current-buffer)
+                                            (copy-marker ls) (copy-marker le t))))))))))
 
 (defun efrit-markdown--pass-links (start end)
   "[title](url): the title stays as a link to the url."
@@ -465,10 +723,16 @@ markers.  Safe to call on every streamed chunk."
         (save-restriction
           (widen)
           (let* ((open-fence (efrit-markdown--pass-fences from end-marker complete))
-                 (frontier (efrit-markdown--safe-frontier end-marker complete open-fence))
+                 (open-table (efrit-markdown--pass-tables from end-marker complete))
+                 (frontier (efrit-markdown--safe-frontier
+                            end-marker complete
+                            (if (and open-fence open-table) (min open-fence open-table)
+                              (or open-fence open-table))))
                  (limit (copy-marker frontier t)))
             (when (< from limit)
               (efrit-markdown--pass-headers from limit)
+              (efrit-markdown--pass-images from limit)
+              (efrit-markdown--pass-quotes from limit)
               (efrit-markdown--pass-rules from limit)
               (efrit-markdown--pass-inline-code from limit)
               (efrit-markdown--pass-links from limit)
@@ -481,6 +745,63 @@ markers.  Safe to call on every streamed chunk."
             (set-marker limit nil))))
       (prog1 (marker-position end-marker)
         (unless (markerp end) (set-marker end-marker nil))))))
+
+;;;; Image scaling
+
+(defun efrit-markdown--image-bounds-at (pos)
+  "The (START . END) of the image at POS, or nil."
+  (when (get-text-property pos 'efrit-markdown-image)
+    (cons (or (previous-single-property-change (1+ pos) 'efrit-markdown-image) (point-min))
+          (or (next-single-property-change pos 'efrit-markdown-image) (point-max)))))
+
+(defun efrit-markdown--images-in-buffer ()
+  "Bounds of every image in the buffer."
+  (let ((out nil) (pos (point-min)))
+    (while (setq pos (text-property-not-all pos (point-max) 'efrit-markdown-image nil))
+      (let ((b (efrit-markdown--image-bounds-at pos)))
+        (push b out)
+        (setq pos (cdr b))))
+    (nreverse out)))
+
+(defun efrit-markdown--rescale (bounds factor)
+  "Redraw the image in BOUNDS FACTOR times as wide; nil FACTOR resets."
+  (let* ((start (car bounds))
+         (file (get-text-property start 'efrit-markdown-image))
+         (width (if factor
+                    (max 32 (round (* factor (or (get-text-property start 'efrit-markdown-image-width)
+                                                 efrit-markdown-image-max-width))))
+                  efrit-markdown-image-max-width))
+         (inhibit-read-only t))
+    (put-text-property start (cdr bounds) 'efrit-markdown-image-width width)
+    (efrit-markdown--show-image start (cdr bounds) file)))
+
+(defun efrit-markdown--scale-images (factor)
+  "Scale the image at point, else every image, by FACTOR (nil: reset)."
+  (let ((targets (or (and (efrit-markdown--image-bounds-at (point))
+                          (list (efrit-markdown--image-bounds-at (point))))
+                     (and (> (point) (point-min)) (efrit-markdown--image-bounds-at (1- (point)))
+                          (list (efrit-markdown--image-bounds-at (1- (point)))))
+                     (efrit-markdown--images-in-buffer))))
+    (if (null targets)
+        (message "No images here")
+      (dolist (b targets) (efrit-markdown--rescale b factor))
+      (message "%d image%s at %d px" (length targets) (if (= 1 (length targets)) "" "s")
+               (get-text-property (car (car targets)) 'efrit-markdown-image-width)))))
+
+(defun efrit-markdown-image-scale-increase ()
+  "Widen the image at point (else all images) by one step."
+  (interactive)
+  (efrit-markdown--scale-images efrit-markdown-image-scale-step))
+
+(defun efrit-markdown-image-scale-decrease ()
+  "Narrow the image at point (else all images) by one step."
+  (interactive)
+  (efrit-markdown--scale-images (/ 1.0 efrit-markdown-image-scale-step)))
+
+(defun efrit-markdown-image-scale-reset ()
+  "Draw the image at point (else all images) at the default width."
+  (interactive)
+  (efrit-markdown--scale-images nil))
 
 (defun efrit-markdown-render-string (text)
   "TEXT rendered as Markdown, as a propertized string."
