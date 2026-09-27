@@ -227,6 +227,11 @@ remembered, free text gives a question, \"edit\" opens the manager."
                   "=== ITEM ===\nPer item text.\n=== SUMMARY ===\nSummary text.\n")))
   (should (equal '("A\nB" . "C")
                  (efrit-prompts-parse-suggestion "=== ITEM ===\nA\nB\n\n=== SUMMARY ===\n\nC")))
+  ;; A single prompt: empty or missing SUMMARY block
+  (should (equal '("A" . "") (efrit-prompts-parse-suggestion "=== ITEM ===\nA\n=== SUMMARY ===\n")))
+  (should (equal '("A" . "") (efrit-prompts-parse-suggestion "=== ITEM ===\nA\n=== SUMMARY ===")))
+  (should (equal '("A\nB" . "") (efrit-prompts-parse-suggestion "=== ITEM ===\nA\nB\n")))
+  (should-not (efrit-prompts-parse-suggestion "Here is a better prompt:\nA"))
   (should-not (efrit-prompts-parse-suggestion "Here is a better prompt: ..."))
   (should-not (efrit-prompts-parse-suggestion nil)))
 

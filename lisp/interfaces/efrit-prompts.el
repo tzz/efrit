@@ -489,14 +489,17 @@ SUMMARY block empty."
                                           (if summary
                                               (format "Current SUMMARY part:\n%s\n\nImprove both parts."
                                                       (if (string-empty-p summary) "(none yet)" summary))
-                                            "This is a single-task prompt with no SUMMARY part. Improve the ITEM part and leave the SUMMARY block empty."))))])))
+                                            "This is a single-task prompt with no SUMMARY part. Improve the ITEM part. Still write the === SUMMARY === line, with nothing after it."))))])))
 
 (defun efrit-prompts-parse-suggestion (text)
-  "Parse the model's TEXT into (ITEM . SUMMARY), or nil if it is not in the format."
+  "Parse the model's TEXT into (ITEM . SUMMARY), or nil if it is not in the format.
+SUMMARY is \"\" when the block is empty or missing: for a single prompt
+the model is told to leave it empty and sometimes drops the marker
+too (2026-09-26)."
   (when (and (stringp text)
-             (string-match "=== ITEM ===[ \t]*\n\\(\\(?:.\\|\n\\)*?\\)\n?=== SUMMARY ===[ \t]*\n\\(\\(?:.\\|\n\\)*\\)\\'" text))
+             (string-match "=== ITEM ===[ \t]*\n\\(\\(?:.\\|\n\\)*?\\)\\(?:\n?=== SUMMARY ===[ \t]*\\(?:\n\\(\\(?:.\\|\n\\)*\\)\\)?\\)?\\'" text))
     (cons (string-trim (match-string 1 text))
-          (string-trim (match-string 2 text)))))
+          (string-trim (or (match-string 2 text) "")))))
 
 (defun efrit-prompts--response-text (response)
   "The concatenated text blocks of RESPONSE."
@@ -767,11 +770,14 @@ which the model is told."
     (message "efrit: asking for a better %s…" (plist-get p :name))
     (efrit-prompts-suggest
      (plist-get p :name) (plist-get p :item)
-     (and (not (eq (efrit-prompts-edit--kind p) 'single)) (plist-get p :summary))
+     (and (efrit-prompts-summarizing-p p) (plist-get p :summary))
      purpose
      (lambda (result)
        (if (stringp result)
            (message "efrit-prompts: no suggestion: %s" result)
+         ;; A single prompt keeps its hidden summary text untouched
+         (unless (efrit-prompts-summarizing-p p)
+           (setq result (cons (car result) nil)))
          (when (buffer-live-p editor)
            (with-current-buffer editor
              (setq efrit-prompts-edit--suggestion result))
@@ -834,7 +840,7 @@ lines under the first one, whatever the window width."
                                       'face 'efrit-prompts-name)
                       (propertize "    a accept into the editor   q discard" 'face 'shadow)))
         (efrit-prompts--review-part "Per item" (or (plist-get p :item) "") (car result))
-        (when (or (cdr result) (not (string-empty-p (or (plist-get p :summary) ""))))
+        (when (efrit-prompts-summarizing-p p)
           (efrit-prompts--review-part "Over everything" (or (plist-get p :summary) "") (or (cdr result) "")))
         (efrit-prompts--mirror-faces (point-min) (point-max))
         (goto-char (point-min))))
