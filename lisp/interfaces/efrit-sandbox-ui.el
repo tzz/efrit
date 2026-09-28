@@ -96,8 +96,20 @@
   (let ((cap (efrit-sandbox-request-cap req))
         (target (efrit-sandbox-request-target req)))
     (pcase cap
-      ('read (format "read files under %s" (abbreviate-file-name target)))
-      ('write (format "write files under %s" (abbreviate-file-name target)))
+      ('read (if (efrit-sandbox-remote-p target)
+                 (format "read files ON HOST %s under %s%s"
+                         (efrit-sandbox-remote-host target)
+                         (file-remote-p target 'localname)
+                         (if (eq (efrit-sandbox-remote-policy target 'read) 'once)
+                             " (this host: one read at a time)" ""))
+               (format "read files under %s" (efrit-sandbox-abbreviate target))))
+      ('write (if (efrit-sandbox-remote-p target)
+                  (format "WRITE files ON HOST %s under %s%s"
+                          (efrit-sandbox-remote-host target)
+                          (file-remote-p target 'localname)
+                          (if (eq (efrit-sandbox-remote-policy target 'write) 'once)
+                              " (this host: one write at a time)" ""))
+                (format "write files under %s" (efrit-sandbox-abbreviate target))))
       ('elisp "evaluate Emacs Lisp (each file/process it touches is still checked)")
       ('shell (cond ((efrit-sandbox-shell-target-p target)
                      (format "run %s" (efrit-sandbox--target-label target)))
@@ -168,7 +180,7 @@ each line is chopped to the frame width."
 
 (defun efrit-sandbox-ui--project-label ()
   (format "this project (%s, saved)"
-          (abbreviate-file-name (directory-file-name (efrit-sandbox-project-root)))))
+          (efrit-sandbox-abbreviate (directory-file-name (efrit-sandbox-project-root)))))
 
 (defun efrit-sandbox-ui--choose (answer)
   (setq efrit-sandbox-ui--answer answer))
@@ -184,7 +196,10 @@ each line is chopped to the frame width."
        (efrit-sandbox-shell-target-p (efrit-sandbox-request-target efrit-sandbox-ui--request))))
 
 (defun efrit-sandbox-ui--once-label ()
-  (if (efrit-sandbox-ui--once-only-p) "once (asks you to confirm the line)" "once"))
+  (if (and efrit-sandbox-ui--request
+           (efrit-sandbox-request-exact-line-p efrit-sandbox-ui--request))
+      "once (asks you to confirm the line)"
+    "once"))
 
 (defun efrit-sandbox-ui-allow-once ()
   "Grant the open request once.
@@ -193,7 +208,7 @@ yes: the menu is one keystroke, and one keystroke is not enough for
 rm -rf."
   (interactive)
   (let ((req efrit-sandbox-ui--request))
-    (if (and req (efrit-sandbox-request-once-only-p req)
+    (if (and req (efrit-sandbox-request-exact-line-p req)
              (not (yes-or-no-p (format "Run exactly this, once: %s ? "
                                        (cdr (efrit-sandbox-request-target req))))))
         (efrit-sandbox-ui--choose nil)
@@ -276,18 +291,21 @@ Returns once/session/project or nil.  Closing the menu any other way
   "Fallback prompt in the echo area when no menu can be shown."
   (let* ((tool (or (efrit-sandbox-request-tool req) "a tool"))
          (once-only (efrit-sandbox-request-once-only-p req))
+         (exact-line (efrit-sandbox-request-exact-line-p req))
          (header (format "Efrit (%s) wants to %s\n" tool (efrit-sandbox-ui--scope-word req)))
          (legend (if once-only
-                     "[o]nce (this line is always asked)  [n]o  [N]o to all this turn  [q]abort turn  [?]details "
+                     (if exact-line
+                         "[o]nce (this line is always asked)  [n]o  [N]o to all this turn  [q]abort turn  [?]details "
+                       "[o]nce (this host allows one at a time)  [n]o  [N]o to all this turn  [q]abort turn  [?]details ")
                    (format "[o]nce  [s]ession  [p]roject %s  [n]o  [N]o to all this turn  [q]abort turn  [?]details "
-                           (abbreviate-file-name (efrit-sandbox-project-root)))))
+                           (efrit-sandbox-abbreviate (efrit-sandbox-project-root)))))
          (keys (if once-only '(?o ?n ?N ?q ??) '(?o ?s ?p ?n ?N ?q ??))))
     (unwind-protect
         (catch 'decided
           (while t
             (pcase (read-char-choice (concat header legend) keys)
               (?o (throw 'decided
-                         (if (and once-only
+                         (if (and exact-line
                                   (not (yes-or-no-p (format "Run exactly this, once: %s ? "
                                                             (cdr (efrit-sandbox-request-target req))))))
                              nil 'once)))
@@ -354,10 +372,10 @@ With FONTIFY, an elisp form is fontified as Emacs Lisp (for display)."
                 (t detail))))
     (concat
      (format "%s wants to %s\nProject: %s" (or tool "a tool") (efrit-sandbox-ui--scope-word req)
-             (abbreviate-file-name (efrit-sandbox-project-root)))
+             (efrit-sandbox-abbreviate (efrit-sandbox-project-root)))
      (cond
       ((and (stringp target) (not (eq cap 'elisp)))
-       (format "\nGrant:   %s" (abbreviate-file-name target)))
+       (format "\nGrant:   %s" (efrit-sandbox-abbreviate target)))
       ((eq cap 'shell)
        (format "\nGrant:   %s" (efrit-sandbox--target-label target)))
       (t ""))

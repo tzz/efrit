@@ -252,16 +252,20 @@ nil.  With COMPLETE, an open fence at the end is rendered as is."
           (goto-char fence-start)))))
     open))
 
-(defconst efrit-markdown--table-row-regexp "^[ \t]*|.*|[ \t]*$"
-  "A pipe table row: starts and ends with a bar.")
+(defconst efrit-markdown--table-row-regexp "^[ \t]*|?[^\n|]*|[^\n]*$"
+  "A pipe table row: at least one bar; the outer bars are optional
+\(GitHub allows `a | b' rows, and models write them).")
 
 (defconst efrit-markdown--table-separator-regexp
-  "^[ \t]*|\\(?:[ \t]*:?-+:?[ \t]*|\\)+[ \t]*$"
-  "The row under the header: bars, dashes, optional colons.")
+  "^[ \t]*|?\\(?:[ \t]*:?-+:?[ \t]*|\\)*[ \t]*:?-+:?[ \t]*|?[ \t]*$"
+  "The row under the header: dashes with optional colons, bar-separated,
+outer bars optional.  Must contain at least one bar overall to be a
+separator (checked by the caller).")
 
 (defun efrit-markdown--table-cells (line)
-  "LINE's cells, trimmed, without the outer bars; `\\|' stays a bar."
-  (let* ((inner (string-trim (string-trim line) "|" "|"))
+  "LINE's cells, trimmed, without the outer bars (when present); `\\|' stays a bar."
+  (let* ((trimmed (string-trim line))
+         (inner (string-trim trimmed "|" "|"))
          (parts (split-string (replace-regexp-in-string "\\\\|" "\x00" inner t t) "|")))
     (mapcar (lambda (c) (string-trim (replace-regexp-in-string "\x00" "|" c t t))) parts)))
 
@@ -345,7 +349,9 @@ may still grow (its last row touches END) unless COMPLETE."
                 (re-search-forward efrit-markdown--table-row-regexp end t))
       (let ((table-start (match-beginning 0)))
         (forward-line 1)
-        (if (not (and (< (point) end) (looking-at efrit-markdown--table-separator-regexp)
+        (if (not (and (< (point) end)
+                      (looking-at efrit-markdown--table-separator-regexp)
+                      (string-match-p "|" (match-string 0))
                       (not (efrit-markdown--span-frozen-p table-start (point)))))
             (goto-char (max (1+ table-start) (point)))
           (forward-line 1)

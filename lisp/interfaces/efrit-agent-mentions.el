@@ -41,6 +41,7 @@
 (require 'dnd)
 (require 'efrit-log)
 (require 'efrit-tool-utils)
+(require 'efrit-vcs)
 
 (declare-function efrit-agent--in-input-region-p "efrit-agent-core")
 (declare-function efrit-agent--get-input "efrit-agent-core")
@@ -181,13 +182,7 @@ Each is ((type . \"image\") (source . ((type . \"base64\") (media_type . M) (dat
       (if (equal root (car efrit-agent-mention--files-cache))
           (cdr efrit-agent-mention--files-cache)
         (let* ((default-directory root)
-               (git (and (file-directory-p (expand-file-name ".git" root))
-                         (executable-find "git")
-                         (with-temp-buffer
-                           (when (zerop (call-process "git" nil t nil "ls-files" "--cached"
-                                                      "--others" "--exclude-standard"))
-                             (split-string (buffer-string) "\n" t)))))
-               (files (or git
+               (files (or (efrit-vcs-files root)
                           (let ((all (directory-files-recursively root "." nil
                                                                   (lambda (d) (not (string-match-p "/\\.\\|/node_modules\\'" d))))))
                             (mapcar (lambda (f) (file-relative-name f root))

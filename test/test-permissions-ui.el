@@ -70,6 +70,18 @@
       (should (cl-find 'efrit-permission-policy (test-perm--rows 'global)
                        :key (lambda (id) (plist-get id :var)))))))
 
+(ert-deftest test-perm-shows-remote-host-policy ()
+  "The global policy section lists the remote default and the host list."
+  (test-perm--in-project
+    (let ((efrit-sandbox-remote-default '(:read ask :write once))
+          (efrit-sandbox-remote-hosts '(("build-box" . (:read allow :write ask)))))
+      (efrit-sandbox root)
+      (with-current-buffer efrit-permissions--buffer
+        (efrit-permissions-toggle-all-projects)
+        (let ((text (buffer-string)))
+          (should (string-match-p "remote hosts *read ask, write once" text))
+          (should (string-match-p "remote host list *build-box r:allow w:ask" text)))))))
+
 (ert-deftest test-perm-marks-and-bulk-revoke ()
   (test-perm--in-project
     (efrit-sandbox-grant 'write root 'project)

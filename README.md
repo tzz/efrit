@@ -415,6 +415,42 @@ The async API is now recommended for all use cases. Use `efrit-do-sync` only if 
 (setq efrit-do-queue-max-size 10)       ; Max commands to queue
 ```
 
+### Version control
+
+The `vcs_status`, `vcs_diff`, `vcs_log` and `vcs_blame` tools, the
+project file list and checkpoints all go through Emacs's VC layer, not
+a `git` subprocess, so they work wherever VC does (local, TRAMP) with
+your VC settings.  A `checkpoint` is a Git stash named
+`efrit-checkpoint <id>: <description>`; you will see it in `git stash
+list` and Magit.  In a tree without Git, checkpoints are file snapshots
+under `.efrit/checkpoints/`.
+
+### Remote hosts (TRAMP)
+
+A path with a TRAMP prefix is on another machine, and the local
+project's default grants never apply to it, even when the project root
+itself is remote.  What the model may read or write there is decided
+per host:
+
+```elisp
+(setq efrit-sandbox-remote-hosts
+      '(("build-box"          . (:read allow :write ask))
+        ("prod-"              . (:read once  :write deny))
+        ("/sudo:"             . (:read deny  :write deny))))
+(setq efrit-sandbox-remote-default '(:read ask :write once))
+```
+
+A host entry matches the TRAMP identity (`/ssh:me@box:`), the host
+name, or a host suffix.  `allow` needs no prompt, `ask` prompts with
+the usual once / session / project scopes, `once` prompts and only a
+one-time grant is offered, `deny` refuses without a prompt.  The
+policy covers every path the sandbox sees: the file tools, elisp
+evaluated by `eval_sexp` (through the file-name handler), buffers
+visiting remote files, and shell commands run in a remote project root
+(governed by the host's write policy).  The sandbox decides lexically
+for remote paths and never opens a connection to ask.  `M-x
+efrit-permissions` shows and edits both variables.
+
 ### Elisp Evaluation Safety
 
 Efrit includes safety controls for `eval_sexp`:

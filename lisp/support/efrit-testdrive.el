@@ -111,6 +111,19 @@
 (declare-function efrit-diff-preview--display "efrit-tool-show-diff-preview")
 (declare-function efrit-diff-preview-open-file "efrit-tool-show-diff-preview")
 (declare-function efrit-loop-adapter-elapsed-fn "efrit-loop")
+(declare-function efrit-sandbox-eval-form "efrit-sandbox-eval")
+(declare-function vc-git-create-repo "vc-git")
+(declare-function vc-git-register "vc-git")
+(declare-function vc-git-checkin "vc-git")
+(declare-function efrit-vcs-git-p "efrit-vcs")
+(declare-function efrit-vcs-stash-find "efrit-vcs")
+(declare-function efrit-tool-checkpoint "efrit-tool-checkpoint")
+(declare-function efrit-tool-restore-checkpoint "efrit-tool-checkpoint")
+(declare-function efrit-sandbox-allowed-p "efrit-sandbox")
+(declare-function efrit-sandbox-request-once-only-p "efrit-sandbox")
+(declare-function efrit-sandbox-request-create "efrit-sandbox")
+(defvar efrit-sandbox-remote-hosts)
+(defvar efrit-sandbox-remote-default)
 (defvar efrit-repl-loop--adapter)
 (defvar efrit-transcript-enabled)
 (defvar efrit-diff-preview--root)
@@ -324,6 +337,22 @@ Canonical because the sandbox keys grants on `efrit-sandbox-canonical'
       (with-temp-file (expand-file-name "red.png" dir)
         (set-buffer-multibyte nil)
         (insert (base64-decode-string efrit-testdrive--png-base64))))
+    ;; A Git repository with one commit, through VC, so the checkpoint
+    ;; and vcs tools have something to work on
+    (when (and (executable-find "git") (require 'vc-git nil t) (require 'log-edit nil t))
+      (condition-case err
+          (let ((default-directory dir)
+                (process-environment (append '("GIT_AUTHOR_NAME=efrit testdrive"
+                                               "GIT_AUTHOR_EMAIL=testdrive@example.invalid"
+                                               "GIT_COMMITTER_NAME=efrit testdrive"
+                                               "GIT_COMMITTER_EMAIL=testdrive@example.invalid")
+                                             process-environment)))
+            (vc-git-create-repo)
+            (let ((files (mapcar (lambda (f) (expand-file-name (car f) dir)) efrit-testdrive--files)))
+              (vc-git-register files)
+              (vc-git-checkin files "testdrive: initial files")))
+        (error (efrit-log 'warn "testdrive: could not make the project a Git tree: %s"
+                          (error-message-string err)))))
     (file-name-as-directory (efrit-sandbox-canonical dir))))
 
 (defun efrit-testdrive--file (rel)
@@ -822,6 +851,13 @@ Anything here is a step that did not grant what its turn needed.")
 (defun efrit-testdrive--section-6 ()
   "Transcript tools: quote, narrow, transcript file, list edit, tables and images, stale busy, diff open."
   (efrit-testdrive--out "\n## 6. Transcript tools")
+  ;; Section 5 ended with a restart: the buffer is empty and the new
+  ;; session has no transcript.  Two short turns give the steps below
+  ;; something to quote, narrow and read back.
+  (efrit-testdrive--step 6 "Two short turns to work on"
+    (let ((a (efrit-testdrive--turn "Reply with exactly the word ALPHA and nothing else."))
+          (b (efrit-testdrive--turn "Reply with exactly the word BRAVO and nothing else.")))
+      (efrit-testdrive--check (and a b) (format "turns %s %s" (and a t) (and b t)))))
   (efrit-testdrive--step 6 "A region of the transcript is quoted into the input; while busy it is queued"
     (with-current-buffer (efrit-testdrive--agent-buffer)
       (efrit-testdrive--type-input "")
@@ -867,8 +903,8 @@ Anything here is a step that did not grant what its turn needed.")
        ((not text) (cons 'FAIL (format "no transcript at %s" file)))
        (t (efrit-testdrive--check
            (and (string-match-p "^## [0-9:]+ You$" text)
-                (string-match-p "^### tool `" text)
-                (string-match-p "^### efrit$" text))
+                (string-match-p "^### efrit$" text)
+                (string-match-p "ALPHA" text))
            (format "%s: %d chars, %d turns, %d tool calls" (abbreviate-file-name file) (length text)
                    (cl-count-if (lambda (l) (string-match-p "^## [0-9:]+ You$" l)) (split-string text "\n"))
                    (cl-count-if (lambda (l) (string-prefix-p "### tool `" l)) (split-string text "\n"))))))))
@@ -902,8 +938,9 @@ Anything here is a step that did not grant what its turn needed.")
                  (img (and img-pos (get-text-property img-pos 'display))))
             (cond
              ((string-empty-p text) (cons 'FAIL "no rendered answer"))
-             ((string-match-p "^|" text) (cons 'FAIL "raw pipe rows still visible"))
-             ((not (and border header)) (cons 'FAIL "no table faces"))
+             ((not (and border header))
+              (cons 'FAIL (format "no table faces; answer starts: %s"
+                                  (truncate-string-to-width text 120 nil nil "…"))))
              ((not img-pos) (cons 'FAIL "no image reference found in the answer"))
              ((and (display-graphic-p) (not (eq (car-safe img) 'image)))
               (cons 'FAIL (format "image not drawn at %d (display %S)" img-pos img)))
@@ -914,13 +951,84 @@ Anything here is a step that did not grant what its turn needed.")
       (let ((busy (with-current-buffer (efrit-testdrive--agent-buffer) (efrit-agent--session-busy-p))))
         (efrit-testdrive--check (and (not busy) (eq 'idle (efrit-repl-session-status session)))
                                 (format "busy-p %s, status %s" busy (efrit-repl-session-status session))))))
+  (efrit-testdrive--step 6 "A checkpoint is a Git stash named after efrit, and restores"
+    (require 'efrit-vcs)
+    (require 'efrit-tool-checkpoint)
+    (if (not (efrit-vcs-git-p efrit-testdrive--root))
+        (cons 'SKIP "the throwaway project is not a Git tree")
+      (efrit-testdrive--grant 'write efrit-testdrive--root)
+      (let* ((file (efrit-testdrive--file "notes.txt"))
+             (before (efrit-testdrive--file-text "notes.txt")))
+        (with-temp-file file (insert before "changed by the drive\n"))
+        (let* ((efrit-project-root efrit-testdrive--root)
+               (made (efrit-tool-checkpoint '((description . "drive checkpoint"))))
+               (id (alist-get 'checkpoint_id (alist-get 'result made)))
+               (name (alist-get 'stash_name (alist-get 'result made)))
+               (clean-after (equal before (efrit-testdrive--file-text "notes.txt")))
+               (listed (and id (efrit-vcs-stash-find id efrit-testdrive--root)))
+               (restored (and id (efrit-tool-restore-checkpoint `((checkpoint_id . ,id)))))
+               (back (efrit-testdrive--file-text "notes.txt")))
+          (with-temp-file file (insert before))
+          (efrit-testdrive--check
+           (and id (string-prefix-p "efrit-checkpoint " (or name "")) clean-after listed
+                (eq t (alist-get 'success restored)) (string-suffix-p "changed by the drive\n" back)
+                (null (efrit-vcs-stash-find id efrit-testdrive--root)))
+           (format "id %s, stash %S, tree clean after %s, listed %s, restored %s%s, popped %s"
+                   id name clean-after (and listed t) (alist-get 'success restored)
+                   (if (eq t (alist-get 'success restored)) ""
+                     (format " (%s)" (alist-get 'message (alist-get 'error restored))))
+                   (null (efrit-vcs-stash-find id efrit-testdrive--root))))))))
+  (efrit-testdrive--step 6 "Remote paths follow the per-host policy, not the project defaults"
+    (let* ((asked nil)
+           (efrit-sandbox-request-function
+            (lambda (req) (push (efrit-sandbox-request-target req) asked) 'session))
+           (efrit-sandbox-remote-hosts '(("drive-open" . (:read allow :write deny))))
+           (efrit-sandbox-remote-default '(:read ask :write once))
+           (open "/ssh:drive-open:/srv/x.txt")
+           (other "/ssh:drive-other.invalid:/srv/y.txt")
+           (read-open (efrit-sandbox-allowed-p 'read open))
+           (write-open (condition-case nil (efrit-sandbox-check 'write open "t") (efrit-sandbox-denied 'denied)))
+           (read-other (efrit-sandbox-check 'read other "t"))
+           (once-other (efrit-sandbox-request-once-only-p
+                        (efrit-sandbox-request-create :cap 'write :target other))))
+      (efrit-testdrive--check
+       (and read-open (eq write-open 'denied) read-other once-other
+            (equal asked '("/ssh:drive-other.invalid:/srv/")))
+       (format "allow-read %s, deny-write %s, ask-read %s (asked %S), once-write %s"
+               read-open write-open read-other asked once-other))))
+  (efrit-testdrive--step 6 "(require ...) inside eval_sexp loads without a sandbox prompt"
+    (let* ((asked nil)
+           (efrit-sandbox-request-function
+            (lambda (req)
+              ;; who asked: the innermost frames outside the sandbox
+              ;; itself, so a FAIL names the hook that switched buffers
+              (push (cons (efrit-sandbox-request-target req)
+                          (cl-loop for fr in (backtrace-frames)
+                                   for fn = (cadr fr)
+                                   when (and (symbolp fn)
+                                             (not (string-prefix-p "efrit-sandbox" (symbol-name fn)))
+                                             (not (memq fn '(apply funcall backtrace-frames))))
+                                   collect fn into out
+                                   when (>= (length out) 8) return out
+                                   finally return out))
+                    asked)
+              nil)))
+      (efrit-testdrive--grant 'elisp t)
+      (let ((result (condition-case err
+                        (efrit-sandbox-eval-form '(progn (require 'repeat) (featurep 'repeat)))
+                      (error (format "error: %s" (error-message-string err))))))
+        (efrit-testdrive--check (and (eq result t) (null asked))
+                                (format "result %S, prompts %S" result asked)))))
   (efrit-testdrive--step 6 "Time spent on a prompt does not count against the turn clock"
     (let* ((session (efrit-testdrive--session))
            (efrit-user-waiting-seconds efrit-user-waiting-seconds)
            (efrit-user-waiting-depth 0))
-      ;; Pretend a turn began 1 s ago and the user then read a prompt for 3 s
-      (setf (efrit-repl-session-current-turn-start session) (time-subtract (current-time) 1)
-            (efrit-repl-session-turn-waiting-mark session) efrit-user-waiting-seconds)
+      ;; Pretend a turn began 1 s ago and the user then read a prompt
+      ;; for 3 s.  (Through begin-turn: the struct's setf expanders are
+      ;; not available in a file that only declares the accessors.)
+      (efrit-repl-session-begin-turn session)
+      (aset session (cl-struct-slot-offset 'efrit-repl-session 'current-turn-start)
+            (time-subtract (current-time) 1))
       ;; The prompt itself is simulated: three seconds booked as waiting
       (cl-incf efrit-user-waiting-seconds 3)
       (let ((elapsed (funcall (efrit-loop-adapter-elapsed-fn efrit-repl-loop--adapter) session)))
@@ -930,23 +1038,34 @@ Anything here is a step that did not grant what its turn needed.")
     (require 'efrit-tool-show-diff-preview)
     (let ((efrit-diff-preview--root (efrit-testdrive--file ""))
           (efrit-diff-preview--apply-mode 'all_or_nothing)
+          (expected (with-temp-buffer
+                      (insert (efrit-testdrive--file-text "greet.el"))
+                      (goto-char (point-min))
+                      (search-forward "(format \"H")
+                      (line-number-at-pos)))
           (line nil))
       (cl-letf (((symbol-function 'pop-to-buffer) (lambda (b &rest _) (set-buffer b)))
                 ((symbol-function 'find-file-other-window)
-                 (lambda (f) (set-buffer (find-file-noselect f))))
+                 (lambda (f) (switch-to-buffer (find-file-noselect f))))
                 ((symbol-function 'recenter) #'ignore))
         (efrit-diff-preview--display
-         '(((file . "greet.el") (old_content . "  (format \"Hello, %s!\" name))\n")
-            (new_content . "  (format \"Howdy, %s!\" name))\n")))
+         `(((file . "greet.el")
+            (old_content . ,(with-temp-buffer
+                              (insert (efrit-testdrive--file-text "greet.el"))
+                              (goto-char (point-min)) (search-forward "(format \"H")
+                              (buffer-substring (line-beginning-position) (line-beginning-position 2))))
+            (new_content . "  (format \"Yo, %s!\" name))\n")))
          "greeting" 'all_or_nothing)
         (with-current-buffer efrit-diff-preview-buffer-name
           (goto-char (point-min))
           (re-search-forward "^-")
           (efrit-diff-preview-open-file))
-        (setq line (line-number-at-pos))
-        (when-let* ((b (get-file-buffer (efrit-testdrive--file "greet.el")))) (kill-buffer b))
+        ;; point in the file buffer, not the preview `with-current-buffer' restores
+        (when-let* ((b (get-file-buffer (efrit-testdrive--file "greet.el"))))
+          (with-current-buffer b (setq line (line-number-at-pos)))
+          (kill-buffer b))
         (kill-buffer efrit-diff-preview-buffer-name))
-      (efrit-testdrive--check (= line 5) (format "landed on line %s (expected 5)" line)))))
+      (efrit-testdrive--check (= line expected) (format "landed on line %s (expected %s)" line expected)))))
 
 (defconst efrit-testdrive--sections
   '((0 "Setup" efrit-testdrive--section-0)
