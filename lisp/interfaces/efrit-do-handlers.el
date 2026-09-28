@@ -384,12 +384,16 @@ blocks inside `call-process'.  This loop checks the clock between
                                  :connection-type 'pipe)))
            (deadline (+ (float-time) timeout)))
       (set-process-query-on-exit-flag proc nil)
-      (while (process-live-p proc)
-        (accept-process-output proc 0.2)
-        (when (and (process-live-p proc)
-                   (> (float-time) deadline))
-          (delete-process proc)
-          (signal 'efrit-shell-timeout (list command))))
+      ;; C-g while waiting must kill the command, not leave it running
+      ;; against a dead buffer
+      (unwind-protect
+          (while (process-live-p proc)
+            (accept-process-output proc 0.2)
+            (when (and (process-live-p proc)
+                       (> (float-time) deadline))
+              (delete-process proc)
+              (signal 'efrit-shell-timeout (list command))))
+        (when (process-live-p proc) (delete-process proc)))
       (buffer-string))))
 
 (defun efrit-do--handle-shell-exec (input-str)
@@ -401,7 +405,11 @@ With the scope sandbox on, the command names on the line need a
 the sandbox the legacy whitelist applies.
 Returns output or security error."
   (when (bound-and-true-p efrit-sandbox-enabled)
-    (efrit-sandbox-check 'shell input-str "shell_exec" input-str))
+    (efrit-sandbox-check 'shell input-str "shell_exec" input-str)
+    ;; the user may have rewritten the line at the prompt
+    (when-let* ((edited (efrit-sandbox-take-edited-input "shell_exec")))
+      (efrit-log 'info "shell_exec: running the user's edited line instead of the model's")
+      (setq input-str edited)))
   (let ((validation (if (bound-and-true-p efrit-sandbox-enabled)
                         (cons t nil)
                       (efrit-do--validate-shell-command input-str))))

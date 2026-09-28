@@ -370,7 +370,31 @@ GRANTS `unset' removes the override."
 ;; request target.
 
 (cl-defstruct (efrit-sandbox-request (:constructor efrit-sandbox-request-create))
-  cap target tool detail)
+  cap target tool detail
+  ;; set by the prompt when the user edited the shell line or form
+  ;; before allowing it; the tool runs the edited text instead
+  edited)
+
+(defvar efrit-sandbox--edited-input nil
+  "The text the user edited at the last prompt, for the tool that asked.
+\(TOOL . TEXT); taken once by `efrit-sandbox-take-edited-input'.")
+
+(defun efrit-sandbox-take-edited-input (tool)
+  "The edited input the user supplied at TOOL's prompt just now, or nil.
+Consumed: a second call returns nil.  Callers: shell_exec runs the
+edited command line, eval_sexp reads the edited form."
+  (when (and efrit-sandbox--edited-input
+             (equal (car efrit-sandbox--edited-input) tool))
+    (prog1 (cdr efrit-sandbox--edited-input)
+      (setq efrit-sandbox--edited-input nil))))
+
+(defun efrit-sandbox-request-editable-p (req)
+  "Non-nil if REQ is one whose input the user can edit before allowing:
+a shell command line or an elisp form."
+  (and (memq (efrit-sandbox-request-cap req) '(shell elisp))
+       (stringp (efrit-sandbox-request-detail req))
+       (not (string-empty-p (efrit-sandbox-request-detail req)))
+       (member (efrit-sandbox-request-tool req) '("shell_exec" "eval_sexp"))))
 
 (defvar efrit-sandbox--session-grants (make-hash-table :test 'equal)
   "Project root -> list of grant plists valid for this Emacs session.")
@@ -846,6 +870,11 @@ With `efrit-sandbox-enabled' nil this is a no-op that returns t."
           (when (and (memq scope '(session project))
                      (efrit-sandbox-request-once-only-p req))
             (setq scope 'once))
+          ;; An edited input applies to this run only, whatever scope
+          ;; was chosen: the grant would cover the original line
+          (when (efrit-sandbox-request-edited req)
+            (setq efrit-sandbox--edited-input (cons tool (efrit-sandbox-request-edited req)))
+            (when (memq scope '(session project)) (setq scope 'once)))
           (if (memq scope '(once session project))
               (progn
                 (efrit-sandbox-grant cap (efrit-sandbox-request-target req) scope root)

@@ -455,12 +455,16 @@ who rebinds them sees their own keys."
                 ;; prefer the shifted/chorded key when several are bound:
                 ;; "S-RET" is what a chat user looks for, "C-j" is not
                 (let* ((keys (and map (where-is-internal cmd map)))
-                       (k (or (cl-find-if (lambda (k) (string-prefix-p "S-" (key-description k)))
-                                          keys)
-                              (car keys))))
-                  (if k (key-description k) fallback)))))
+                       (descs (mapcar #'key-description keys))
+                       ;; "S-RET" over "S-<return>", "RET" over "<return>":
+                       ;; the plain names read better; the shifted one first
+                       (k (or (cl-find-if (lambda (d) (and (string-prefix-p "S-" d) (not (string-match-p "<" d)))) descs)
+                              (cl-find-if (lambda (d) (string-prefix-p "S-" d)) descs)
+                              (cl-find-if (lambda (d) (not (string-match-p "<" d))) descs)
+                              (car descs))))
+                  (or k fallback)))))
     (format "%s sends · %s newline · %s steers · C-c ? menu"
-            (funcall key 'efrit-agent-input-send-or-newline "RET")
+            (funcall key 'efrit-agent-input-send "RET")
             (funcall key 'efrit-agent-input-newline "S-RET")
             (funcall key 'efrit-agent-input-send-override "M-RET"))))
 

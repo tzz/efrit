@@ -402,6 +402,10 @@ instead of `eval' (the caller's timeout/input-blocking wrapper)."
   ;; The detail is the form itself: that is what the user is deciding
   ;; about.  Pretty-printed and capped so a huge form stays readable.
   (efrit-sandbox-check 'elisp t "eval_sexp" (efrit-sandbox-eval--describe-form form))
+  ;; the user may have rewritten the form at the prompt
+  (when-let* ((edited (efrit-sandbox-take-edited-input "eval_sexp")))
+    (efrit-log 'info "eval_sexp: evaluating the user's edited form instead of the model's")
+    (setq form (car (read-from-string edited))))
   (when-let* ((why (efrit-sandbox-eval-inspect form)))
     (efrit-log 'warn "sandbox: refused eval form: %s" why)
     (signal 'efrit-sandbox-denied

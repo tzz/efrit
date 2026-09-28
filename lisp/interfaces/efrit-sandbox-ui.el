@@ -223,6 +223,39 @@ always-ask lines stay excluded from it."
     (setf (efrit-sandbox-request-target efrit-sandbox-ui--request) t)
     (efrit-sandbox-ui--choose 'session)))
 
+(declare-function efrit-edit-in-buffer "efrit-ui-helpers")
+
+(defun efrit-sandbox-ui--editable-p ()
+  "Non-nil when the open request's input can be edited before allowing."
+  (and efrit-sandbox-ui--request
+       (efrit-sandbox-request-editable-p efrit-sandbox-ui--request)))
+
+(defun efrit-sandbox-ui-edit-then-allow ()
+  "Edit the shell line or the form of the open request, then allow it once.
+The tool runs what you wrote instead of what the model sent.  C-c C-k
+in the editor refuses the request (a cancelled edit is a no, not an
+escape that leaves the tool hanging)."
+  (interactive)
+  (require 'efrit-ui-helpers)
+  (let* ((req efrit-sandbox-ui--request)
+         (cap (efrit-sandbox-request-cap req))
+         (text (efrit-sandbox-request-detail req))
+         (edited (condition-case nil
+                     (efrit-edit-in-buffer
+                      ;; the elisp detail may carry a cut note; the form is
+                      ;; what the model sent, complete
+                      (if (eq cap 'elisp)
+                          (replace-regexp-in-string "\n… \\[[0-9]+ more chars\\]\\'" "" text)
+                        text)
+                      (if (eq cap 'shell) "the shell command" "the Lisp form")
+                      (if (eq cap 'elisp) 'emacs-lisp-mode 'sh-mode))
+                   (quit nil))))
+    (if (or (null edited) (string-empty-p (string-trim edited)))
+        (progn (message "Edit cancelled: request refused")
+               (efrit-sandbox-ui--choose nil))
+      (setf (efrit-sandbox-request-edited req) (string-trim-right edited))
+      (efrit-sandbox-ui--choose 'once))))
+
 (defun efrit-sandbox-ui--exit-recursive-edit ()
   "Leave the recursive edit that waits on the menu, if we are in it."
   (when (and efrit-sandbox-ui--depth
@@ -246,6 +279,9 @@ always-ask lines stay excluded from it."
              :if-not efrit-sandbox-ui--once-only-p)
             ("a" "any shell command, for this session" efrit-sandbox-ui-widen-to-any-shell
              :if efrit-sandbox-ui--shell-list-p)]
+           ["Edit"
+            ("e" "edit the command / form, then run it once" efrit-sandbox-ui-edit-then-allow
+             :if efrit-sandbox-ui--editable-p)]
            ["Refuse"
             ("n" "no, the model continues without it"
              (lambda () (interactive) (efrit-sandbox-ui--choose nil)))
@@ -299,7 +335,10 @@ Returns once/session/project or nil.  Closing the menu any other way
                        "[o]nce (this host allows one at a time)  [n]o  [N]o to all this turn  [q]abort turn  [?]details ")
                    (format "[o]nce  [s]ession  [p]roject %s  [n]o  [N]o to all this turn  [q]abort turn  [?]details "
                            (efrit-sandbox-abbreviate (efrit-sandbox-project-root)))))
-         (keys (if once-only '(?o ?n ?N ?q ??) '(?o ?s ?p ?n ?N ?q ??))))
+         (editable (efrit-sandbox-request-editable-p req))
+         (legend (if editable (concat legend "[e]dit then run once ") legend))
+         (keys (append (if once-only '(?o ?n ?N ?q ??) '(?o ?s ?p ?n ?N ?q ??))
+                       (and editable '(?e)))))
     (unwind-protect
         (catch 'decided
           (while t
@@ -311,6 +350,9 @@ Returns once/session/project or nil.  Closing the menu any other way
                              nil 'once)))
               (?s (throw 'decided 'session))
               (?p (throw 'decided 'project))
+              (?e (let ((efrit-sandbox-ui--request req))
+                    (efrit-sandbox-ui-edit-then-allow)
+                    (throw 'decided efrit-sandbox-ui--answer)))
               (?n (throw 'decided nil))
               (?N (efrit-sandbox-deny-rest-of-turn) (throw 'decided nil))
               (?q (efrit-sandbox-abort-turn) (throw 'decided nil))

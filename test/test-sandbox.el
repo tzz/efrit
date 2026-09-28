@@ -490,6 +490,29 @@ nothing; the same switch written by the model still does."
         (ignore-errors (delete-file outside))
         (ignore-errors (delete-directory libdir t))))))
 
+(ert-deftest test-sb-edit-before-allow-runs-the-edited-input-once ()
+  "A prompt function that edits the request makes the tool run the
+edited text, once, whatever scope it also chose; the edited text is
+consumed by the asking tool only."
+  (test-sb--in-project
+    (let* ((efrit-sandbox-request-function
+            (lambda (req)
+              (when (efrit-sandbox-request-editable-p req)
+                (setf (efrit-sandbox-request-edited req) "(+ 40 2)"))
+              'session)))
+      (efrit-sandbox-store-ensure-loaded root)
+      ;; eval: the edited form is what runs
+      (should (= 42 (efrit-sandbox-eval-form '(+ 1 1))))
+      ;; consumed: no leftover for another tool
+      (should-not (efrit-sandbox-take-edited-input "shell_exec"))
+      ;; and the grant was downgraded to once: the next eval asks again
+      (should-not (efrit-sandbox-allowed-p 'elisp t))
+      ;; editability: shell and elisp with a detail; not a read
+      (should (efrit-sandbox-request-editable-p
+               (efrit-sandbox-request-create :cap 'shell :target '(shell "ls") :tool "shell_exec" :detail "ls -l")))
+      (should-not (efrit-sandbox-request-editable-p
+                   (efrit-sandbox-request-create :cap 'read :target "/x" :tool "read_file" :detail "read /x"))))))
+
 (ert-deftest test-sb-no-prompt-with-quits-inhibited ()
   "A request that would need a prompt while `inhibit-quit' is set is
 denied without calling the prompt function."
@@ -511,6 +534,9 @@ in a remote root.  No TRAMP connection is made (paths are on a host
 that does not exist; nothing here touches the file)."
   (test-sb--in-project
     (let* ((asked nil) (answer 'session)
+           ;; when efrit-context-sources is loaded, the "target buffer"
+           ;; is the current one: that would allow any buffer here
+           (efrit-sandbox-target-buffer-function nil)
            (efrit-sandbox-request-function
             (lambda (req) (push (cons (efrit-sandbox-request-cap req)
                                       (efrit-sandbox-request-target req))

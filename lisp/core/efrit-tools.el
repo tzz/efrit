@@ -47,6 +47,7 @@
 (require 'cl-lib)
 (require 'auth-source)
 (require 'efrit-todo)
+(require 'efrit-elisp-fix)
 
 ;; Load efrit-log if it exists, otherwise use minimal logging
 (declare-function efrit-log "efrit-log")
@@ -295,6 +296,9 @@ non-nil."
 
 ;; Security validation completely removed
 
+(defvar efrit-tools--eval-fix-note nil
+  "What `efrit-elisp-fix' did to the expression being evaluated, for the result.")
+
 (defun efrit-tools-eval-sexp (sexp-string)
   "Evaluate the Lisp expression in SEXP-STRING and return the result as a string.
 Handles parsing, evaluation, error handling, and result formatting."
@@ -316,6 +320,15 @@ Handles parsing, evaluation, error handling, and result formatting."
   ;; Increment rate limit counter
   (efrit-tools--increment-rate-limit "eval_sexp")
 
+  ;; Unbalanced parens are fixed before the read when the fix reads;
+  ;; the result says so, so the model sees what it sent was off
+  (let ((fix (and (not (condition-case nil (progn (efrit-tools--safe-read sexp-string) t) (error nil)))
+                  (efrit-elisp-fix sexp-string))))
+    (when fix
+      (efrit-log 'info "eval_sexp: %s" (cdr fix))
+      (setq efrit-tools--eval-fix-note (cdr fix)
+            sexp-string (car fix))))
+
   (let ((result-data (condition-case err
                          (efrit-tools--eval-with-context
                           (efrit-tools--parse-sexp-string sexp-string))
@@ -325,11 +338,17 @@ Handles parsing, evaluation, error handling, and result formatting."
                        (error (efrit-tools--handle-eval-error err sexp-string)))))
 
     ;; Return formatted result
-    (if (plist-get result-data :success)
-        (format "%s" (plist-get result-data :result))
-      (format "Error evaluating %s: %s"
-              (efrit-truncate-string (plist-get result-data :input) 30)
-              (plist-get result-data :error)))))
+    (prog1
+        (concat
+         (if (plist-get result-data :success)
+             (format "%s" (plist-get result-data :result))
+           (format "Error evaluating %s: %s"
+                   (efrit-truncate-string (plist-get result-data :input) 30)
+                   (plist-get result-data :error)))
+         (when efrit-tools--eval-fix-note
+           (format "\n[Your expression was unbalanced: %s. Fixed before evaluation; write balanced Lisp.]"
+                   efrit-tools--eval-fix-note)))
+      (setq efrit-tools--eval-fix-note nil))))
 
 ;;; Safe Text Manipulation Functions
 

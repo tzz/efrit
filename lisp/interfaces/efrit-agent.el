@@ -43,6 +43,11 @@
 (require 'efrit-agent-input)
 (require 'efrit-agent-menu)
 (require 'efrit-transcript)
+(require 'efrit-notify)
+(require 'efrit-presets)
+(require 'efrit-scope)
+(require 'efrit-rewrite)
+(require 'efrit-commit)
 (require 'efrit-repl-loop)
 (declare-function efrit-session-active "efrit-session")
 (require 'efrit-agent-integration)
@@ -290,6 +295,9 @@
     (define-key map (kbd "C-c C-i") #'efrit-agent-copy-session-id)
     (define-key map (kbd "C-c C-x") #'efrit-agent-restart)
     (define-key map (kbd "C-c C-y") #'efrit-agent-quote-region)
+    (define-key map (kbd "C-c C-.") #'efrit-agent-regenerate)
+    (define-key map (kbd "C-c C-b") #'efrit-markdown-copy-block)
+    (define-key map (kbd "C-c C-j") #'efrit-markdown-insert-block-other-window)
     (define-key map (kbd "C-c C-f") #'efrit-transcript-open)
     (define-key map (kbd "C-c C-z") #'efrit-agent-narrow-to-turns)
     (define-key map (kbd "C-c C-a") #'efrit-agent-widen)
@@ -860,30 +868,6 @@ Reads from the input region and routes to appropriate handler
   "Abort the current operation."
   (interactive)
   (efrit-agent-cancel))
-
-(defun efrit-agent-select-option-1 ()
-  "Select option 1."
-  (interactive)
-  (unless (efrit-agent--select-option 1)
-    (message "No option 1 available")))
-
-(defun efrit-agent-select-option-2 ()
-  "Select option 2."
-  (interactive)
-  (unless (efrit-agent--select-option 2)
-    (message "No option 2 available")))
-
-(defun efrit-agent-select-option-3 ()
-  "Select option 3."
-  (interactive)
-  (unless (efrit-agent--select-option 3)
-    (message "No option 3 available")))
-
-(defun efrit-agent-select-option-4 ()
-  "Select option 4."
-  (interactive)
-  (unless (efrit-agent--select-option 4)
-    (message "No option 4 available")))
 
 (defun efrit-agent-inject-guidance ()
   "Inject guidance into the current session.

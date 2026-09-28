@@ -966,7 +966,7 @@ idle; when busy it is queued with an optional trailer."
     (efrit-agent-input-newline)
     (should (equal "- one\n- " (efrit-agent--get-input-raw)))
     (insert "two")
-    (efrit-agent-input-tab)
+    (efrit-agent-input-indent-item)
     (should (equal "- one\n  - two" (efrit-agent--get-input-raw)))
     (efrit-agent-input-dedent-item)
     (should (equal "- one\n- two" (efrit-agent--get-input-raw)))
@@ -983,6 +983,80 @@ idle; when busy it is queued with an optional trailer."
     (efrit-agent-input-newline)
     (should (equal "plain\n" (efrit-agent--get-input-raw)))
     (efrit-agent--clear-input)))
+
+(ert-deftest test-efrit-agent-keys-resolve-by-context ()
+  "RET, TAB and the digits are menu-item filters: `key-binding' shows
+the command that will run, and a key that does not apply falls
+through to the next map (the major mode's RET, self-insert for digits)."
+  (with-efrit-agent-test-buffer
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions)
+    ;; in the input: RET sends, a digit types itself, TAB completes
+    (goto-char (point-max))
+    (efrit-agent-input-mode 1)
+    (should (eq (key-binding (kbd "RET")) #'efrit-agent-input-send))
+    (should (eq (key-binding (kbd "1")) #'self-insert-command))
+    (should (eq (key-binding (kbd "TAB")) #'completion-at-point))
+    ;; on a list item TAB indents
+    (insert "- item")
+    (should (eq (key-binding (kbd "TAB")) #'efrit-agent-input-indent-item))
+    (efrit-agent--clear-input)
+    ;; a pending question with two options: 1 and 2 answer, 3 types
+    (setq efrit-agent--status 'waiting
+          efrit-agent--pending-question (list "Which?" '("red" "blue") "now"))
+    (should (commandp (key-binding (kbd "1"))))
+    (should-not (eq (key-binding (kbd "1")) #'self-insert-command))
+    (should (eq (key-binding (kbd "3")) #'self-insert-command))
+    (setq efrit-agent--status 'idle efrit-agent--pending-question nil)
+    ;; in the conversation: the major mode's RET
+    (efrit-agent-input-mode -1)
+    (goto-char (point-min))
+    (should (eq (key-binding (kbd "RET")) #'efrit-agent-toggle-expand))))
+
+(ert-deftest test-efrit-agent-regenerate-replaces-only-on-success ()
+  "Regenerate rewinds the history to before the last user message and
+resends it; the old exchange is deleted when the new turn ends well
+and kept when it fails."
+  (with-efrit-agent-test-buffer
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions)
+    (let* ((session (efrit-repl-session-create default-directory))
+           (sent nil))
+      (setq efrit-agent--repl-session session)
+      (setf (efrit-repl-session-buffer session) (current-buffer))
+      ;; a prior exchange in history and transcript
+      (efrit-repl-session-add-user-message session "first q")
+      (efrit-repl-session-add-assistant-message session "old answer")
+      (efrit-agent--add-user-message "first q")
+      (efrit-agent--append-to-conversation "old answer\n" '(efrit-type claude-message efrit-id "m1"))
+      ;; the send stub does what the real one does to the history
+      (cl-letf (((symbol-function 'efrit-agent--repl-send)
+                 (lambda (input &optional _api)
+                   (setq sent input)
+                   (efrit-repl-session-add-user-message session input)
+                   t)))
+        (efrit-agent-regenerate))
+      (should (equal "first q" sent))
+      ;; history rewound to before the old pair, then the question re-added
+      (should (= 1 (length (efrit-repl-session-api-messages session))))
+      ;; transcript: old exchange still there plus the new user line
+      (should (= 2 (length (efrit-agent--turn-starts))))
+      (should (string-match-p "old answer" (buffer-string)))
+      ;; a failed turn keeps it: both user lines stay
+      (efrit-agent--on-turn-complete session "api-error")
+      (should (string-match-p "old answer" (buffer-string)))
+      (should-not efrit-agent--regenerate)
+      (should (= 2 (length (efrit-agent--turn-starts))))
+      ;; a fresh exchange, regenerated with success: only it is replaced
+      (efrit-repl-session-add-assistant-message session "second answer")
+      (efrit-agent--append-to-conversation "second answer\n" '(efrit-type claude-message efrit-id "m2"))
+      (cl-letf (((symbol-function 'efrit-agent--repl-send)
+                 (lambda (input &optional _api) (efrit-repl-session-add-user-message session input) t)))
+        (efrit-agent-regenerate))
+      (efrit-agent--on-turn-complete session "end_turn")
+      (should-not (string-match-p "second answer" (buffer-string)))
+      (should (string-match-p "old answer" (buffer-string)))
+      (should (= 2 (length (efrit-agent--turn-starts)))))))
 
 (ert-deftest test-efrit-agent-user-turn-keeps-prefix-and-text-faces ()
   "The user block background is layered under the prompt/text faces, not over them."

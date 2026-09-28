@@ -578,9 +578,15 @@ TEXT-ONLY forces the glyph (for places that cannot show an image)."
                       efrit-agent--spinner-frames-ascii)))
         (aref frames (mod efrit-agent--spinner-index (length frames))))))
 
-(defun efrit-agent--spinner-tick (buffer)
-  "Advance the spinner in BUFFER and refresh its header-line."
-  (when (buffer-live-p buffer)
+(defun efrit-agent--spinner-tick (buffer timer)
+  "Advance the spinner in BUFFER and refresh its header-line.
+TIMER is the timer this tick belongs to: a tick that finds its buffer
+dead or its label cleared cancels that exact timer, so no repeating
+timer outlives the buffer (the buffer-local variable that held it is
+gone with the buffer; after copilot-chat's thinking indicator,
+2026-09-28)."
+  (if (not (buffer-live-p buffer))
+      (cancel-timer timer)
     (with-current-buffer buffer
       (if efrit-agent--thinking-label
           (progn
@@ -590,9 +596,9 @@ TEXT-ONLY forces the glyph (for places that cannot show an image)."
             ;; every window: the global mode-line spinner lives in
             ;; all of them (efrit-agent-spinner-mode-line-string)
             (force-mode-line-update t))
-        ;; Stale tick after the label was cleared — stop the timer
-        (when efrit-agent--spinner-timer
-          (cancel-timer efrit-agent--spinner-timer)
+        ;; Stale tick after the label was cleared: stop this timer
+        (cancel-timer timer)
+        (when (eq efrit-agent--spinner-timer timer)
           (setq efrit-agent--spinner-timer nil))))))
 
 (defun efrit-agent--spinner-start (&optional label)
@@ -606,9 +612,12 @@ Call in the agent buffer when an API call starts."
   (setq efrit-agent--spinner-index 0)
   (when efrit-agent--spinner-timer
     (cancel-timer efrit-agent--spinner-timer))
-  (setq efrit-agent--spinner-timer
-        (run-at-time 0 efrit-agent-spinner-interval
-                     #'efrit-agent--spinner-tick (current-buffer)))
+  ;; The timer is created idle, then pointed at itself, so each tick
+  ;; can cancel the very timer that fired it
+  (let ((timer (run-at-time 0 efrit-agent-spinner-interval #'ignore))
+        (buffer (current-buffer)))
+    (timer-set-function timer #'efrit-agent--spinner-tick (list buffer timer))
+    (setq efrit-agent--spinner-timer timer))
   (force-mode-line-update))
 
 (defun efrit-agent--spinner-stop ()

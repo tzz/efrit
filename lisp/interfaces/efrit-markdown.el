@@ -427,8 +427,78 @@ LANG, on a block background, with the language as a small label."
                              append (list k v))))
           (when keep (add-text-properties start end keep)))
         (efrit-markdown--add-face start end 'efrit-markdown-code-block)
-        (add-text-properties start end (list efrit-markdown--frozen t 'fontified t))
+        ;; One id per block, and the body text kept raw, so commands
+        ;; can act on "the block at point" without re-reading the
+        ;; fontified display
+        (add-text-properties start end (list efrit-markdown--frozen t 'fontified t
+                                             'efrit-markdown-block
+                                             (list (or lang "")
+                                                   (concat (string-trim-right body "\n+") "\n"))))
         (goto-char end)))))
+
+;;;; Code blocks as things
+
+(defun efrit-markdown-block-at (&optional pos)
+  "The code block at POS (default point) as (LANG . BODY), or nil."
+  (when-let* ((b (get-text-property (or pos (point)) 'efrit-markdown-block)))
+    (cons (nth 0 b) (nth 1 b))))
+
+(defun efrit-markdown-blocks (&optional start end)
+  "Every code block in START..END (default the buffer), in order, as (LANG . BODY)."
+  (let ((pos (or start (point-min))) (end (or end (point-max))) (out nil) (last nil))
+    (while (setq pos (text-property-not-all pos end 'efrit-markdown-block nil))
+      (let ((b (get-text-property pos 'efrit-markdown-block)))
+        (unless (eq b last)
+          (push (cons (nth 0 b) (nth 1 b)) out)
+          (setq last b)))
+      (setq pos (or (next-single-property-change pos 'efrit-markdown-block nil end) end)))
+    (nreverse out)))
+
+(defun efrit-markdown--block-label (block n)
+  "A completion label for BLOCK number N: its language and first line."
+  (format "%d: [%s] %s" n (if (string-empty-p (car block)) "code" (car block))
+          (truncate-string-to-width (car (split-string (cdr block) "\n" t)) 60 nil nil "…")))
+
+(defun efrit-markdown-read-block (&optional prompt)
+  "The block at point, else one chosen by completion over the buffer's blocks."
+  (or (efrit-markdown-block-at)
+      (let ((blocks (efrit-markdown-blocks)))
+        (cond
+         ((null blocks) (user-error "No code block here"))
+         ((null (cdr blocks)) (car blocks))
+         (t (let* ((labels (cl-loop for b in blocks for i from 1 collect (cons (efrit-markdown--block-label b i) b)))
+                   (choice (completing-read (or prompt "Code block: ") labels nil t)))
+              (cdr (assoc choice labels))))))))
+
+(defun efrit-markdown-copy-block ()
+  "Copy the code block at point (or a chosen one) to the kill ring."
+  (interactive)
+  (let ((block (efrit-markdown-read-block "Copy block: ")))
+    (kill-new (cdr block))
+    (message "Copied %d lines of %s" (length (split-string (cdr block) "\n" t))
+             (if (string-empty-p (car block)) "code" (car block)))))
+
+(defun efrit-markdown-insert-block-other-window (&optional then-return)
+  "Insert the code block at point (or a chosen one) at point in the other window.
+The other window's buffer gets the text at its point; focus stays here
+unless THEN-RETURN is nil and a prefix argument was given."
+  (interactive "P")
+  (let* ((block (efrit-markdown-read-block "Insert block: "))
+         (here (current-buffer))
+         (win (seq-find (lambda (w) (not (eq (window-buffer w) here)))
+                        (list (next-window nil 'no-minibuf) (get-mru-window nil nil t))))
+         (target (and win (window-buffer win))))
+    (unless target
+      (user-error "No other window to insert into"))
+    (with-current-buffer target
+      (when buffer-read-only (user-error "%s is read-only" (buffer-name)))
+      (save-excursion
+        (goto-char (window-point win))
+        (insert (cdr block))
+        (unless (string-suffix-p "\n" (cdr block)) (insert "\n"))
+        (set-window-point win (point))))
+    (message "Inserted %d lines into %s" (length (split-string (cdr block) "\n" t)) (buffer-name target))
+    (when then-return (select-window win))))
 
 (defun efrit-markdown--pass-regexp (start end regexp function)
   "Call FUNCTION at every match of REGEXP in START..END outside frozen text.

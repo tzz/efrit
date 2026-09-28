@@ -33,6 +33,10 @@
 (defvar efrit-agent--repl-session)
 (declare-function efrit-repl-session-queue "efrit-repl-session")
 (declare-function efrit-repl-session-status "efrit-repl-session")
+(defvar efrit-preset-current)
+(declare-function efrit-preset-apply "efrit-presets")
+(declare-function efrit-markdown-copy-block "efrit-markdown")
+(declare-function efrit-markdown-insert-block-other-window "efrit-markdown")
 
 (defun efrit-agent-menu--key (command)
   "The key COMMAND is on in the agent buffer, as a short string, or \"\"."
@@ -68,6 +72,7 @@
        ("u" efrit-agent-queue-show :description (lambda () (efrit-agent-menu--desc "queued inputs: show / drop" 'efrit-agent-queue-show)))
        ("U" efrit-agent-queue-resume :description (lambda () (efrit-agent-menu--desc "send the next queued input" 'efrit-agent-queue-resume)))
        ("y" efrit-agent-copy-last-output :description (lambda () (efrit-agent-menu--desc "copy the last answer" 'efrit-agent-copy-last-output)))
+       ("g" efrit-agent-regenerate :description (lambda () (efrit-agent-menu--desc "ask the last question again (C-u: edit it)" 'efrit-agent-regenerate)))
        ("Q" efrit-agent-quote-region :description (lambda () (efrit-agent-menu--desc "quote the region into the input" 'efrit-agent-quote-region)))]
       ["Tool rows"
        ("RET" efrit-agent-toggle-expand :description (lambda () (efrit-agent-menu--desc "fold / unfold the row at point" 'efrit-agent-toggle-expand)))
@@ -76,12 +81,14 @@
        ("n" efrit-agent-next-tool :description (lambda () (efrit-agent-menu--desc "next row" 'efrit-agent-next-tool)) :transient t)
        ("b" efrit-agent-previous-tool :description (lambda () (efrit-agent-menu--desc "previous row" 'efrit-agent-previous-tool)) :transient t)
        ("o" efrit-agent-open-at-point :description (lambda () (efrit-agent-menu--desc "open the row's file / report" 'efrit-agent-open-at-point)))
-       ("w" efrit-agent-copy-tool-output :description (lambda () (efrit-agent-menu--desc "copy the row's output" 'efrit-agent-copy-tool-output)))]
+       ("w" efrit-agent-copy-tool-output :description (lambda () (efrit-agent-menu--desc "copy the row's output" 'efrit-agent-copy-tool-output)))
+       ("B" efrit-markdown-copy-block :description (lambda () (efrit-agent-menu--desc "copy the code block at point (or pick one)" 'efrit-markdown-copy-block)))
+       ("J" efrit-markdown-insert-block-other-window :description (lambda () (efrit-agent-menu--desc "insert the code block into the other window" 'efrit-markdown-insert-block-other-window)))]
       ["View"
        ("v" efrit-agent-cycle-verbosity :description (lambda () (efrit-agent-menu--desc "verbosity" 'efrit-agent-cycle-verbosity)) :transient t)
        ("m" efrit-agent-cycle-display-mode :description (lambda () (efrit-agent-menu--desc "which rows unfold by default" 'efrit-agent-cycle-display-mode)) :transient t)
        ("h" efrit-agent-cycle-header-style :description (lambda () (efrit-agent-menu--desc "header style" 'efrit-agent-cycle-header-style)) :transient t)
-       ("g" efrit-agent-refresh :description (lambda () (efrit-agent-menu--desc "refresh the header" 'efrit-agent-refresh)))
+       ("G" efrit-agent-refresh :description (lambda () (efrit-agent-menu--desc "refresh the header" 'efrit-agent-refresh)))
        ("z" efrit-agent-narrow-to-turns :description (lambda () (efrit-agent-menu--desc "narrow to the last turn (C-u N: last N)" 'efrit-agent-narrow-to-turns)))
        ("a" efrit-agent-widen :description (lambda () (efrit-agent-menu--desc "widen: the whole conversation" 'efrit-agent-widen)))
        ("f" efrit-transcript-open :description (lambda () (efrit-agent-menu--desc "open this session's transcript file" 'efrit-transcript-open)))
@@ -94,6 +101,7 @@
        ("r" efrit-agent-browse-sessions :description (lambda () (efrit-agent-menu--desc "resume a saved session" 'efrit-agent-browse-sessions)))
        ("i" efrit-agent-copy-session-id :description (lambda () (efrit-agent-menu--desc "copy the session id" 'efrit-agent-copy-session-id)))
        ("M" efrit-menu :description (lambda () (efrit-agent-menu--desc "efrit menu: model, sandbox, doctor" 'efrit-menu)))
+       ("P" efrit-preset-apply :description (lambda () (format "preset: %s" (or efrit-preset-current "none"))))
        ("/" efrit-agent-slash-help :description (lambda () "the /commands of the input"))
        ("?" efrit-agent-help :description (lambda () (efrit-agent-menu--desc "all keys, as text" 'efrit-agent-help)))]
       ["" ("q" "close this menu" transient-quit-one)]])

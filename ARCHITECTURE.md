@@ -157,6 +157,48 @@ does the same.  Tests and the test drive that need a pretend-busy
 session use `efrit-repl-loop-hold` / `-release`, which register a
 placeholder loop.
 
+Side requests go through `efrit-ask-once` (lisp/core/efrit-ask.el):
+one prompt, one callback, off any session, from a hidden buffer so the
+caller's buffer may die meanwhile.  Asks with the same `:key`
+supersede each other (the older reply is dropped as "superseded").
+`efrit-ask-candidates` asks for N answers separated by
+`<endCompletion>` and the candidates panel (`efrit-candidates-choose`,
+efrit-candidates.el) lets the user pick; the raw text is kept in a
+table keyed by hash and never re-read from the display.  Users of the
+side channel: prompt suggestions (`efrit-prompts-suggest`),
+`efrit-rewrite-region` (editable-region markers, diff via
+`efrit-vcs-diff-strings`, replace only if the region is unchanged),
+`efrit-commit-message` (staged diff via `efrit-vcs-diff-staged`).
+`efrit-scope-run` is not a side request: it fills a library prompt
+(`{{{:key}}}` placeholders) and runs it as a turn in the agent buffer.
+
+Keys in the agent buffer that depend on context (`RET`, `TAB`, the
+digits) are `menu-item` bindings with a `:filter`, so `key-binding`
+and `C-h k` show the command that will run and a key that does not
+apply falls through to the next keymap; there is no dispatcher
+command.  `efrit-agent-regenerate` rewinds the session history to
+before the last user message (`efrit-repl-session-rewind`), resends
+it, and deletes the old exchange from the transcript only when the new
+turn ends well.  Rendered code blocks carry an `efrit-markdown-block`
+property (language and raw body) so the copy and insert commands act
+on "the block at point" without re-reading fontified text.
+
+Before `eval_sexp` parses a form, `efrit-elisp-fix` balances it
+(strays closers dropped, missing closers appended, an open string
+closed) when `read` fails, and the tool result tells the model what
+was fixed.  `efrit-buffer-watch` records a tick or `track-changes`
+state when `read_buffer` runs; `edit_buffer` refuses positional edits
+when the buffer changed since.  A sandbox prompt for a shell line or
+an elisp form can be edited before allowing (`e`); the edited text is
+handed to the asking tool once through `efrit-sandbox-take-edited-input`
+and the scope is forced to `once`.
+
+`efrit-notify` (off by default) subscribes to `turn-complete` and
+notifies when a turn of at least `efrit-notify-min-seconds` ends while
+the agent buffer is not the selected window: `alert` if installed,
+else `notifications-notify`, else `message`.  `efrit-presets` are
+named plists applied with `efrit-preset-apply` (only the keys present).
+
 The REPL history is also bounded by size: before every request
 `efrit-repl-session-fit-context` estimates the history against the
 model's window (`efrit-usage-window`, per-model via

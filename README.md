@@ -51,6 +51,38 @@ A structured, real-time view of agentic sessions with:
   the item.
 - The diff preview (`show_diff_preview`) opens the file at the change
   on `o` or `RET`; it finds the hunk by its text, not its line numbers.
+- `C-c C-.` (menu `g`) regenerates: the last question is sent again
+  and the old exchange is replaced when the new turn succeeds.  `C-u`
+  edits the question first.
+- Code blocks in answers are things: `C-c C-b` copies the block at
+  point raw (off a block, pick one by completion), `C-c C-j` inserts
+  it at point in the other window without leaving the agent buffer.
+- Presets bundle settings (model, reviewer, default grants, verbosity,
+  rows): `/preset fast`, `/preset careful`, menu `P`; add your own to
+  `efrit-presets`.
+- Optional desktop notification when a slow turn ends while you are in
+  another buffer (`efrit-notify-enabled`; through `alert` when
+  installed, else `notifications-notify`, else the echo area).
+
+**Outside the agent buffer:**
+
+- `M-x efrit-rewrite-region`: the model rewrites the selected text per
+  your instruction; you see the diff, then it replaces the region (only
+  if the region is unchanged since).
+- `M-x efrit-scope-run`: run a library prompt (`explain`, `fix`,
+  `document`, `tests`, `review`, `simplify`, or your own) over the
+  region, the defun at point, or the buffer, as a turn in the agent
+  buffer.  Prompts may use `{{{:text}}}`, `{{{:file}}}`, `{{{:mode}}}`,
+  `{{{:scope}}}`, `{{{:lines}}}`.
+- `M-x efrit-commit-message` in a commit buffer: a conventional commit
+  message from the staged diff (read through VC); `C-u` asks for three
+  and opens a pick panel.  A `.github/git-commit-instructions.md` in
+  the repository is obeyed.
+- A sandbox prompt for a shell line or an elisp form has `e`: edit the
+  text, then allow; the edited text runs once, no standing grant.
+- `eval_sexp` balances an unbalanced form before evaluation and tells
+  the model; `edit_buffer` refuses positional edits to a buffer that
+  changed since the model read it.
 
 **Agent Buffer Keybindings:**
 
@@ -73,6 +105,8 @@ Actions use the `C-c` prefix so standard editing keys (`C-k`, `C-g`,
 | `C-c C-y` | Quote the region into the input (queued when busy) |
 | `C-c C-z` / `C-c C-a` | Narrow to the last N turns / widen |
 | `C-c C-f` | Open this session's transcript file |
+| `C-c C-.` | Regenerate the last answer (`C-u`: edit the question) |
+| `C-c C-b` / `C-c C-j` | Copy the code block at point / insert it in the other window |
 | `+` / `-` / `=` (transcript), `C-c +` etc. | Resize the image at point, else all |
 | `S-RET` on a list item | Continue the list; `TAB` / `S-TAB` indent it |
 | `C-c C-k` | Cancel session |
