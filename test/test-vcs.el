@@ -62,13 +62,28 @@ uncommitted changes (a.txt edited, new.txt untracked)."
   "A checkpoint stash carries the efrit prefix, the id and the
 description; apply with pop restores the tree and removes it."
   (test-vcs--with-repo
-    (let ((ref (efrit-vcs-stash-push "efrit-20260928-abc123" "before the risky edit" root)))
+    ;; a buffer visits the changed file, as in the user's Emacs: after
+    ;; the push it must show the clean text, or its next save would
+    ;; make the pop fail
+    (let* ((visiting (find-file-noselect (expand-file-name "a.txt" root)))
+           (ref (efrit-vcs-stash-push "efrit-20260928-abc123" "before the risky edit" root)))
       (should (equal "stash@{0}" ref))
+      (should (equal "one\ntwo\n" (with-current-buffer visiting (buffer-string))))
+      (should-not (buffer-modified-p visiting))
       (let ((entry (car (efrit-vcs-stash-list root))))
         (should (string-match-p "efrit-checkpoint efrit-20260928-abc123: before the risky edit" (cdr entry))))
-      (should-not (efrit-vcs-status-files root))
+      ;; tracked changes stashed; the untracked file stays where it is
+      (should (equal '(("new.txt" unregistered)) (efrit-vcs-status-files root)))
       (should (equal ref (efrit-vcs-stash-find "efrit-20260928-abc123" root)))
+      ;; a save hook writes the old buffer text back before the pop
+      ;; (what the user's Emacs did): the pop must still succeed
+      (with-current-buffer visiting
+        (goto-char (point-max)) (insert "TWO-again\n") (save-buffer))
+      (should (member '("a.txt" edited) (efrit-vcs-status-files root)))
       (efrit-vcs-stash-apply "efrit-20260928-abc123" t root)
+      (should (equal "one\nTWO\n" (with-temp-buffer (insert-file-contents (expand-file-name "a.txt" root)) (buffer-string))))
+      (should (equal "one\nTWO\n" (with-current-buffer visiting (buffer-string))))
+      (kill-buffer visiting)
       (should (= 2 (length (efrit-vcs-status-files root))))
       (should-not (efrit-vcs-stash-list root))
       ;; nothing to stash now that... there is: push again, then drop

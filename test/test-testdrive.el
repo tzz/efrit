@@ -177,6 +177,29 @@ the whole drive, not per turn.)"
             (should cancelled)))
       (efrit-unsubscribe t #'efrit-testdrive--on-event))))
 
+(ert-deftest test-testdrive-submit-recovers-a-stale-session-before-clearing-events ()
+  "A session left working with no loop (a reload mid-turn) is ended
+before the drive clears its events, so the stale turn-complete is not
+mistaken for the new turn's."
+  (test-td--fresh
+    (require 'efrit-agent)
+    (efrit-subscribe t #'efrit-testdrive--on-event)
+    (unwind-protect
+        (with-temp-buffer
+          (efrit-agent-mode)
+          (let ((session (efrit-repl-session-create default-directory)))
+            (setq efrit-agent--repl-session session)
+            (efrit-repl-session-set-status session 'working)
+            (cl-letf (((symbol-function 'efrit-testdrive--agent-buffer)
+                       (let ((b (current-buffer))) (lambda () b)))
+                      ((symbol-function 'efrit-submit) (lambda (&rest _) t))
+                      ((symbol-function 'efrit-agent-set-status) #'ignore))
+              (efrit-testdrive--submit "ping")
+              ;; the stale turn was ended (idle) and its event is gone
+              (should (eq 'idle (efrit-repl-session-status session)))
+              (should-not (efrit-testdrive--events-of 'turn-complete)))))
+      (efrit-unsubscribe t #'efrit-testdrive--on-event))))
+
 (ert-deftest test-testdrive-summary-counts-and-lists-failures ()
   (test-td--fresh
     (setq efrit-testdrive--results

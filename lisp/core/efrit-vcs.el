@@ -295,8 +295,9 @@ nothing to stash or the backend is not Git."
   (pcase-let ((`(,backend . ,root) (efrit-vcs-require dir)))
     (unless (eq backend 'Git)
       (signal 'efrit-vcs-error (list "stashes need Git")))
-    (unless (efrit-vcs-status-files root)
-      (signal 'efrit-vcs-error (list "nothing to checkpoint: the tree is clean")))
+    (unless (cl-remove-if (lambda (e) (memq (nth 1 e) '(unregistered ignored)))
+                          (efrit-vcs-status-files root))
+      (signal 'efrit-vcs-error (list "nothing to checkpoint: no tracked file has changed")))
     (require 'vc-git)
     (let ((default-directory root)
           (name (efrit-vcs-stash-name id description)))
@@ -304,11 +305,37 @@ nothing to stash or the backend is not Git."
       ;; a non-file buffer that is the whole tree, which is what a
       ;; checkpoint means.  Untracked files are included so a restore
       ;; brings back everything the model may have created.
+      ;; Tracked changes only, as `vc-git-stash' does.  With
+      ;; --include-untracked the pop refuses whenever an untracked
+      ;; file it would recreate exists again, and the user's Emacs
+      ;; (backups, save hooks, dired refreshes) recreates them between
+      ;; push and pop (2026-09-28 testdrive: red.png, greet.el~).  New
+      ;; files the model made stay on disk; the checkpoint protects
+      ;; what a bad edit would break, the tracked files.
       (with-temp-buffer
         (setq default-directory root)
-        (vc-git-command nil 0 nil "stash" "push" "--include-untracked" "-m" name))
+        (vc-git-command nil 0 nil "stash" "push" "-m" name))
+      ;; What `vc-git-stash' does after its push: buffers visiting the
+      ;; stashed files still show the change while the disk is clean;
+      ;; the first save (the user's, or an auto-save mode) would write
+      ;; it back and the later pop would refuse (2026-09-28, testdrive).
+      ;; Not `vc-resynch-buffer' on the root: it matches visited names
+      ;; by string prefix, and on macOS the root is /private/var/...
+      ;; while buffers visit /var/..., so nothing was resynched.
+      (efrit-vcs--resynch-tree root)
       (or (efrit-vcs-stash-find id root)
           (signal 'efrit-vcs-error (list "the stash was not created"))))))
+
+(defun efrit-vcs--resynch-tree (root)
+  "Revert every unmodified buffer visiting a file under ROOT, by truename.
+After a stash push or pop the disk changed under them."
+  (let ((root (file-truename root)))
+    (dolist (buffer (buffer-list))
+      (when-let* ((file (buffer-file-name buffer)))
+        (when (and (string-prefix-p root (file-truename file))
+                   (not (buffer-modified-p buffer)))
+          (with-current-buffer buffer
+            (vc-resynch-buffer buffer-file-name t t)))))))
 
 (defun efrit-vcs-stash-apply (id &optional pop dir)
   "Apply the stash of checkpoint ID; with POP, drop it afterwards."
@@ -317,8 +344,35 @@ nothing to stash or the backend is not Git."
                   (signal 'efrit-vcs-error (list (format "no stash for checkpoint %s" id))))))
     (require 'vc-git)
     (let ((default-directory root))
-      (if pop (vc-git-stash-pop ref) (vc-git-stash-apply ref)))
+      ;; Buffers that still hold the pre-stash text (a save hook wrote
+      ;; them back) make the tree dirty on the stashed paths and git
+      ;; refuses.  Those files' content is the stash's own, so restore
+      ;; the index/work tree from HEAD for the stashed paths first,
+      ;; then pop.  Anything the user changed since is not touched:
+      ;; only paths in the stash are reset.
+      (let ((dirty (cl-intersection (efrit-vcs--stash-paths ref root)
+                                    (mapcar #'car (efrit-vcs-status-files root))
+                                    :test #'equal)))
+        (when dirty
+          (efrit-log 'info "vcs: resetting %S before applying %s (a save wrote them back)" dirty ref)
+          (apply #'vc-git-command nil 0 nil "checkout" "--" dirty)))
+      (condition-case err
+          (if pop (vc-git-stash-pop ref) (vc-git-stash-apply ref))
+        (error
+         (signal 'efrit-vcs-error
+                 (list (format "%s (%s; dirty: %S)"
+                               (if pop "stash pop failed" "stash apply failed")
+                               (error-message-string err)
+                               (mapcar #'car (efrit-vcs-status-files root)))))))
+      ;; vc-git's own resynch has the same prefix problem
+      (efrit-vcs--resynch-tree root))
     ref))
+
+(defun efrit-vcs--stash-paths (ref root)
+  "The tracked paths stash REF touches, relative to ROOT."
+  (let ((default-directory root))
+    (split-string (or (vc-git--run-command-string nil "stash" "show" "--name-only" ref) "")
+                  "\n" t)))
 
 (defun efrit-vcs-stash-drop (id &optional dir)
   "Drop the stash of checkpoint ID.  Returns the ref, or nil if none."

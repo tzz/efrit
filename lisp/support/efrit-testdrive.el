@@ -410,6 +410,13 @@ Canonical because the sandbox keys grants on `efrit-sandbox-canonical'
 (defun efrit-testdrive--submit (shown &optional api-input)
   "Start a turn; error when the agent is busy."
   (require 'efrit-agent-input)
+  ;; A session left `working' by an earlier drive (a reload in
+  ;; between) is ended by the busy check inside `efrit-submit', which
+  ;; publishes a turn-complete.  Do that here, before the events are
+  ;; cleared, or the wait below takes that stale event for the turn's
+  ;; own and the drive races itself (2026-09-28 09:33 run).
+  (with-current-buffer (efrit-testdrive--agent-buffer)
+    (efrit-agent--session-busy-p))
   (efrit-testdrive--clear-events)
   (cl-incf efrit-testdrive--turns)
   (unless (efrit-submit shown api-input)
@@ -545,8 +552,14 @@ Anything here is a step that did not grant what its turn needed.")
       (save-window-excursion (call-interactively #'efrit)))
     (with-current-buffer (efrit-testdrive--agent-buffer)
       ;; A buffer left from an earlier drive points at that drive's
-      ;; deleted project; every subprocess then failed to start
+      ;; deleted project and may hold its session (mid-turn when the
+      ;; user reloaded).  Start the drive on a fresh session in the
+      ;; same buffer, the way C-c C-x does.
       (setq default-directory efrit-testdrive--root)
+      (when (efrit-agent-repl-session)
+        (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+          (efrit-agent-restart))
+        (setq default-directory efrit-testdrive--root))
       (efrit-testdrive--check (and header-line-format
                                    (efrit-agent-repl-session)
                                    (equal default-directory efrit-testdrive--root))
@@ -958,8 +971,12 @@ Anything here is a step that did not grant what its turn needed.")
         (cons 'SKIP "the throwaway project is not a Git tree")
       (efrit-testdrive--grant 'write efrit-testdrive--root)
       (let* ((file (efrit-testdrive--file "notes.txt"))
-             (before (efrit-testdrive--file-text "notes.txt")))
-        (with-temp-file file (insert before "changed by the drive\n"))
+             (before (efrit-testdrive--file-text "notes.txt"))
+             ;; visited, as the user's files are: the stash must
+             ;; resynch this buffer or its save undoes the checkpoint
+             (visiting (find-file-noselect file)))
+        (with-current-buffer visiting
+          (goto-char (point-max)) (insert "changed by the drive\n") (save-buffer))
         (let* ((efrit-project-root efrit-testdrive--root)
                (made (efrit-tool-checkpoint '((description . "drive checkpoint"))))
                (id (alist-get 'checkpoint_id (alist-get 'result made)))
@@ -967,11 +984,14 @@ Anything here is a step that did not grant what its turn needed.")
                (clean-after (equal before (efrit-testdrive--file-text "notes.txt")))
                (listed (and id (efrit-vcs-stash-find id efrit-testdrive--root)))
                (restored (and id (efrit-tool-restore-checkpoint `((checkpoint_id . ,id)))))
-               (back (efrit-testdrive--file-text "notes.txt")))
+               (back (efrit-testdrive--file-text "notes.txt"))
+               (buffer-back (with-current-buffer visiting (revert-buffer t t t) (buffer-string))))
+          (kill-buffer visiting)
           (with-temp-file file (insert before))
           (efrit-testdrive--check
            (and id (string-prefix-p "efrit-checkpoint " (or name "")) clean-after listed
                 (eq t (alist-get 'success restored)) (string-suffix-p "changed by the drive\n" back)
+                (string-suffix-p "changed by the drive\n" buffer-back)
                 (null (efrit-vcs-stash-find id efrit-testdrive--root)))
            (format "id %s, stash %S, tree clean after %s, listed %s, restored %s%s, popped %s"
                    id name clean-after (and listed t) (alist-get 'success restored)

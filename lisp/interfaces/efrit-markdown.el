@@ -263,10 +263,14 @@ outer bars optional.  Must contain at least one bar overall to be a
 separator (checked by the caller).")
 
 (defun efrit-markdown--table-cells (line)
-  "LINE's cells, trimmed, without the outer bars (when present); `\\|' stays a bar."
+  "LINE's cells, trimmed; `\\|' stays a bar.
+A leading or trailing bar is a border, not an empty cell: rows may
+have them or not, and models mix the two forms in one table
+\(`| Fruit | Count |' over `apple | 3 |', 2026-09-28)."
   (let* ((trimmed (string-trim line))
-         (inner (string-trim trimmed "|" "|"))
-         (parts (split-string (replace-regexp-in-string "\\\\|" "\x00" inner t t) "|")))
+         (escaped (replace-regexp-in-string "\\\\|" "\x00" trimmed t t))
+         (inner (string-trim (string-trim escaped "|" "|")))
+         (parts (split-string inner "|")))
     (mapcar (lambda (c) (string-trim (replace-regexp-in-string "\x00" "|" c t t))) parts)))
 
 (defun efrit-markdown--table-alignments (separator)
@@ -349,11 +353,23 @@ may still grow (its last row touches END) unless COMPLETE."
                 (re-search-forward efrit-markdown--table-row-regexp end t))
       (let ((table-start (match-beginning 0)))
         (forward-line 1)
-        (if (not (and (< (point) end)
-                      (looking-at efrit-markdown--table-separator-regexp)
-                      (string-match-p "|" (match-string 0))
-                      (not (efrit-markdown--span-frozen-p table-start (point)))))
-            (goto-char (max (1+ table-start) (point)))
+        (cond
+         ;; A bar row that is the last (or next-to-last, unfinished)
+         ;; line of a streaming region may be a header whose separator
+         ;; has not arrived: hold the frontier there, or the watermark
+         ;; moves past the header and the table is never seen as one
+         ;; (2026-09-28: rendered as "│ Fruit │ Count" over plain rows)
+         ((and (not complete)
+               (or (>= (point) end)
+                   (and (< (point) end)
+                        (>= (save-excursion (goto-char (point)) (line-end-position)) end))))
+          (setq open table-start))
+         ((not (and (< (point) end)
+                    (looking-at efrit-markdown--table-separator-regexp)
+                    (string-match-p "|" (match-string 0))
+                    (not (efrit-markdown--span-frozen-p table-start (point)))))
+          (goto-char (max (1+ table-start) (point))))
+         (t
           (forward-line 1)
           (while (and (< (point) end) (looking-at efrit-markdown--table-row-regexp))
             (forward-line 1))
@@ -361,7 +377,7 @@ may still grow (its last row touches END) unless COMPLETE."
             (if (and (not complete) (>= table-end end))
                 (setq open table-start)
               (efrit-markdown--render-table table-start table-end)
-              (efrit-markdown--set-frozen table-start (point) t))))))
+              (efrit-markdown--set-frozen table-start (point) t)))))))
     open))
 
 (defun efrit-markdown--set-frozen (start end value)
