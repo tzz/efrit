@@ -301,6 +301,9 @@
     (define-key map (kbd "C-c l") #'efrit-agent-switch-instance)
     (define-key map (kbd "C-c t") #'efrit-agent-toggle)
     (define-key map (kbd "C-c I") #'efrit-agent-open-instance)
+    ;; editor context: drop the current file's until you move on
+    (define-key map (kbd "C-c C-;") #'efrit-context-dismiss)
+    (define-key map (kbd "C-c ;") #'efrit-context-restore)
     (define-key map (kbd "C-c C-y") #'efrit-agent-quote-region)
     (define-key map (kbd "C-c C-.") #'efrit-agent-regenerate)
     (define-key map (kbd "C-c C-b") #'efrit-markdown-copy-block)

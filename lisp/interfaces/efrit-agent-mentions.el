@@ -97,8 +97,22 @@ not match: the character before the @ must not be a word character.")
       (format "@\"%s\"" path)
     (concat "@" path)))
 
+(defconst efrit-agent-mention-range-regexp "\\`\\(.+?\\)#L\\([0-9]+\\)\\(?:-L?\\([0-9]+\\)\\)?\\'"
+  "A path with a line range: `path#L10-L20' or `path#L10' (GitHub's form).")
+
+(defun efrit-agent-mention-split (path)
+  "PATH split as (FILE START END): the range when it has one, else nils."
+  (if (string-match efrit-agent-mention-range-regexp path)
+      (list (match-string 1 path)
+            (string-to-number (match-string 2 path))
+            (if (match-string 3 path) (string-to-number (match-string 3 path))
+              (string-to-number (match-string 2 path))))
+    (list path nil nil)))
+
 (defun efrit-agent-mentions-in (text)
-  "The paths mentioned in TEXT, in order, duplicates removed."
+  "The paths mentioned in TEXT, in order, duplicates removed.
+A path may carry a range, `path#L10-L20'; `efrit-agent-mention-split'
+takes it apart."
   (let ((out nil) (start 0))
     (while (string-match efrit-agent-mention-regexp text start)
       (let ((path (or (match-string 1 text) (match-string 2 text))))
@@ -107,6 +121,48 @@ not match: the character before the @ must not be a word character.")
         (unless (member path out) (push path out)))
       (setq start (match-end 0)))
     (nreverse out)))
+
+(defun efrit-agent-mention-range-text (file start end)
+  "The text for a range mention: what to say and which lines of FILE.
+Returns (LABEL . TEXT); TEXT is lines START..END of FILE."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (let* ((total (count-lines (point-min) (point-max)))
+           (start (max 1 (min start total)))
+           (end (max start (min end total))))
+      (goto-char (point-min)) (forward-line (1- start))
+      (let ((b (point)))
+        (forward-line (- end start -1))
+        (cons (format "lines %d-%d of %d" start end total)
+              (string-trim-right (buffer-substring-no-properties b (point))))))))
+
+;;;###autoload
+(defun efrit-agent-mention-range (start end)
+  "Put a mention of the region's lines of this file into the agent input.
+`@path#L10-L20': the model gets those lines, not the whole file, and
+not a quote of the text (cheaper than `efrit-agent-quote-region' for a
+long region, and the model can read around it)."
+  (interactive "r")
+  (unless buffer-file-name (user-error "This buffer visits no file"))
+  (let* ((root (ignore-errors (efrit-tool--get-project-root)))
+         (path (if (and root (string-prefix-p (file-name-as-directory root) buffer-file-name))
+                   (file-relative-name buffer-file-name root)
+                 buffer-file-name))
+         (l1 (line-number-at-pos start))
+         (l2 (line-number-at-pos (max start (1- end))))
+         (mention (efrit-agent-mention-text (format "%s#L%d-L%d" path l1 l2))))
+    (deactivate-mark)
+    (require 'efrit-agent)
+    (require 'efrit-agent-input)
+    (let ((buf (efrit-agent-target-buffer)))
+      (with-current-buffer buf
+        (goto-char (point-max))
+        (unless (or (bobp) (memq (char-before) '(?\s ?\n))) (insert " "))
+        (insert mention " "))
+      (efrit-agent-display buf t))))
+
+(declare-function efrit-agent-target-buffer "efrit-agent-input")
+(declare-function efrit-agent-display "efrit-agent-core")
 
 (defun efrit-agent-mention--resolve (path)
   "PATH as an absolute file name, relative to the project root when relative."
@@ -132,18 +188,26 @@ of files that do not exist stay as written: the model can ask.
 Images are left to `efrit-agent-mentions-content-blocks'."
   (let ((blocks nil))
     (dolist (path (efrit-agent-mentions-in text))
-      (let ((file (efrit-agent-mention--resolve path)))
+      (pcase-let* ((`(,bare ,start ,end) (efrit-agent-mention-split path))
+                   (file (efrit-agent-mention--resolve bare)))
         (when (and (file-regular-p file) (file-readable-p file)
                    (not (efrit-agent-mention--image-p file)))
           (condition-case err
-              (push (format "%s\n```%s\n%s\n```"
-                            (efrit-agent-mention-text path)
-                            (or (file-name-extension file) "")
-                            (efrit-agent-mention--clip
-                             (string-trim-right
-                              (with-temp-buffer
-                                (insert-file-contents file)
-                                (buffer-string)))))
+              (push (if start
+                        ;; a range: only those lines, labelled
+                        (let ((r (efrit-agent-mention-range-text file start end)))
+                          (format "%s (%s)\n```%s\n%s\n```"
+                                  (efrit-agent-mention-text path) (car r)
+                                  (or (file-name-extension file) "")
+                                  (efrit-agent-mention--clip (cdr r))))
+                      (format "%s\n```%s\n%s\n```"
+                              (efrit-agent-mention-text path)
+                              (or (file-name-extension file) "")
+                              (efrit-agent-mention--clip
+                               (string-trim-right
+                                (with-temp-buffer
+                                  (insert-file-contents file)
+                                  (buffer-string))))))
                     blocks)
             (error
              (efrit-log 'warn "mention: cannot read %s: %s" file (error-message-string err)))))))
@@ -156,7 +220,7 @@ Images are left to `efrit-agent-mentions-content-blocks'."
 Each is ((type . \"image\") (source . ((type . \"base64\") (media_type . M) (data . D))))."
   (let (blocks)
     (dolist (path (efrit-agent-mentions-in text))
-      (let ((file (efrit-agent-mention--resolve path)))
+      (let ((file (efrit-agent-mention--resolve (car (efrit-agent-mention-split path)))))
         (when (and (file-regular-p file) (efrit-agent-mention--image-p file))
           (let ((type (pcase (downcase (or (file-name-extension file) ""))
                         ("jpg" "image/jpeg") ("jpeg" "image/jpeg") ("png" "image/png")

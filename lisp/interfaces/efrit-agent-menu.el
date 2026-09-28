@@ -41,6 +41,8 @@
 (declare-function efrit-agent-switch-instance "efrit-agent-instances")
 (declare-function efrit-agent-rename-instance "efrit-agent-instances")
 (declare-function efrit-agent-toggle "efrit-agent-instances")
+(declare-function efrit-context-dismiss "efrit-context-sources")
+(declare-function efrit-context-describe "efrit-context-sources")
 
 (defun efrit-agent-menu--key (command)
   "The key COMMAND is on in the agent buffer, as a short string, or \"\"."
@@ -55,16 +57,33 @@
         label
       (concat label "  " (propertize key 'face 'transient-key)))))
 
+(declare-function efrit-usage-indicator "efrit-usage")
+(declare-function efrit-repl-session-id "efrit-repl-session")
+(defvar efrit-default-model)
+(defvar efrit-review-enabled)
+(defvar efrit-agent--instance)
+
 (defun efrit-agent-menu--heading ()
-  "The menu's heading: status and queue."
+  "The menu's heading: this buffer, its session's state, model, context use.
+Live: transient calls it on every redraw, so toggles show at once."
   (let* ((session (bound-and-true-p efrit-agent--repl-session))
+         (id (and session (fboundp 'efrit-repl-session-id) (efrit-repl-session-id session)))
          (queue (and session (fboundp 'efrit-repl-session-queue)
                      (efrit-repl-session-queue session)))
          (status (and session (fboundp 'efrit-repl-session-status)
-                      (efrit-repl-session-status session))))
-    (format "efrit agent: %s%s"
-            (or status "no session")
-            (if queue (format ", %d queued" (length queue)) ""))))
+                      (efrit-repl-session-status session)))
+         (usage (and id (fboundp 'efrit-usage-indicator) (ignore-errors (efrit-usage-indicator id))))
+         (others (and (fboundp 'efrit-agent-buffers) (1- (length (efrit-agent-buffers))))))
+    (concat
+     (propertize (buffer-name) 'face 'bold)
+     (format ": %s" (or status "no session"))
+     (if queue (format ", %d queued" (length queue)) "")
+     (format "  ·  %s" (or (bound-and-true-p efrit-default-model) "model?"))
+     (format "  ·  review %s" (if (bound-and-true-p efrit-review-enabled) "on" "off"))
+     (if usage (format "  ·  %s" (substring-no-properties usage)) "")
+     (if (and others (> others 0)) (format "  ·  %d other agent buffer%s (l)" others (if (= others 1) "" "s")) ""))))
+
+(declare-function efrit-agent-buffers "efrit-agent-core")
 
 (defconst efrit-agent-menu--definition
   '(transient-define-prefix efrit-agent-menu ()
@@ -110,6 +129,7 @@
        ("l" efrit-agent-switch-instance :description (lambda () (efrit-agent-menu--desc "switch to an agent buffer" 'efrit-agent-switch-instance)))
        ("j" efrit-agent-rename-instance :description (lambda () (efrit-agent-menu--desc "name this instance" 'efrit-agent-rename-instance)))
        ("t" efrit-agent-toggle :description (lambda () (efrit-agent-menu--desc "hide / show this project's agent windows" 'efrit-agent-toggle)))
+       (";" efrit-context-dismiss :description (lambda () (efrit-agent-menu--desc (format "dismiss the file context (%s)" (or (ignore-errors (efrit-context-describe)) "none")) 'efrit-context-dismiss)))
        ("/" efrit-agent-slash-help :description (lambda () "the /commands of the input"))
        ("?" efrit-agent-help :description (lambda () (efrit-agent-menu--desc "all keys, as text" 'efrit-agent-help)))]
       ["" ("q" "close this menu" transient-quit-one)]])

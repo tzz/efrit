@@ -93,6 +93,11 @@
 (declare-function efrit-tool-buffer-info "efrit-tool-edit-buffer")
 ;; Other tools with dynamic require
 (declare-function efrit-tool-get-diagnostics "efrit-tool-diagnostics")
+(declare-function efrit-tool-xref-references "efrit-tool-navigate")
+(declare-function efrit-tool-xref-apropos "efrit-tool-navigate")
+(declare-function efrit-tool-imenu-symbols "efrit-tool-navigate")
+(declare-function efrit-tool-treesit-info "efrit-tool-navigate")
+(declare-function efrit-tool-show-location "efrit-tool-navigate")
 (declare-function efrit-tool-read-image "efrit-tool-read-image")
 (declare-function efrit-tool-format-file "efrit-tool-format-file")
 (declare-function efrit-tool-beads-ready "efrit-tool-beads")
@@ -899,6 +904,39 @@ call it, so answer clearly instead of silently obeying."
   :fields (("symbol" . efrit-do--vector-to-list) "type" "include_source" "related")
   :fn efrit-tool-elisp-docs
   :label "Elisp Docs Result")
+
+(efrit-define-simple-tool-handler efrit-do--handle-xref-references "xref_references"
+  :require efrit-tool-navigate
+  :required ("symbol")
+  :fields ("symbol" "file" "line" "column")
+  :fn efrit-tool-xref-references
+  :label "References")
+
+(efrit-define-simple-tool-handler efrit-do--handle-xref-apropos "xref_apropos"
+  :require efrit-tool-navigate
+  :required ("pattern")
+  :fields ("pattern" "file")
+  :fn efrit-tool-xref-apropos
+  :label "Definitions")
+
+(efrit-define-optional-input-handler efrit-do--handle-imenu-symbols "imenu_symbols"
+  :require efrit-tool-navigate
+  :fields ("file")
+  :fn efrit-tool-imenu-symbols
+  :label "Symbols")
+
+(efrit-define-optional-input-handler efrit-do--handle-treesit-info "treesit_info"
+  :require efrit-tool-navigate
+  :fields ("file" "line" "column" "ancestors" "children" "whole_tree")
+  :fn efrit-tool-treesit-info
+  :label "Syntax")
+
+(efrit-define-simple-tool-handler efrit-do--handle-show-location "show_location"
+  :require efrit-tool-navigate
+  :required ("file")
+  :fields ("file" "start_text" "end_text" "line" "end_line")
+  :fn efrit-tool-show-location
+  :label "Shown")
 
 (efrit-define-optional-input-handler efrit-do--handle-get-diagnostics "get_diagnostics"
   :require efrit-tool-get-diagnostics

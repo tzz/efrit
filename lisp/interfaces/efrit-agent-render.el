@@ -401,6 +401,8 @@ This provides smooth updates for changing thinking status."
 
 ;;; Header Line (status bar at top of window)
 
+(declare-function efrit-context-describe "efrit-context-sources")
+
 (defun efrit-agent--format-header-line ()
   "Format the header-line for display.
 Shows: status │ elapsed │ mode │ verbosity │ tool count │ hints"
@@ -435,6 +437,12 @@ Shows: status │ elapsed │ mode │ verbosity │ tool count │ hints"
      ;; Live context-window usage from the API's own numbers
      (when-let* ((usage (efrit-agent--usage-segment)))
        (concat sep usage))
+     ;; What the next turn will carry as editor context (the target
+     ;; buffer, its point or region), and whether it was dismissed
+     (when-let* ((ctx (and (fboundp 'efrit-context-describe)
+                           (ignore-errors (efrit-context-describe)))))
+       (concat sep (propertize ctx 'face 'efrit-agent-session-id
+                               'help-echo "Editor context sent with the next turn; C-c C-; dismisses it")))
      ;; Show action hints based on status
      (pcase efrit-agent--status
        ((or 'idle 'waiting)

@@ -250,6 +250,21 @@ parameter.  `efrit-submit` and `efrit-agent-repl-session` take a
 buffer.  Left global on purpose: settings and presets, grant tables
 (keyed by root: two sessions in one project share grants), caches.
 
+Navigation tools (`efrit-tool-navigate.el`) run Emacs's own xref,
+imenu and tree-sitter in a buffer visiting the file, so the user's
+backend answers; project.el's "Select project" prompt is turned into
+an error there, since a prompt from a tool would hang the turn.
+`show_location` finds a range by text anchors.  The system prompt
+states the coordinate convention (lines 1-based, columns 0-based).
+Registered tools (`efrit-register-tool`) run with the user's target
+buffer current.  The diff preview's `E` opens ediff on a change;
+accepting on quit replaces the change's `new_content` with buffer B's
+text and the result's `user_edits` carries it, so the model applies
+what the user settled on.  `efrit-context-describe` is the header's
+context label; `efrit-context-dismiss` removes the file-bound
+sources for the current target until another file or a region.
+Range mentions `@path#L10-L20` inline only those lines.
+
 `efrit-notify` (off by default) subscribes to `turn-complete` and
 notifies when a turn of at least `efrit-notify-min-seconds` ends while
 the agent buffer is not the selected window: `alert` if installed,

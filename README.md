@@ -75,6 +75,20 @@ menu.  Gnus gets `*efrit[gnus]*` (`efrit-gnus-own-buffer`).  A sandbox
 prompt is one at a time: a request from another session that arrives
 while a prompt is open is denied with a note, and the model can retry.
 
+**Navigation and context** (after claude-code-ide): the model has
+`xref_references`, `xref_apropos`, `imenu_symbols` and `treesit_info`,
+answered by whatever backend you run (eglot, lsp-mode, etags, the
+elisp backend), and `show_location` to open a file for you at a text
+anchor.  `get_diagnostics path="project"` covers every open file of
+the project.  The header shows what editor context the next turn
+carries (`⧉ foo.el:120, 3 lines`); `C-c C-;` dismisses the current
+file's until you move on, `C-c ;` restores it.
+`M-x efrit-agent-mention-range` on a region puts `@file#L10-L20` into
+the input: the model gets those lines, not the file.  In a diff
+preview `E` opens the change in ediff; edit buffer B, quit, accept:
+the model applies your text (`user_edits`).  `C-c C-m` `S` saves the
+menu's toggles with `customize-save-variable`.
+
 **Outside the agent buffer:**
 
 - `M-x efrit-rewrite-region`: the model rewrites the selected text per
@@ -125,6 +139,8 @@ Actions use the `C-c` prefix so standard editing keys (`C-k`, `C-g`,
 | `C-c C-z` / `C-c C-a` | Narrow to the last N turns / widen |
 | `C-c C-f` | Open this session's transcript file |
 | `C-c C-.` | Regenerate the last answer (`C-u`: edit the question) |
+| `C-c C-;` / `C-c ;` | Dismiss / restore the current file's editor context |
+| `C-c l` / `C-c t` / `C-c I` | Switch agent buffer / toggle this project's / new instance |
 | `C-c C-b` / `C-c C-j` | Copy the code block at point / insert it in the other window |
 | `+` / `-` / `=` (transcript), `C-c +` etc. | Resize the image at point, else all |
 | `S-RET` on a list item | Continue the list; `TAB` / `S-TAB` indent it |

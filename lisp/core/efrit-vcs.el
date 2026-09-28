@@ -445,16 +445,35 @@ OLD-LABEL and NEW-LABEL name the sides."
         (progn
           (with-temp-file old-file (insert old))
           (with-temp-file new-file (insert new))
-          (let ((diff-switches (list "-u"
-                                     "--label" (or old-label "a")
-                                     "--label" (or new-label "b"))))
-            (with-current-buffer (diff-no-select old-file new-file diff-switches t
+          ;; No --label switches of our own: `diff-no-select' splices
+          ;; switches into the shell line unquoted, and when
+          ;; `diff-use-labels' is t it adds its own --label pair, so a
+          ;; diff that accepts two labels took ours as file names
+          ;; ("diff: notes.txt: No such file", 2026-09-28 live run).
+          ;; The library labels with the temp names; we rewrite the
+          ;; header lines to the labels asked for.
+          (let ((diff-use-labels nil))
+            (with-current-buffer (diff-no-select old-file new-file "-u" t
                                                  (generate-new-buffer " *efrit-vcs-diff*"))
               (efrit-vcs--await-buffer (current-buffer))
-              (prog1 (efrit-vcs--strip-diff-chrome (buffer-string))
+              (prog1 (efrit-vcs--relabel
+                      (efrit-vcs--strip-diff-chrome (buffer-string))
+                      (or old-label "a") (or new-label "b"))
                 (kill-buffer)))))
       (ignore-errors (delete-file old-file))
       (ignore-errors (delete-file new-file)))))
+
+(defun efrit-vcs--relabel (text old-label new-label)
+  "TEXT with its ---/+++ header lines naming OLD-LABEL and NEW-LABEL."
+  (let ((lines (split-string text "\n")) (done-old nil) (done-new nil))
+    (mapconcat (lambda (l)
+                 (cond
+                  ((and (not done-old) (string-prefix-p "--- " l))
+                   (setq done-old t) (concat "--- " old-label))
+                  ((and (not done-new) (string-prefix-p "+++ " l))
+                   (setq done-new t) (concat "+++ " new-label))
+                  (t l)))
+               lines "\n")))
 
 (defun efrit-vcs--strip-diff-chrome (text)
   "TEXT without the command line `diff-no-select' writes first and its trailer."

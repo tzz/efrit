@@ -254,6 +254,71 @@ recent buffer in `buffer-list' that is not efrit's and not hidden."
              (buffer-local-value 'efrit-edit-history-mode buf))
     (efrit-edit-history-text buf)))
 
+;;; Dismissing the file context, and the live indicator
+;;
+;; The snapshot is computed at send time, so until now the user could
+;; not see what would go along.  `efrit-context-describe' is the
+;; short label the agent buffer's header shows ("⧉ foo.el:120, 3
+;; lines").  `efrit-context-dismiss' drops the file-bound sources
+;; (buffer, position, region, diagnostic, edit-history) for the
+;; current target: they come back when the user moves to another file
+;; or selects a region (after claude-code-ide's dismissed-file
+;; semantics, 2026-09-28).
+
+(defvar efrit-context--dismissed nil
+  "The buffer whose file context the user dismissed, or nil.")
+
+(defconst efrit-context--file-bound-sources '(buffer position region diagnostic edit-history)
+  "Sources that describe the target buffer; the ones a dismiss removes.")
+
+(defun efrit-context-dismissed-p (&optional target)
+  "Non-nil while the file context of TARGET (default the target buffer) is dismissed.
+A selected region undoes the dismissal: the user pointed at something."
+  (let ((buf (or target (efrit-context-target-buffer))))
+    (and efrit-context--dismissed
+         (eq efrit-context--dismissed buf)
+         (not (with-current-buffer buf (use-region-p))))))
+
+;;;###autoload
+(defun efrit-context-dismiss ()
+  "Stop sending the current file's context with the next turns.
+Moving to another file or selecting a region turns it back on;
+`efrit-context-restore' does so at once."
+  (interactive)
+  (let ((buf (efrit-context-target-buffer)))
+    (setq efrit-context--dismissed buf)
+    (message "efrit: context of %s dismissed until you move to another file or select something"
+             (buffer-name buf))
+    (force-mode-line-update t)))
+
+(defun efrit-context-restore ()
+  "Send the current file's context again."
+  (interactive)
+  (setq efrit-context--dismissed nil)
+  (force-mode-line-update t))
+
+(defun efrit-context-active-sources (&optional target)
+  "`efrit-context-sources' minus the file-bound ones while dismissed."
+  (if (efrit-context-dismissed-p target)
+      (cl-remove-if (lambda (s) (memq s efrit-context--file-bound-sources)) efrit-context-sources)
+    efrit-context-sources))
+
+(defun efrit-context-describe (&optional target)
+  "A short label of what the next turn's context will carry, or nil.
+For example \"⧉ foo.el:120\", \"⧉ foo.el:120, 3 lines\", or
+\"⧉ foo.el (dismissed)\"."
+  (when-let* ((buf (or target (efrit-context-target-buffer))))
+    (when (buffer-live-p buf)
+      (with-current-buffer buf
+        (let ((name (if buffer-file-name (file-name-nondirectory buffer-file-name) (buffer-name))))
+          (cond
+           ((efrit-context-dismissed-p buf) (format "⧉ %s (dismissed)" name))
+           ((not (cl-intersection efrit-context--file-bound-sources efrit-context-sources)) nil)
+           ((use-region-p)
+            (format "⧉ %s:%d, %d lines" name (line-number-at-pos (region-beginning))
+                    (count-lines (region-beginning) (region-end))))
+           (t (format "⧉ %s:%d" name (line-number-at-pos)))))))))
+
 ;;; Snapshot and rendering
 
 (defun efrit-context-snapshot (&optional target)
@@ -267,7 +332,7 @@ produced output."
       (when (buffer-live-p buf)
         (let ((parts nil))
           (with-current-buffer buf
-            (dolist (src efrit-context-sources)
+            (dolist (src (efrit-context-active-sources buf))
               ;; Builtin names first: `position' is also a function
               ;; (the cl alias of `cl-position'), so functionp alone
               ;; would call it with one argument and fail.
