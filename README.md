@@ -64,6 +64,17 @@ A structured, real-time view of agentic sessions with:
   another buffer (`efrit-notify-enabled`; through `alert` when
   installed, else `notifications-notify`, else the echo area).
 
+**Several agent buffers** (`efrit-agent-instances-mode`): one buffer
+per project, `*efrit[proj]*`; `C-u M-x efrit` opens another instance,
+`*efrit[proj:2]*`, and menu `j` names it.  They live in side windows
+grouped by project (`efrit-agent-side`).  `C-c t` hides and restores a
+project's agent windows per tab, `C-c l` switches between all of them.
+Each has its own session: its own turns, project root for the sandbox
+and tools, cancel (`C-c C-k` stops only this one), queue and question
+menu.  Gnus gets `*efrit[gnus]*` (`efrit-gnus-own-buffer`).  A sandbox
+prompt is one at a time: a request from another session that arrives
+while a prompt is open is denied with a note, and the model can retry.
+
 **Outside the agent buffer:**
 
 - `M-x efrit-rewrite-region`: the model rewrites the selected text per

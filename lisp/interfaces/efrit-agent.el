@@ -49,6 +49,7 @@
 (require 'efrit-rewrite)
 (require 'efrit-commit)
 (require 'efrit-edit-history)
+(require 'efrit-agent-instances)
 (require 'efrit-repl-loop)
 (declare-function efrit-session-active "efrit-session")
 (require 'efrit-agent-integration)
@@ -295,6 +296,11 @@
     (define-key map (kbd "C-c C-w") #'efrit-agent-copy-last-output)
     (define-key map (kbd "C-c C-i") #'efrit-agent-copy-session-id)
     (define-key map (kbd "C-c C-x") #'efrit-agent-restart)
+    ;; several agent buffers (efrit-agent-instances); the C-c C-<letter>
+    ;; space is full, the menu (C-c ?) has them too
+    (define-key map (kbd "C-c l") #'efrit-agent-switch-instance)
+    (define-key map (kbd "C-c t") #'efrit-agent-toggle)
+    (define-key map (kbd "C-c I") #'efrit-agent-open-instance)
     (define-key map (kbd "C-c C-y") #'efrit-agent-quote-region)
     (define-key map (kbd "C-c C-.") #'efrit-agent-regenerate)
     (define-key map (kbd "C-c C-b") #'efrit-markdown-copy-block)
@@ -389,10 +395,11 @@ is active, is cancelled as before."
   (interactive)
   (if (memq efrit-agent--status '(working paused waiting))
       (let ((session efrit-agent--repl-session))
-        ;; Abort any in-flight streaming request first so the model
-        ;; actually stops, not just the UI
+        ;; Abort this session's in-flight streaming request first so
+        ;; the model actually stops, not just the UI.  Only this
+        ;; session's: other agent buffers keep running.
         (when (fboundp 'efrit-api-stream-cancel)
-          (efrit-api-stream-cancel))
+          (efrit-api-stream-cancel (if session (efrit-repl-session-id session) nil)))
         (when session
           (pcase (efrit-repl-session-status session)
             ;; Between requests or inside a tool: the loop checks the
@@ -405,9 +412,10 @@ is active, is cancelled as before."
              (setq efrit-agent--pending-question nil)
              (efrit-agent--reset-input-prompt)
              (efrit-repl-loop-abandon-turn session))))
-        (when (efrit-session-active)
+        ;; The efrit-do session, only when this buffer is its surface
+        (when (and (efrit-session-active) (null session) efrit-agent--session-id)
           (efrit-executor-cancel))
-        (efrit-agent-set-status 'failed)
+        (efrit-agent-set-status 'failed (current-buffer))
         ;; Update status in place: a full render here erased the
         ;; incrementally rendered conversation (ef-7t0)
         (efrit-agent--refresh-status-line))
@@ -514,8 +522,12 @@ Loads the session from disk and restores it into the agent buffer."
   (let ((session (efrit-session-persist-load session-id)))
     (if (null session)
         (message "Failed to load session %s" session-id)
-      ;; Get or create agent buffer
-      (let ((buffer (efrit-agent--get-buffer)))
+      ;; A buffer of its own when instances are on (the default buffer
+      ;; may be mid-conversation); else the default buffer
+      (let ((buffer (if (bound-and-true-p efrit-agent-instances-mode)
+                        (efrit-agent-instance-create (efrit-repl-session-project-root session)
+                                                     (substring session-id -6))
+                      (efrit-agent--get-buffer))))
         (with-current-buffer buffer
           (unless (derived-mode-p 'efrit-agent-mode)
             (efrit-agent-mode))
@@ -1231,24 +1243,30 @@ Shows pending question from Claude with options if available."
 ;;; Public API
 
 ;;;###autoload
-(defun efrit ()
+(defun efrit (&optional new)
   "Open the Efrit REPL-style agent buffer.
 Type at the > prompt to start a session, or continue an active one.
+With `efrit-agent-instances-mode' on, the current project's buffer;
+a prefix argument (NEW) makes another instance of it.
 
 This is the recommended way to interact with Efrit.
 For one-off commands without the REPL UI, use \\[efrit-do] instead."
-  (interactive)
-  (efrit-agent-open))
+  (interactive "P")
+  (efrit-agent-open new))
 
 ;;;###autoload
-(defun efrit-agent-open ()
+(defun efrit-agent-open (&optional new)
   "Open or switch to the Efrit agent buffer in idle mode.
 Provides a persistent prompt buffer for interacting with Efrit.
-Type at the > prompt to start a session.
+Type at the > prompt to start a session.  With
+`efrit-agent-instances-mode', the current project's instance (NEW:
+a new one) in its side window.
 
 This is the recommended entry point for the REPL-style Efrit interface."
-  (interactive)
-  (let ((buffer (efrit-agent--get-buffer)))
+  (interactive "P")
+  (let ((buffer (if (bound-and-true-p efrit-agent-instances-mode)
+                    (if new (efrit-agent-instance-create) (efrit-agent-instance-for-project nil t))
+                  (efrit-agent--get-buffer))))
     (with-current-buffer buffer
       ;; Initialize mode if not already done
       (unless (derived-mode-p 'efrit-agent-mode)
@@ -1282,10 +1300,19 @@ This is the recommended entry point for the REPL-style Efrit interface."
   (interactive)
   (efrit-agent-open))
 
-(defun efrit-agent-add-activity (activity)
-  "Add an ACTIVITY entry to the activity log.
+(defun efrit-agent--target-buffer (buffer)
+  "BUFFER, else the current buffer when it is an agent buffer, else the default.
+The public wrappers below render on behalf of whoever calls them:
+a caller already inside a session's buffer (a tool, a loop callback
+wrapped by `efrit-agent-with-session-buffer') gets that buffer."
+  (or buffer
+      (and (derived-mode-p 'efrit-agent-mode) (current-buffer))
+      (get-buffer efrit-agent-buffer-name)))
+
+(defun efrit-agent-add-activity (activity &optional buffer)
+  "Add an ACTIVITY entry to the activity log of BUFFER.
 ACTIVITY is a plist with :type, :timestamp, and type-specific fields."
-  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+  (let ((buffer (efrit-agent--target-buffer buffer)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         ;; Add unique ID if not present
@@ -1298,10 +1325,10 @@ ACTIVITY is a plist with :type, :timestamp, and type-specific fields."
         ;; conversation region (ef-yqv)
         (efrit-agent--refresh-status-line)))))
 
-(defun efrit-agent-set-status (status)
-  "Set the session STATUS.
+(defun efrit-agent-set-status (status &optional buffer)
+  "Set the session STATUS in BUFFER.
 STATUS should be one of: working, paused, waiting, complete, failed."
-  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+  (let ((buffer (efrit-agent--target-buffer buffer)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (setq efrit-agent--status status)
@@ -1309,8 +1336,8 @@ STATUS should be one of: working, paused, waiting, complete, failed."
         (force-mode-line-update)))))
 
 (defun efrit-agent-end-session (success-p &optional stop-reason error-message
-                                          completion-message)
-  "End the current agent session.
+                                          completion-message buffer)
+  "End the agent session shown in BUFFER.
 SUCCESS-P determines whether to show complete or failed status.
 STOP-REASON is the loop's stop reason string (e.g. \"end_turn\",
 \"api-error\", \"unknown-stop-reason\").  ERROR-MESSAGE is shown to
@@ -1318,7 +1345,7 @@ the user when the session failed.  COMPLETION-MESSAGE is Claude's
 final answer (the session_complete tool's message); when non-nil it
 is rendered in the conversation (ef-ter)."
   (let* ((interrupted (equal stop-reason "interrupted"))
-         (buffer (get-buffer efrit-agent-buffer-name))
+         (buffer (efrit-agent--target-buffer buffer))
          (reason (if (or success-p interrupted) nil
                    (or error-message stop-reason "unknown error"))))
     (when (buffer-live-p buffer)
@@ -1403,13 +1430,13 @@ path), the layout it set up is left untouched."
     ;; Display the buffer
     (efrit-agent-display buffer t)))
 
-(defun efrit-agent-add-message (text &optional type)
+(defun efrit-agent-add-message (text &optional type buffer)
   "Add a message with TEXT to the conversation.
 TYPE can be:
   nil or `user' - User message with > prefix
   `claude' - Claude's response
   `error' - Error message with error styling"
-  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+  (let ((buffer (efrit-agent--target-buffer buffer)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (pcase type
@@ -1424,29 +1451,29 @@ TYPE can be:
             (list 'efrit-type 'error-message
                   'efrit-id (format "err-%d" (cl-incf efrit-agent--message-counter))))))))))
 
-(defun efrit-agent-show-tool-start (tool-name &optional input)
+(defun efrit-agent-show-tool-start (tool-name &optional input buffer)
   "Show that TOOL-NAME has started with optional INPUT.
 Returns a tool-id that can be used with `efrit-agent-show-tool-result'.
 Uses incremental update - does not trigger full re-render."
-  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+  (let ((buffer (efrit-agent--target-buffer buffer)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (efrit-agent--add-tool-call tool-name input)))))
 
-(defun efrit-agent-show-tool-result (tool-id result success-p &optional elapsed)
+(defun efrit-agent-show-tool-result (tool-id result success-p &optional elapsed buffer)
   "Update tool TOOL-ID with RESULT, SUCCESS-P status, and optional ELAPSED time.
 Uses in-place update - does not trigger full re-render."
-  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+  (let ((buffer (efrit-agent--target-buffer buffer)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (efrit-agent--update-tool-result tool-id result success-p elapsed)))))
 
-(defun efrit-agent-show-question (question &optional options)
+(defun efrit-agent-show-question (question &optional options buffer)
   "Display a QUESTION from Claude with optional OPTIONS for the user to select.
 OPTIONS is a list of strings representing the available choices.
 Returns a question-id for tracking.
 Uses incremental update - does not trigger full re-render."
-  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+  (let ((buffer (efrit-agent--target-buffer buffer)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         ;; Store for keyboard shortcut handling
@@ -1456,28 +1483,28 @@ Uses incremental update - does not trigger full re-render."
         ;; Add to conversation incrementally
         (efrit-agent--add-question question options)))))
 
-(defun efrit-agent-stream-content (text)
+(defun efrit-agent-stream-content (text &optional buffer)
   "Stream TEXT content from Claude to the conversation.
 Consecutive calls append to the same message until a non-text event occurs.
 This provides smooth character-by-character or chunk-by-chunk display."
-  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+  (let ((buffer (efrit-agent--target-buffer buffer)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (efrit-agent--add-claude-message text)))))
 
-(defun efrit-agent-stream-end ()
+(defun efrit-agent-stream-end (&optional buffer)
   "End the current streaming message.
 Call this when Claude's text response is complete."
-  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+  (let ((buffer (efrit-agent--target-buffer buffer)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (efrit-agent--stream-end-message)))))
 
-(defun efrit-agent-show-thinking (&optional text)
+(defun efrit-agent-show-thinking (&optional text buffer)
   "Show the thinking indicator with optional TEXT description.
 Call this when Claude is processing but no tool is running.
 The indicator will automatically hide when content starts arriving."
-  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+  (let ((buffer (efrit-agent--target-buffer buffer)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         ;; Header-line spinner works in both render architectures;
@@ -1485,28 +1512,28 @@ The indicator will automatically hide when content starts arriving."
         (efrit-agent--spinner-start text)
         (efrit-agent--show-thinking text)))))
 
-(defun efrit-agent-hide-thinking ()
+(defun efrit-agent-hide-thinking (&optional buffer)
   "Hide the thinking indicator.
 Usually not needed as it hides automatically when content arrives."
-  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+  (let ((buffer (efrit-agent--target-buffer buffer)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (efrit-agent--hide-thinking)))))
 
-(defun efrit-agent-update-thinking (text)
+(defun efrit-agent-update-thinking (text &optional buffer)
   "Update the thinking indicator with new TEXT.
 Use this to show progress during thinking, e.g., \"analyzing code...\"."
-  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+  (let ((buffer (efrit-agent--target-buffer buffer)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (efrit-agent--update-thinking text)))))
 
-(defun efrit-agent-show-todos (todos)
+(defun efrit-agent-show-todos (todos &optional buffer)
   "Display or update TODOS inline in the conversation.
 TODOS is a list of plists with :status, :content, :id.
 Status can be: pending, in_progress, completed.
 Updates in-place if TODOs already exist in the conversation."
-  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+  (let ((buffer (efrit-agent--target-buffer buffer)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (setq efrit-agent--todos todos)

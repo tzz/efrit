@@ -375,18 +375,38 @@ GRANTS `unset' removes the override."
   ;; before allowing it; the tool runs the edited text instead
   edited)
 
-(defvar efrit-sandbox--edited-input nil
-  "The text the user edited at the last prompt, for the tool that asked.
-\(TOOL . TEXT); taken once by `efrit-sandbox-take-edited-input'.")
+;;; Per-turn state, per session
+;;
+;; The once grant, the edited input and the standing answer (N / q)
+;; belong to one turn of one session.  With several sessions (and
+;; prompts that nest: a sentinel runs another session's tools inside
+;; this session's `recursive-edit'), a global would let session B
+;; take A's once grant or inherit A's deny-all.  They are kept per
+;; `efrit-current-session-id'; code outside any session uses the nil
+;; key (multi-session audit, 2026-09-28).
+
+(defvar efrit-sandbox--turn-state (make-hash-table :test 'equal)
+  "Session id (or nil) -> plist (:once GRANT :edited (TOOL . TEXT) :answer SYMBOL).")
+
+(defvar efrit-current-session-id)
+
+(defun efrit-sandbox--turn-get (key)
+  (plist-get (gethash (bound-and-true-p efrit-current-session-id) efrit-sandbox--turn-state) key))
+
+(defun efrit-sandbox--turn-set (key value)
+  (let ((id (bound-and-true-p efrit-current-session-id)))
+    (puthash id (plist-put (gethash id efrit-sandbox--turn-state) key value)
+             efrit-sandbox--turn-state)
+    value))
 
 (defun efrit-sandbox-take-edited-input (tool)
   "The edited input the user supplied at TOOL's prompt just now, or nil.
 Consumed: a second call returns nil.  Callers: shell_exec runs the
 edited command line, eval_sexp reads the edited form."
-  (when (and efrit-sandbox--edited-input
-             (equal (car efrit-sandbox--edited-input) tool))
-    (prog1 (cdr efrit-sandbox--edited-input)
-      (setq efrit-sandbox--edited-input nil))))
+  (let ((edited (efrit-sandbox--turn-get :edited)))
+    (when (and edited (equal (car edited) tool))
+      (prog1 (cdr edited)
+        (efrit-sandbox--turn-set :edited nil)))))
 
 (defun efrit-sandbox-request-editable-p (req)
   "Non-nil if REQ is one whose input the user can edit before allowing:
@@ -398,9 +418,6 @@ a shell command line or an elisp form."
 
 (defvar efrit-sandbox--session-grants (make-hash-table :test 'equal)
   "Project root -> list of grant plists valid for this Emacs session.")
-
-(defvar efrit-sandbox--once-grant nil
-  "A grant that applies to the very next check only.")
 
 (defvar efrit-sandbox--project-grants (make-hash-table :test 'equal)
   "Project root -> list of grant plists loaded from the project's store.")
@@ -566,10 +583,10 @@ For `shell', TARGET is the command line (or t for \"any command\")."
       (eq (efrit-sandbox-remote-policy target cap) 'allow))
      ;; an always-ask shell line: only its own once-grant applies
      ((and (eq cap 'shell) (stringp target) (efrit-sandbox-shell-always-ask-match target))
-      (when (and efrit-sandbox--once-grant
-                 (efrit-sandbox--grant-covers-p efrit-sandbox--once-grant cap target))
-        (setq efrit-sandbox--once-grant nil)
-        t))
+      (let ((once (efrit-sandbox--turn-get :once)))
+        (when (and once (efrit-sandbox--grant-covers-p once cap target))
+          (efrit-sandbox--turn-set :once nil)
+          t)))
      ;; default project grants (never for a remote file, see above;
      ;; tested first so a remote target does not read the project's
      ;; settings on the host just to be told no)
@@ -584,9 +601,9 @@ For `shell', TARGET is the command line (or t for \"any command\")."
                (efrit-sandbox-grants root))
       t)
      ;; the one-shot grant
-     ((and efrit-sandbox--once-grant
-           (efrit-sandbox--grant-covers-p efrit-sandbox--once-grant cap target))
-      (setq efrit-sandbox--once-grant nil)
+     ((let ((once (efrit-sandbox--turn-get :once)))
+        (and once (efrit-sandbox--grant-covers-p once cap target)))
+      (efrit-sandbox--turn-set :once nil)
       t)
      (t nil))))
 
@@ -698,7 +715,7 @@ persisted via `efrit-sandbox-store-save'."
   (let* ((root (or root (efrit-sandbox-project-root)))
          (grant (list :cap cap :target target :scope scope)))
     (pcase scope
-      ('once (setq efrit-sandbox--once-grant grant))
+      ('once (efrit-sandbox--turn-set :once grant))
       ('session (puthash root (efrit-sandbox--absorb grant (gethash root efrit-sandbox--session-grants))
                          efrit-sandbox--session-grants))
       ('project
@@ -742,29 +759,31 @@ prefixes are absorbed; shell lists, buffers and t are left alone."
   (if root
       (remhash root efrit-sandbox--session-grants)
     (clrhash efrit-sandbox--session-grants))
-  (setq efrit-sandbox--once-grant nil))
+  (efrit-sandbox--turn-set :once nil))
 
 ;;; The check
 
-(defvar efrit-sandbox--turn-answer nil
-  "A standing answer for the rest of the turn: `deny-all' or `abort', or nil.
+(defun efrit-sandbox-turn-answer ()
+  "The standing answer for the rest of this session's turn: `deny-all', `abort', or nil.
 Set by the prompt's N (deny every further request this turn) and q
-\(abort the turn); cleared by `efrit-sandbox-begin-turn'.")
+\(abort the turn); cleared by `efrit-sandbox-begin-turn'."
+  (efrit-sandbox--turn-get :answer))
 
 (defun efrit-sandbox-begin-turn ()
-  "Forget the standing answer of the previous turn.  Loops call this per turn."
-  (setq efrit-sandbox--turn-answer nil))
+  "Forget the previous turn's standing answer, once grant and edited input.
+Loops call this per turn, as the session's code."
+  (puthash (bound-and-true-p efrit-current-session-id) nil efrit-sandbox--turn-state))
 
 (defun efrit-sandbox-deny-rest-of-turn ()
   "Answer no to this request and to every further request this turn.
 The model keeps running; each denied tool gets the usual result."
-  (setq efrit-sandbox--turn-answer 'deny-all))
+  (efrit-sandbox--turn-set :answer 'deny-all))
 
 (defun efrit-sandbox-abort-turn ()
   "Answer no and stop the turn: the tool is interrupted as C-g would.
 The loop records an interrupted tool result and ends the turn; the
 conversation stays and the next input continues it."
-  (setq efrit-sandbox--turn-answer 'abort))
+  (efrit-sandbox--turn-set :answer 'abort))
 
 (defun efrit-sandbox--ask-without-clock (req)
   "Call `efrit-sandbox-request-function' on REQ with efrit's clocks paused.
@@ -852,13 +871,13 @@ With `efrit-sandbox-enabled' nil this is a no-op that returns t."
                      :tool tool :detail detail))
                (scope (and efrit-sandbox-request-function
                            ;; a standing N from earlier this turn: no prompt
-                           (not (eq efrit-sandbox--turn-answer 'deny-all))
+                           (not (eq (efrit-sandbox-turn-answer) 'deny-all))
                            (efrit-sandbox--ask-without-clock req))))
           ;; q in the prompt: this tool is interrupted, the loop ends
           ;; the turn the way it does for C-g
-          (when (eq efrit-sandbox--turn-answer 'abort)
+          (when (eq (efrit-sandbox-turn-answer) 'abort)
             ;; one quit ends the turn; do not keep quitting into the next
-            (setq efrit-sandbox--turn-answer nil)
+            (efrit-sandbox--turn-set :answer nil)
             (efrit-log 'info "sandbox: turn aborted by the user at %s %s (%s)" cap ctarget tool)
             (when (fboundp 'efrit-publish)
               (efrit-publish 'sandbox-denied `((:cap . ,cap) (:target . ,ctarget) (:tool . ,tool)
@@ -873,7 +892,7 @@ With `efrit-sandbox-enabled' nil this is a no-op that returns t."
           ;; An edited input applies to this run only, whatever scope
           ;; was chosen: the grant would cover the original line
           (when (efrit-sandbox-request-edited req)
-            (setq efrit-sandbox--edited-input (cons tool (efrit-sandbox-request-edited req)))
+            (efrit-sandbox--turn-set :edited (cons tool (efrit-sandbox-request-edited req)))
             (when (memq scope '(session project)) (setq scope 'once)))
           (if (memq scope '(once session project))
               (progn

@@ -42,6 +42,7 @@
 (require 'efrit-do-handlers)          ; the handlers efrit-do-dispatch declares
 (require 'efrit-context-sources)
 (require 'efrit-events)
+(defvar efrit-project-root)
 (require 'efrit-models)
 
 (defvar efrit-default-model)
@@ -113,7 +114,7 @@ requiring an active efrit-do session (ef-dcn).")
    :record-tool-fn #'efrit-repl-session-record-tool
    :wrap-dispatch-fn (lambda (session thunk)
                        (let ((efrit-repl-loop--tool-session session))
-                         (funcall thunk)))
+                         (efrit-repl-loop--with-session session thunk)))
    ;; The prompt, the schema and the dispatcher are the efrit-do
    ;; interface's; the engine only sees these three functions
    :system-prompt-fn #'efrit-repl-loop--system-prompt
@@ -176,11 +177,16 @@ Returns the session ID."
       ;; efrit-tools and were never reset, so after ~100 tool calls in
       ;; an Emacs session every eval_sexp failed with "rate limit
       ;; exceeded" -- the "tool limit reached" the model then reported.
-      (efrit-tools--reset-rate-limits)
-      ;; Same for the circuit breaker's counters (30 tool calls per
-      ;; *turn*, not per Emacs session)
-      (efrit-do--circuit-breaker-reset)
-      (efrit-sandbox-begin-turn)
+      ;; As this session's code: the counters and the sandbox's
+      ;; standing answer are per session
+      (efrit-repl-loop--with-session
+       session
+       (lambda ()
+         (efrit-tools--reset-rate-limits)
+         ;; Same for the circuit breaker's counters (30 tool calls per
+         ;; *turn*, not per Emacs session)
+         (efrit-do--circuit-breaker-reset)
+         (efrit-sandbox-begin-turn)))
       (efrit-repl-session-begin-turn session)
       (efrit-publish 'turn-start `((:session-id . ,session-id)
                                    (:input . ,user-input)))
@@ -252,11 +258,33 @@ seam, so the text starts the next turn instead of vanishing."
   "Continue async loop for REPL SESSION, sending next request to Claude."
   (efrit-loop-continue-iteration session efrit-repl-loop--adapter))
 
+(defun efrit-repl-loop--with-session (session thunk)
+  "Call THUNK as SESSION's code: its id is the current session and its
+project root is `default-directory' and `efrit-project-root'.
+Tools and API callbacks run from process sentinels, in whatever
+buffer happened to be current; without this the sandbox, the limits,
+the settings and shell commands would take the root of that
+bystander (multi-session audit, 2026-09-28).  The current buffer is
+left alone: tools that act on \"the current buffer\" mean the user's."
+  (let* ((root (efrit-repl-session-project-root session))
+         (efrit-project-root (or root efrit-project-root))
+         (default-directory (or (and root (file-directory-p root) (file-name-as-directory root))
+                                default-directory)))
+    (efrit-with-session (efrit-repl-session-id session)
+      (funcall thunk))))
+
 (defun efrit-repl-loop--api-call (session messages callback)
   "Make async API call to Claude with MESSAGES for REPL SESSION.
-CALLBACK is (lambda (response error) ...) called when complete."
-  (efrit-loop-api-call (efrit-repl-session-id session) messages callback
-                       efrit-repl-loop--adapter))
+CALLBACK is (lambda (response error) ...) called when complete, as
+SESSION's code (`efrit-repl-loop--with-session')."
+  (efrit-repl-loop--with-session
+   session
+   (lambda ()
+     (efrit-loop-api-call (efrit-repl-session-id session) messages
+                          (lambda (response error)
+                            (efrit-repl-loop--with-session
+                             session (lambda () (funcall callback response error))))
+                          efrit-repl-loop--adapter))))
 
 (defun efrit-repl-loop--execute-tools (session content)
   "Execute tools requested in Claude's CONTENT for REPL SESSION."

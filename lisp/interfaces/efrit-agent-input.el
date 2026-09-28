@@ -57,8 +57,9 @@ persists and accumulates conversation context.")
 (declare-function transient-active-prefix "transient")
 (declare-function efrit-agent--turn-starts "efrit-agent")
 
-(defvar efrit-agent--question-menu-timer nil
-  "The timer that will open the question menu, or nil.")
+(defvar-local efrit-agent--question-menu-timer nil
+  "The timer that will open this buffer's question menu, or nil.
+Buffer-local: another session's question must not cancel it.")
 
 (defun efrit-agent--add-question (question &optional options)
   "Add a QUESTION from Claude to the conversation region.
@@ -134,8 +135,12 @@ the menu stood over an idle buffer, 2026-09-25) and exits the menu if
 it is showing.  `transient-current-command' is bound only while a
 suffix runs, so `transient-active-prefix' is the check."
   (efrit-agent--cancel-question-menu-timer)
+  ;; only a menu that answers into THIS buffer; another session's
+  ;; menu stays up
   (when (and (fboundp 'transient-active-prefix)
-             (transient-active-prefix '(efrit-agent-question-menu)))
+             (transient-active-prefix '(efrit-agent-question-menu))
+             (or (null efrit-agent--question-menu-buffer)
+                 (eq efrit-agent--question-menu-buffer (current-buffer))))
     ;; `transient-quit-one' is an empty command: the exit happens in
     ;; transient's pre-command hook when the USER invokes it.  Called
     ;; from Lisp it did nothing and the menu stayed up (2026-09-26).
@@ -711,12 +716,23 @@ API-INPUT, when given, is what the model receives in place of INPUT
                             #'efrit-agent--on-turn-complete api-input)
        t))))
 
-(defun efrit-agent-repl-session ()
-  "The REPL session of the agent buffer, created if the buffer has none.
-For packages that drive several turns through `efrit-submit' and need
-the session's history marks (`efrit-repl-session-history-mark')."
+(defun efrit-agent-target-buffer (&optional buffer)
+  "The agent buffer a Lisp caller means: BUFFER, the current one when
+it is an agent buffer, else the default agent buffer, created."
   (require 'efrit-agent)
-  (with-current-buffer (efrit-agent--get-buffer)
+  (cond
+   ((bufferp buffer) buffer)
+   ((stringp buffer) (get-buffer-create buffer))
+   ((derived-mode-p 'efrit-agent-mode) (current-buffer))
+   (t (efrit-agent--get-buffer))))
+
+(defun efrit-agent-repl-session (&optional buffer)
+  "The REPL session of agent BUFFER, created if the buffer has none.
+BUFFER defaults per `efrit-agent-target-buffer'.  For packages that
+drive several turns through `efrit-submit' and need the session's
+history marks (`efrit-repl-session-history-mark')."
+  (require 'efrit-agent)
+  (with-current-buffer (efrit-agent-target-buffer buffer)
     (unless (derived-mode-p 'efrit-agent-mode)
       (efrit-agent-mode))
     (unless efrit-agent--repl-session
@@ -725,18 +741,19 @@ the session's history marks (`efrit-repl-session-history-mark')."
     efrit-agent--repl-session))
 
 ;;;###autoload
-(defun efrit-submit (shown &optional api-input)
+(defun efrit-submit (shown &optional api-input buffer)
   "Start a REPL turn from Lisp: show SHOWN in the conversation, send API-INPUT.
 For packages that prepare a prompt over data they gathered (a mail
 reader over selected messages, say): SHOWN is the short line the user
 sees as their turn, API-INPUT (default SHOWN) the full text the model
-receives, with the usual editor-context block prepended.  Opens the
-agent buffer if needed.  Returns non-nil if the turn started; nil
-when the session is busy, in which case nothing was sent and nothing
-was shown -- the caller decides whether to wait (`efrit-subscribe' to
+receives, with the usual editor-context block prepended.  BUFFER is
+the agent buffer to use (default per `efrit-agent-target-buffer'),
+opened if needed.  Returns non-nil if the turn started; nil when the
+session is busy, in which case nothing was sent and nothing was
+shown -- the caller decides whether to wait (`efrit-subscribe' to
 `status') or to give up."
   (require 'efrit-agent)
-  (let ((buffer (efrit-agent--get-buffer)))
+  (let ((buffer (efrit-agent-target-buffer buffer)))
     (with-current-buffer buffer
       (unless (derived-mode-p 'efrit-agent-mode)
         (efrit-agent-mode))
@@ -769,7 +786,8 @@ SESSION is the REPL session, STOP-REASON indicates why the turn ended."
        ("paused" 'paused)
        ("interrupted" 'interrupted)
        ((or "api-error" "error") 'failed)
-       (_ 'idle))))
+       (_ 'idle))
+     (and session (efrit-repl-session-buffer session))))
   ;; Reset prompt if we were waiting -- but keep the Answer: prompt when
   ;; the turn paused on request_user_input (ef-dcn).  This callback runs
   ;; from the API response handler, whose current buffer is NOT the agent
@@ -891,7 +909,7 @@ The conversation display is cleared and a new REPL session is created."
   ;; Reset status
   (setq efrit-agent--status 'idle)
   (when (fboundp 'efrit-agent-set-status)
-    (efrit-agent-set-status 'idle))
+    (efrit-agent-set-status 'idle (current-buffer)))
   (message "Efrit: started new conversation"))
 
 ;;; Small conveniences

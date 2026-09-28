@@ -91,7 +91,8 @@ When nil (or curl is missing) the url-retrieve path is used."
   (finished nil) (partial nil) (cancelled nil)
   (error-body "")
   (started nil)           ; float-time the request left, for the log
-  (context nil))          ; (URL MODEL TRANSPORT PURPOSE) for error messages
+  (context nil)           ; (URL MODEL TRANSPORT PURPOSE) for error messages
+  (session-id nil))       ; `efrit-current-session-id' when the request left
 
 (defvar efrit-api-stream--active nil
   "List of in-flight `efrit-api-stream' structs.")
@@ -351,6 +352,7 @@ Returns the `efrit-api-stream' handle, for `efrit-api-stream-cancel'."
                   (cons '("accept" . "text/event-stream") (plist-get req :headers))))
          (st (efrit-api-stream--make :callback callback :on-text on-text
                                      :config-file config
+                                     :session-id (bound-and-true-p efrit-current-session-id)
                                      :started (efrit-api--log-request request-data "curl (streaming)")
                                      ;; captured now; the sentinel runs
                                      ;; outside the caller's bindings
@@ -396,8 +398,13 @@ Returns the `efrit-api-stream' handle, for `efrit-api-stream-cancel'."
 
 (defun efrit-api-stream-cancel (&optional st)
   "Cancel stream ST, or every active stream when nil.
-The callback receives error \"interrupted\"."
-  (dolist (s (if st (list st) (copy-sequence efrit-api-stream--active)))
+ST may also be a session id: then the streams of that session.
+The callback receives error \"interrupted\", or the partial answer."
+  (dolist (s (cond
+              ((efrit-api-stream-p st) (list st))
+              ((stringp st) (cl-remove-if-not (lambda (x) (equal (efrit-api-stream-session-id x) st))
+                                              efrit-api-stream--active))
+              (t (copy-sequence efrit-api-stream--active))))
     (setf (efrit-api-stream-cancelled s) t)
     (when-let* ((p (efrit-api-stream-process s)))
       (when (process-live-p p)

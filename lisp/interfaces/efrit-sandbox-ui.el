@@ -369,15 +369,16 @@ Returns once/session/project or nil.  Closing the menu any other way
   (let* ((tool (or (efrit-sandbox-request-tool req) "a tool"))
          (what (efrit-sandbox-ui--scope-word req)))
     (efrit-sandbox-ui--note (format "%s asks to %s" tool what) 'efrit-sandbox-prompt-face)
-    (let ((answer (if (efrit-sandbox-ui-use-menu-p)
-                      (efrit-sandbox-ui--ask-with-menu req)
-                    (efrit-sandbox-ui--ask-in-echo-area req))))
+    (let ((answer (efrit-with-prompt-turn (format "%s's sandbox request" tool) nil
+                    (if (efrit-sandbox-ui-use-menu-p)
+                        (efrit-sandbox-ui--ask-with-menu req)
+                      (efrit-sandbox-ui--ask-in-echo-area req)))))
       (efrit-sandbox-ui--note
        (pcase answer
          ('once (format "granted once: %s" what))
          ('session (format "granted for this session: %s" what))
          ('project (format "granted for this project (saved): %s" what))
-         (_ (pcase efrit-sandbox--turn-answer
+         (_ (pcase (efrit-sandbox-turn-answer)
               ('abort (format "denied, turn aborted: %s" what))
               ('deny-all (format "denied, and everything else this turn: %s" what))
               (_ (format "denied: %s" what)))))

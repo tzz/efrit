@@ -113,8 +113,9 @@ CALLBACK and does the remhash)."
 REASON is the engine's stop reason; the adapter translates it to its
 own conventions.  ERROR-MESSAGE and COMPLETION-MESSAGE are surfaced to
 the user where the session type supports it."
-  ;; A "continue once" raise of a limit lasts for this turn only
-  (efrit-limits-reset-once)
+  ;; A "continue once" raise of a limit lasts for this turn only.
+  ;; This session's project only: another session's raise stands.
+  (efrit-limits-reset-once (efrit-limits-project-root))
   (efrit-publish 'turn-complete
                  `((:session-id . ,(funcall (efrit-loop-adapter-id-fn adapter) session))
                    (:stop-reason . ,reason)

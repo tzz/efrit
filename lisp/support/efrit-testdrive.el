@@ -176,6 +176,13 @@
 (declare-function efrit-edit-history-mode "efrit-edit-history")
 (declare-function efrit-edit-history-record "efrit-edit-history")
 (declare-function efrit-context-snapshot "efrit-context-sources")
+(declare-function efrit-agent-open-instance "efrit-agent-instances")
+(declare-function efrit-agent-instance-create "efrit-agent-instances")
+(declare-function efrit-repl-loop--with-session "efrit-repl-loop")
+(declare-function efrit-agent-buffer-for "efrit-agent-core")
+(declare-function efrit-sandbox-deny-rest-of-turn "efrit-sandbox")
+(declare-function efrit-sandbox-turn-answer "efrit-sandbox")
+(defvar efrit-sandbox--turn-state)
 (defvar efrit-api-streaming)
 (defvar efrit-rewrite-preview)
 (defvar efrit-context-sources)
@@ -410,7 +417,13 @@ Canonical because the sandbox keys grants on `efrit-sandbox-canonical'
 ;;;; Driving the agent
 
 (defun efrit-testdrive--on-event (event)
-  (push event efrit-testdrive--events))
+  "Record EVENT when it is the drive's session's (or has no session)."
+  (let ((id (alist-get :session-id event))
+        (mine (ignore-errors
+                (efrit-repl-session-id
+                 (buffer-local-value 'efrit-agent--repl-session (efrit-testdrive--agent-buffer))))))
+    (when (or (null id) (null mine) (equal id mine))
+      (push event efrit-testdrive--events))))
 
 (defun efrit-testdrive--clear-events ()
   (setq efrit-testdrive--events nil))
@@ -420,9 +433,15 @@ Canonical because the sandbox keys grants on `efrit-sandbox-canonical'
   (cl-remove-if-not (lambda (e) (eq (alist-get :type e) type))
                     (reverse efrit-testdrive--events)))
 
+(defvar efrit-testdrive--buffer-name nil
+  "The agent buffer the drive uses: its own instance when instances
+are on (another session's traffic must not reach the drive's
+assertions), else the default buffer.")
+
 (defun efrit-testdrive--agent-buffer ()
   (require 'efrit-agent)
-  (get-buffer efrit-agent-buffer-name))
+  (or (and efrit-testdrive--buffer-name (get-buffer efrit-testdrive--buffer-name))
+      (get-buffer efrit-agent-buffer-name)))
 
 (defun efrit-testdrive--session ()
   (with-current-buffer (efrit-testdrive--agent-buffer) efrit-agent--repl-session))
@@ -458,7 +477,7 @@ Canonical because the sandbox keys grants on `efrit-sandbox-canonical'
     (efrit-agent--session-busy-p))
   (efrit-testdrive--clear-events)
   (cl-incf efrit-testdrive--turns)
-  (unless (efrit-submit shown api-input)
+  (unless (efrit-submit shown api-input (efrit-testdrive--agent-buffer))
     (error "The agent buffer is busy; the turn was not sent")))
 
 (defun efrit-testdrive--turn (shown &optional api-input)
@@ -588,7 +607,13 @@ Anything here is a step that did not grant what its turn needed.")
   (efrit-testdrive--step 0 "The agent buffer opens, with a header, in the project"
     (require 'efrit-agent)
     (let ((default-directory efrit-testdrive--root))
-      (save-window-excursion (call-interactively #'efrit)))
+      (save-window-excursion
+        (setq efrit-testdrive--buffer-name
+              (if (bound-and-true-p efrit-agent-instances-mode)
+                  ;; the drive's own instance: the user's sessions keep
+                  ;; running and their events stay out of the drive
+                  (buffer-name (efrit-agent-open-instance t))
+                (progn (call-interactively #'efrit) nil)))))
     (with-current-buffer (efrit-testdrive--agent-buffer)
       ;; A buffer left from an earlier drive points at that drive's
       ;; deleted project and may hold its session (mid-turn when the
@@ -1390,6 +1415,62 @@ Anything here is a step that did not grant what its turn needed.")
                        (if snap (truncate-string-to-width (string-trim snap) 80 nil nil "…") "none")))))
         (kill-buffer buf)))))
 
+(defun efrit-testdrive--section-9 ()
+  "Several sessions: a second agent buffer gets its own turns, root, cancel and prompts."
+  (efrit-testdrive--out "\n## 9. Several sessions")
+  (efrit-testdrive--step 9 "A second instance for another project has its own name, session and root"
+    (require 'efrit-agent-instances)
+    (let* ((other (file-name-as-directory (make-temp-file "efrit-drive-other-" t)))
+           (buf nil))
+      (unwind-protect
+          (progn
+            (make-directory (expand-file-name ".git" other))
+            (setq buf (efrit-agent-instance-create other))
+            (let* ((session (buffer-local-value 'efrit-agent--repl-session buf))
+                   (seen nil))
+              (with-temp-buffer
+                (efrit-repl-loop--with-session session (lambda () (setq seen default-directory))))
+              (efrit-testdrive--check
+               (and (string-match-p "^\\*efrit\\[efrit-drive-other" (buffer-name buf))
+                    (not (eq session (efrit-testdrive--session)))
+                    (equal seen other)
+                    (eq buf (efrit-agent-buffer-for (efrit-repl-session-id session))))
+               (format "buffer %s, root as its code %s" (buffer-name buf) seen))))
+        (when (buffer-live-p buf) (kill-buffer buf))
+        (delete-directory other t))))
+  (efrit-testdrive--step 9 "Two live turns at once render each in its own buffer"
+    (require 'efrit-agent-instances)
+    (let* ((other (file-name-as-directory (make-temp-file "efrit-drive-two-" t)))
+           (buf (efrit-agent-instance-create other))
+           (mine (efrit-testdrive--agent-buffer)))
+      (unwind-protect
+          (progn
+            (efrit-testdrive--submit "Reply with exactly the word FOXTROT and nothing else.")
+            (efrit-submit "Reply with exactly the word GOLF and nothing else." nil buf)
+            (let ((done (efrit-testdrive--wait-for
+                         (lambda () (and (efrit-testdrive--turn-ended-p)
+                                         (not (with-current-buffer buf (efrit-agent--session-busy-p)))))
+                         nil "both turns")))
+              (let ((a (with-current-buffer mine (buffer-substring-no-properties (point-min) (point-max))))
+                    (b (with-current-buffer buf (buffer-substring-no-properties (point-min) (point-max)))))
+                (efrit-testdrive--check
+                 (and done (string-match-p "FOXTROT" a) (not (string-match-p "GOLF" a))
+                      (string-match-p "GOLF" b) (not (string-match-p "FOXTROT" b)))
+                 (format "mine has FOXTROT %s / GOLF %s; other has GOLF %s / FOXTROT %s"
+                         (and (string-match-p "FOXTROT" a) t) (and (string-match-p "GOLF" a) t)
+                         (and (string-match-p "GOLF" b) t) (and (string-match-p "FOXTROT" b) t))))))
+        (when (buffer-live-p buf)
+          (with-current-buffer buf (ignore-errors (efrit-agent-cancel)))
+          (kill-buffer buf))
+        (delete-directory other t))))
+  (efrit-testdrive--step 9 "A standing sandbox denial in one session does not reach another"
+    (let ((efrit-sandbox--turn-state (make-hash-table :test 'equal)))
+      (efrit-with-session "drive-A" (efrit-sandbox-deny-rest-of-turn))
+      (efrit-testdrive--check
+       (and (eq 'deny-all (efrit-with-session "drive-A" (efrit-sandbox-turn-answer)))
+            (null (efrit-with-session "drive-B" (efrit-sandbox-turn-answer))))
+       "A deny-all, B nil"))))
+
 (defconst efrit-testdrive--sections
   '((0 "Setup" efrit-testdrive--section-0)
     (1 "A round trip" efrit-testdrive--section-1)
@@ -1399,7 +1480,8 @@ Anything here is a step that did not grant what its turn needed.")
     (5 "Input: mentions, commands, drop, restart" efrit-testdrive--section-5)
     (6 "Transcript tools: quote, narrow, transcript, lists, tables, images" efrit-testdrive--section-6)
     (7 "Copilot batch: context keys, balancer, edit-before-allow, rewrite, commit, scope, regenerate, presets, code blocks" efrit-testdrive--section-7)
-    (8 "Minuet batch: text windows, kept partial answers, inline diff, edit history" efrit-testdrive--section-8))
+    (8 "Minuet batch: text windows, kept partial answers, inline diff, edit history" efrit-testdrive--section-8)
+    (9 "Several sessions: instances, parallel turns, per-session sandbox state" efrit-testdrive--section-9))
   "The automatic drive's sections.")
 
 ;;;; The tour: what needs eyes
@@ -1499,6 +1581,14 @@ Anything here is a step that did not grant what its turn needed.")
     (efrit-testdrive--after-confirm "In any writable buffer select a sentence or a line, run M-x efrit-rewrite-region, and ask for a small change (for example `make it shorter').  Wait for the prompt.  Then RET here."
       (efrit-testdrive--ask "Was the old line shown struck in red with the new line in green right below it, in the buffer itself?  Did `y' replace the text and `n' leave it as it was, with the colours gone either way?"))))
 
+(defun efrit-testdrive--tour-instances ()
+  (efrit-testdrive--out "\n## Several agent buffers")
+  (efrit-testdrive--step 'tour "Instances open in side windows per project and toggle per tab"
+    (if (not (bound-and-true-p efrit-agent-instances-mode))
+        (cons 'SKIP "efrit-agent-instances-mode is off")
+      (efrit-testdrive--after-confirm "In a file of some project run C-u M-x efrit (a second instance), then in a file of another project M-x efrit.  Then RET here."
+        (efrit-testdrive--ask "Three agent windows on the right, named *efrit[proj]*, *efrit[proj:2]*, *efrit[other]*, grouped by project?  In one press C-c t: did that project's windows hide, and C-c t again bring them back?  C-c l: does completion list all three?")))))
+
 (defconst efrit-testdrive--tour-stops
   '(("Header" efrit-testdrive--tour-header)
     ("Folding" efrit-testdrive--tour-folding)
@@ -1508,7 +1598,8 @@ Anything here is a step that did not grant what its turn needed.")
     ("Drag and drop" efrit-testdrive--tour-drop)
     ("Images and the transcript file" efrit-testdrive--tour-images)
     ("Edit before allow, candidates, notifications" efrit-testdrive--tour-copilot)
-    ("Inline rewrite preview" efrit-testdrive--tour-inline-diff))
+    ("Inline rewrite preview" efrit-testdrive--tour-inline-diff)
+    ("Several agent buffers" efrit-testdrive--tour-instances))
   "The tour's stops: (TITLE FUNCTION).")
 
 ;;;; Driver

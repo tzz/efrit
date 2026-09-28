@@ -133,6 +133,10 @@ immediately, telling the model to use the request_user_input tool."
 (defvar efrit-tools--total-call-count 0
   "Count of all tool calls in current session.")
 
+(require 'efrit-events)
+;; per turn of one session, not shared across sessions
+(efrit-session-local 'efrit-tools--eval-count 'efrit-tools--total-call-count)
+
 (defun efrit-tools--reset-rate-limits ()
   "Reset the per-turn tool counters.
 Called at the start of every REPL turn and every efrit-do session;

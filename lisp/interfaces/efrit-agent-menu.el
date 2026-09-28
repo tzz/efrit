@@ -37,6 +37,10 @@
 (declare-function efrit-preset-apply "efrit-presets")
 (declare-function efrit-markdown-copy-block "efrit-markdown")
 (declare-function efrit-markdown-insert-block-other-window "efrit-markdown")
+(declare-function efrit-agent-open-instance "efrit-agent-instances")
+(declare-function efrit-agent-switch-instance "efrit-agent-instances")
+(declare-function efrit-agent-rename-instance "efrit-agent-instances")
+(declare-function efrit-agent-toggle "efrit-agent-instances")
 
 (defun efrit-agent-menu--key (command)
   "The key COMMAND is on in the agent buffer, as a short string, or \"\"."
@@ -102,6 +106,10 @@
        ("i" efrit-agent-copy-session-id :description (lambda () (efrit-agent-menu--desc "copy the session id" 'efrit-agent-copy-session-id)))
        ("M" efrit-menu :description (lambda () (efrit-agent-menu--desc "efrit menu: model, sandbox, doctor" 'efrit-menu)))
        ("P" efrit-preset-apply :description (lambda () (format "preset: %s" (or efrit-preset-current "none"))))
+       ("I" efrit-agent-open-instance :description (lambda () (efrit-agent-menu--desc "another agent buffer for this project" 'efrit-agent-open-instance)))
+       ("l" efrit-agent-switch-instance :description (lambda () (efrit-agent-menu--desc "switch to an agent buffer" 'efrit-agent-switch-instance)))
+       ("j" efrit-agent-rename-instance :description (lambda () (efrit-agent-menu--desc "name this instance" 'efrit-agent-rename-instance)))
+       ("t" efrit-agent-toggle :description (lambda () (efrit-agent-menu--desc "hide / show this project's agent windows" 'efrit-agent-toggle)))
        ("/" efrit-agent-slash-help :description (lambda () "the /commands of the input"))
        ("?" efrit-agent-help :description (lambda () (efrit-agent-menu--desc "all keys, as text" 'efrit-agent-help)))]
       ["" ("q" "close this menu" transient-quit-one)]])

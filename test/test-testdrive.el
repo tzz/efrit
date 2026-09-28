@@ -149,7 +149,7 @@ the whole drive, not per turn.)"
     (unwind-protect
         (let ((sent nil) (cancelled nil))
           (cl-letf (((symbol-function 'efrit-submit)
-                     (lambda (shown &optional api-input)
+                     (lambda (shown &optional api-input _buffer)
                        (setq sent (list shown api-input))
                        ;; the model answers on the next event-loop tick
                        (run-at-time 0.01 nil

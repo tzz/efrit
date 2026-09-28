@@ -69,7 +69,7 @@
     efrit-sandbox-enabled efrit-sandbox-default-project-grants
     efrit-sandbox-always-deny efrit-sandbox-request-function
     efrit-sandbox--session-grants efrit-sandbox--project-grants
-    efrit-sandbox--once-grant efrit-sandbox-store-save efrit-sandbox-store-load
+    efrit-sandbox--turn-state efrit-sandbox-store-save efrit-sandbox-store-load
     efrit-sandbox-store--loaded efrit-sandbox-store-forget
     efrit-sandbox-eval--active efrit-sandbox-eval-form
     efrit-permission-policy efrit-permission-responder-function

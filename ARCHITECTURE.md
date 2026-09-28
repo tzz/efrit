@@ -223,6 +223,33 @@ is over; entries feed the `edit-history` context source newest first
 within a budget.  Anything automatic in efrit that can call the API
 must go through `efrit-throttle`.
 
+Several sessions (2026-09-28, after the multi-session audit in
+for-tzz).  Rendering is routed by the event's `:session-id`:
+`efrit-agent-buffer-for` finds the session's buffer, the integration
+subscribers and the `efrit-agent-show-*` wrappers take a buffer, and
+`efrit-publish` stamps `efrit-current-session-id` on events that
+carry none (sandbox and limits notes, todo changes).  The loops run
+tool dispatch and API callbacks as the session's code
+(`efrit-repl-loop--with-session`): `efrit-current-session-id` bound,
+`default-directory` and `efrit-project-root` set to the session's
+root, so the sandbox, limits and shell see the right project whatever
+buffer the sentinel fired in.  Per-turn state that used to be global
+is session-local: `efrit-session-local` registers a variable and
+`efrit-with-session` swaps its value in and out per session (tool
+counters, circuit breaker, todos, permission input, waiting seconds);
+the sandbox keeps once grant, edited input and the standing N/q
+answer in `efrit-sandbox--turn-state` keyed by session.  Streams carry
+their session id and `efrit-agent-cancel` cancels only its own.  The
+idle timer is per session.  Modal prompts (sandbox, limits) are one
+at a time (`efrit-with-prompt-turn`): a second session's request that
+arrives while one is up is denied with a note instead of nesting a
+`recursive-edit` inside the first.  `efrit-agent-instances.el` gives
+each project its buffers (`*efrit[proj]*`, `[proj:N]`, `[proj:name]`),
+side-window slots per project, and a per-tab toggle kept in a frame
+parameter.  `efrit-submit` and `efrit-agent-repl-session` take a
+buffer.  Left global on purpose: settings and presets, grant tables
+(keyed by root: two sessions in one project share grants), caches.
+
 `efrit-notify` (off by default) subscribes to `turn-complete` and
 notifies when a turn of at least `efrit-notify-min-seconds` ends while
 the agent buffer is not the selected window: `alert` if installed,

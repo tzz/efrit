@@ -17,7 +17,7 @@
           (efrit-sandbox-request-function nil)
           (efrit-sandbox--session-grants (make-hash-table :test 'equal))
           (efrit-sandbox--project-grants (make-hash-table :test 'equal))
-          (efrit-sandbox--once-grant nil)
+          (efrit-sandbox--turn-state (make-hash-table :test (quote equal)))
           (efrit-sandbox-store--loaded (make-hash-table :test 'equal)))
      (unwind-protect (progn ,@body)
        (delete-directory root t))))

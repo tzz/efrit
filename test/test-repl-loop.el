@@ -337,8 +337,10 @@ text, and publishes a note naming the limit."
                (vector (test-repl-loop--make-text "ok")) "end_turn"))
         "unused"
       (efrit-repl-continue session "hello" #'ignore)
-      (should (= efrit-tools--eval-count 0))
-      (should (= efrit-tools--total-call-count 0)))))
+      ;; the counters are the session's now: read them as its code
+      (efrit-with-session (efrit-repl-session-id session)
+        (should (= efrit-tools--eval-count 0))
+        (should (= efrit-tools--total-call-count 0))))))
 
 (ert-deftest test-repl-loop-turn-resets-circuit-breaker ()
   "A tripped breaker from an earlier turn does not block the next one."
@@ -351,9 +353,10 @@ text, and publishes a note naming the limit."
                (vector (test-repl-loop--make-text "ok")) "end_turn"))
         "unused"
       (efrit-repl-continue session "hello" #'ignore)
-      (should (= efrit-do--session-tool-count 0))
-      (should-not efrit-do--circuit-breaker-tripped)
-      (should (car (efrit-do--circuit-breaker-check-limits "read_file" nil))))))
+      (efrit-with-session (efrit-repl-session-id session)
+        (should (= efrit-do--session-tool-count 0))
+        (should-not efrit-do--circuit-breaker-tripped)
+        (should (car (efrit-do--circuit-breaker-check-limits "read_file" nil)))))))
 
 (provide 'test-repl-loop)
 

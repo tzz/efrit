@@ -672,7 +672,8 @@ session whose tool call is executing (ef-dcn)."
           (setf (efrit-repl-session-pending-question repl-session)
                 (list question options (current-time)))
           (when (fboundp 'efrit-agent-show-question)
-            (efrit-agent-show-question question options))
+            (efrit-agent-show-question question options
+                                       (efrit-repl-session-buffer repl-session)))
           (efrit-do--waiting-for-user-marker question options))
 
          ((not session)
@@ -1133,8 +1134,11 @@ TOOL-INPUT is a hash table with keys:
              (auto-expand (gethash "auto_expand" tool-input))
              (importance (gethash "importance" tool-input))
              (annotations (gethash "annotations" tool-input))
-             (agent-buffer (and (boundp 'efrit-agent-buffer-name)
-                               (get-buffer efrit-agent-buffer-name))))
+             ;; the buffer of the session whose tool this is, not "the" one
+             (agent-buffer (or (and (bound-and-true-p efrit-repl-loop--tool-session)
+                                    (efrit-repl-session-buffer efrit-repl-loop--tool-session))
+                               (and (boundp 'efrit-agent-buffer-name)
+                                    (get-buffer efrit-agent-buffer-name)))))
         
         ;; Validate required parameters
         (unless tool-use-id
