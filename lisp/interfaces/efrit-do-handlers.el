@@ -98,6 +98,7 @@
 (declare-function efrit-tool-imenu-symbols "efrit-tool-navigate")
 (declare-function efrit-tool-treesit-info "efrit-tool-navigate")
 (declare-function efrit-tool-show-location "efrit-tool-navigate")
+(declare-function efrit-tool-get-last-error "efrit-tool-last-error")
 (declare-function efrit-tool-read-image "efrit-tool-read-image")
 (declare-function efrit-tool-format-file "efrit-tool-format-file")
 (declare-function efrit-tool-beads-ready "efrit-tool-beads")
@@ -937,6 +938,12 @@ call it, so answer clearly instead of silently obeying."
   :fields ("file" "start_text" "end_text" "line" "end_line")
   :fn efrit-tool-show-location
   :label "Shown")
+
+(efrit-define-optional-input-handler efrit-do--handle-get-last-error "get_last_error"
+  :require efrit-tool-last-error
+  :fields ("count")
+  :fn efrit-tool-get-last-error
+  :label "Last error")
 
 (efrit-define-optional-input-handler efrit-do--handle-get-diagnostics "get_diagnostics"
   :require efrit-tool-get-diagnostics

@@ -35,6 +35,7 @@
 (require 'efrit-loop)
 (require 'efrit-tools)   ; efrit-tools--reset-rate-limits
 (require 'efrit-sandbox)
+(require 'efrit-diagnostics-baseline)
 (require 'efrit-do-circuit-breaker)   ; efrit-do--circuit-breaker-reset
 (require 'efrit-do-prompt)            ; efrit-do--command-system-prompt
 (require 'efrit-do-schema)            ; efrit-do--get-current-tools-schema
@@ -186,7 +187,8 @@ Returns the session ID."
          ;; Same for the circuit breaker's counters (30 tool calls per
          ;; *turn*, not per Emacs session)
          (efrit-do--circuit-breaker-reset)
-         (efrit-sandbox-begin-turn)))
+         (efrit-sandbox-begin-turn)
+         (efrit-diagnostics-baseline-begin-turn)))
       (efrit-repl-session-begin-turn session)
       (efrit-publish 'turn-start `((:session-id . ,session-id)
                                    (:input . ,user-input)))
@@ -357,6 +359,7 @@ non-nil, is shown in the agent buffer."
 (defun efrit-repl-loop--end-turn (session stop-reason)
   "End the current turn for REPL SESSION with STOP-REASON.
 Unlike efrit-do-async--stop-loop, this transitions to idle, not complete."
+  (efrit-sandbox-end-turn)
   (let* ((session-id (efrit-repl-session-id session))
          (loop-state (gethash session-id efrit-repl-loop--active))
          (on-turn-complete (nth 1 loop-state))

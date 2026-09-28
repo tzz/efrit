@@ -50,6 +50,15 @@
 (require 'efrit-commit)
 (require 'efrit-edit-history)
 (require 'efrit-agent-instances)
+(require 'efrit-commands)
+(require 'efrit-prompts-library)
+(require 'efrit-tool-last-error)
+(require 'efrit-next-steps)
+(require 'efrit-agent-dashboard)
+(require 'efrit-magit)
+;; the recorder costs nothing until an error happens; on by default so
+;; "why did that fail?" has an answer
+(efrit-last-error-mode 1)
 (require 'efrit-repl-loop)
 (declare-function efrit-session-active "efrit-session")
 (require 'efrit-agent-integration)
@@ -303,6 +312,13 @@
     (define-key map (kbd "C-c I") #'efrit-agent-open-instance)
     ;; editor context: drop the current file's until you move on
     (define-key map (kbd "C-c C-;") #'efrit-context-dismiss)
+    ;; the last answer's numbered next steps
+    (define-key map (kbd "M-1") #'efrit-next-step-1)
+    (define-key map (kbd "M-2") #'efrit-next-step-2)
+    (define-key map (kbd "M-3") #'efrit-next-step-3)
+    (define-key map (kbd "M-4") #'efrit-next-step-4)
+    (define-key map (kbd "C-c g") #'efrit-grill-me)
+    (define-key map (kbd "C-c C-,") #'efrit-agent-checkpoint)
     (define-key map (kbd "C-c ;") #'efrit-context-restore)
     (define-key map (kbd "C-c C-y") #'efrit-agent-quote-region)
     (define-key map (kbd "C-c C-.") #'efrit-agent-regenerate)

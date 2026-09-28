@@ -27,6 +27,7 @@
 (require 'efrit-repl-session)
 (require 'efrit-repl-loop)
 (require 'efrit-agent-mentions)
+(require 'efrit-brief)
 
 ;; Forward declarations
 (declare-function efrit-executor-respond "efrit-executor")
@@ -582,8 +583,12 @@ what was discussed previously.
 If the REPL session is idle, a new turn starts with the input.  If it
 is working, `efrit-agent-busy-submit-default-function' decides (queue
 by default); with OVERRIDE, `efrit-agent-busy-submit-override-function'
-\(steer by default).  If no REPL session exists, one is created."
+\(steer by default).  If no REPL session exists, one is created.
+Idle, a prefix argument (OVERRIDE) means \"grill me\": the model asks
+its clarifying questions before acting (`efrit-grill-me')."
   (interactive "P")
+  (when (and override (not (efrit-agent--session-busy-p)))
+    (setq efrit-grill-me t))
   (let ((input (efrit-agent--get-input)))
     (cond
      ((or (null input) (string-empty-p (string-trim input)))
@@ -609,17 +614,20 @@ by default); with OVERRIDE, `efrit-agent-busy-submit-override-function'
           (goto-char efrit-agent--input-start))
         (efrit-agent--repl-send input (efrit-agent--api-input-for input)))))))
 
-(defun efrit-agent--api-input-for (input)
-  "What the model receives for INPUT: mentions expanded, images attached.
-A string when there are no images; else a vector of content blocks
+(defun efrit-agent--api-input-for (input &optional command)
+  "What the model receives for INPUT: mentions expanded, images attached,
+the prompt suffixes (`efrit-prompt-suffix-functions') appended.
+COMMAND names the command that produced INPUT, for the providers.  A
+string when there are no images; else a vector of content blocks
 \(the image blocks, then the text) that `efrit-repl-continue' passes
 through.  Returns nil when INPUT needs no change, so the caller's
 default applies."
-  (let ((text (efrit-agent-mentions-expand input))
-        (images (efrit-agent-mentions-content-blocks input)))
+  (let* ((expanded (efrit-agent-mentions-expand input))
+         (text (efrit-prompt-apply-suffixes expanded (or command this-command)))
+         (images (efrit-agent-mentions-content-blocks input)))
     (cond
-     (images (vconcat images (list `((type . "text") (text . ,text)))))
-     ((not (equal text input)) text))))
+     (images (vconcat images (list `((type . "text") (text . ,(substring-no-properties text))))))
+     ((not (equal text input)) (substring-no-properties text)))))
 
 (defun efrit-agent--send-queued (session)
   "Start the next queued input of SESSION as a turn, keeping the user's draft.

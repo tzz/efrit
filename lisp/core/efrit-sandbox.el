@@ -771,8 +771,16 @@ Set by the prompt's N (deny every further request this turn) and q
 
 (defun efrit-sandbox-begin-turn ()
   "Forget the previous turn's standing answer, once grant and edited input.
-Loops call this per turn, as the session's code."
+Loops call this per turn, as the session's code.  The question mark
+\(`efrit-brief-question-turn') is per turn too: it is armed by the
+send and cleared at the next turn's start."
   (puthash (bound-and-true-p efrit-current-session-id) nil efrit-sandbox--turn-state))
+
+(defvar efrit-sandbox--question-turn)
+(defun efrit-sandbox-end-turn ()
+  "Drop the per-turn question mark.  Loops call this when a turn ends."
+  (when (boundp 'efrit-sandbox--question-turn)
+    (setq efrit-sandbox--question-turn nil)))
 
 (defun efrit-sandbox-deny-rest-of-turn ()
   "Answer no to this request and to every further request this turn.
@@ -827,6 +835,16 @@ With `efrit-sandbox-enabled' nil this is a no-op that returns t."
            (ctarget (efrit-sandbox--canonical-target cap target)))
       (efrit-sandbox-store-ensure-loaded root)
       (cond
+       ;; the user sent this turn as a question: no writes, shell or
+       ;; eval, without a prompt (efrit-brief)
+       ((and (fboundp 'efrit-sandbox-question-turn-p) (efrit-sandbox-question-turn-p cap))
+        (efrit-log 'info "sandbox: %s refused, this turn is a question" cap)
+        (when (fboundp 'efrit-publish)
+          (efrit-publish 'sandbox-denied `((:cap . ,cap) (:target . ,ctarget) (:tool . ,tool))))
+        (signal 'efrit-sandbox-denied
+                (list (efrit-sandbox-request-create
+                       :cap cap :target ctarget :tool tool
+                       :detail "the user asked a question this turn: answer it; do not change, run or evaluate anything"))))
        ((and (not (eq cap 'shell)) (efrit-sandbox--always-denied-p ctarget))
         (efrit-log 'warn "sandbox: %s on %s is always denied" cap ctarget)
         (signal 'efrit-sandbox-denied

@@ -252,6 +252,11 @@ Call this when Claude's message is complete."
       ;; The final pass: what was held back (the last line, an open
       ;; fence) is rendered now
       (efrit-agent--render-markdown (nth 1 efrit-agent--streaming-message) end-marker t)
+      ;; a closing "Next steps" list becomes buttons (efrit-next-steps)
+      (when (fboundp 'efrit-next-steps-mark)
+        (ignore-errors
+          (efrit-next-steps-mark (marker-position (nth 1 efrit-agent--streaming-message))
+                                 (marker-position end-marker))))
       (save-excursion
         (goto-char (marker-position end-marker))
         ;; Add trailing newlines for spacing

@@ -48,6 +48,7 @@
 (require 'auth-source)
 (require 'efrit-todo)
 (require 'efrit-elisp-fix)
+(require 'efrit-tool-last-error)
 
 ;; Load efrit-log if it exists, otherwise use minimal logging
 (declare-function efrit-log "efrit-log")
@@ -246,12 +247,17 @@ non-nil."
                     (if (bound-and-true-p efrit-sandbox-enabled)
                         (efrit-sandbox-eval-form sexp evaluator)
                       (funcall evaluator sexp))))
-         (result (if timeout
-                     (with-timeout (timeout
-                                    (signal 'efrit-eval-timeout
-                                            (list (format "Evaluation timed out after %d seconds" timeout))))
-                       (funcall do-eval))
-                   (funcall do-eval)))
+         ;; what the evaluation did besides return: messages written,
+         ;; buffers changed (efrit-tool-last-error)
+         (observed (efrit-eval-observe
+                    (lambda ()
+                      (if timeout
+                          (with-timeout (timeout
+                                         (signal 'efrit-eval-timeout
+                                                 (list (format "Evaluation timed out after %d seconds" timeout))))
+                            (funcall do-eval))
+                        (funcall do-eval)))))
+         (result (nth 0 observed))
          (result-string (format "%S" result)))
     ;; Truncate if result is too long
     (when (and result-string 
@@ -261,6 +267,8 @@ non-nil."
     
     (list :success t
           :result result-string
+          :messages (nth 1 observed)
+          :changed-buffers (nth 2 observed)
           :input (format "%S" sexp)
           :context (condition-case _
                       (efrit-tools-get-buffer-context)
@@ -345,7 +353,13 @@ Handles parsing, evaluation, error handling, and result formatting."
     (prog1
         (concat
          (if (plist-get result-data :success)
-             (format "%s" (plist-get result-data :result))
+             (concat (format "%s" (plist-get result-data :result))
+                     ;; side effects worth knowing about
+                     (when-let* ((ms (plist-get result-data :messages)))
+                       (format "\n[messages during evaluation: %s]"
+                               (efrit-truncate-string (mapconcat #'identity ms " | ") 400)))
+                     (when-let* ((bs (plist-get result-data :changed-buffers)))
+                       (format "\n[buffers changed: %s]" (mapconcat #'identity bs ", "))))
            (format "Error evaluating %s: %s"
                    (efrit-truncate-string (plist-get result-data :input) 30)
                    (plist-get result-data :error)))

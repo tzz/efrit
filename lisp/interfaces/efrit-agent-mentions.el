@@ -42,6 +42,8 @@
 (require 'efrit-log)
 (require 'efrit-tool-utils)
 (require 'efrit-vcs)
+(require 'efrit-brief)
+(require 'imenu)
 
 (declare-function efrit-agent--in-input-region-p "efrit-agent-core")
 (declare-function efrit-agent--get-input "efrit-agent-core")
@@ -115,10 +117,14 @@ A path may carry a range, `path#L10-L20'; `efrit-agent-mention-split'
 takes it apart."
   (let ((out nil) (start 0))
     (while (string-match efrit-agent-mention-regexp text start)
-      (let ((path (or (match-string 1 text) (match-string 2 text))))
+      (let ((path (or (match-string 1 text) (match-string 2 text)))
+            (at (or (match-beginning 1) (match-beginning 2))))
         ;; Trailing punctuation of the sentence is not part of a bare path
         (setq path (string-trim-right path "[.,;:!?)]+"))
-        (unless (member path out) (push path out)))
+        ;; verbatim text (a pasted diff, a quoted error) is data: an @
+        ;; inside it is not a mention
+        (unless (or (member path out) (efrit-verbatim-p text at))
+          (push path out)))
       (setq start (match-end 0)))
     (nreverse out)))
 
@@ -270,12 +276,79 @@ Each is ((type . \"image\") (source . ((type . \"base64\") (media_type . M) (dat
                   (point-min)))
       (memq (char-before pos) '(?\s ?\t ?\n))))
 
+(defun efrit-agent-mention--file-symbols (file)
+  "The definitions of FILE as ((LABEL START END) ...), from imenu.
+LABEL is the symbol name (\"Class.method\" for nested entries), START
+and END its 1-based line range (END: the line before the next
+definition, or the file's last line)."
+  (let ((buf (find-file-noselect file)))
+    (with-current-buffer buf
+      (let* ((index (condition-case nil
+                        (progn (setq imenu--index-alist nil) (imenu--make-index-alist t))
+                      (error nil)))
+             (flat (efrit-agent-mention--flatten-imenu index))
+             (sorted (sort flat (lambda (a b) (< (cdr a) (cdr b)))))
+             (last-line (line-number-at-pos (point-max)))
+             (out nil))
+        (while sorted
+          (let* ((this (pop sorted))
+                 (start (line-number-at-pos (cdr this)))
+                 (end (if sorted (max start (1- (line-number-at-pos (cdr (car sorted))))) last-line)))
+            (push (list (car this) start end) out)))
+        (nreverse out)))))
+
+(defun efrit-agent-mention--flatten-imenu (index &optional prefix)
+  "INDEX as a flat list of (LABEL . POSITION)."
+  (let (out)
+    (dolist (entry index)
+      (let ((name (car entry)) (val (cdr entry)))
+        (cond
+         ((or (equal entry imenu--rescan-item) (equal name (car-safe imenu--rescan-item))) nil)
+         ((imenu--subalist-p entry)
+          (setq out (nconc out (efrit-agent-mention--flatten-imenu val name))))
+         ((or (number-or-marker-p val) (overlayp val))
+          (push (cons (if prefix (concat prefix "." name) name)
+                      (if (overlayp val) (overlay-start val) val))
+                out))
+         ((and (consp val) (number-or-marker-p (car val)))
+          (push (cons (if prefix (concat prefix "." name) name) (car val)) out)))))
+    (nreverse out)))
+
+(defun efrit-agent-mention-symbol-completion-at-point ()
+  "After `@path', complete `#symbol' from the file's definitions.
+Accepting rewrites the mention as `@path#Lstart-Lend', the range of
+that definition (after ai-code-interface, 2026-09-28)."
+  (when (efrit-agent--in-input-region-p)
+    (save-excursion
+      (let ((end (point)))
+        (when (re-search-backward "@\\([^[:space:]\"\n#]+\\)#\\([^[:space:]\n]*\\)\\=" (line-beginning-position) t)
+          (let* ((at (match-beginning 0))
+                 (path (match-string-no-properties 1))
+                 (start (match-beginning 2))
+                 (file (efrit-agent-mention--resolve path)))
+            (when (and (efrit-agent-mention--at-word-start-p at)
+                       (file-regular-p file))
+              (let ((symbols (efrit-agent-mention--file-symbols file)))
+                (list start end
+                      (completion-table-dynamic (lambda (_) (mapcar #'car symbols)))
+                      :exclusive 'no
+                      :annotation-function
+                      (lambda (label) (when-let* ((s (assoc label symbols)))
+                                        (format "  lines %d-%d" (nth 1 s) (nth 2 s))))
+                      :exit-function
+                      (lambda (label status)
+                        (when (eq status 'finished)
+                          (when-let* ((s (assoc label symbols)))
+                            (delete-region at (point))
+                            (insert (efrit-agent-mention-text (format "%s#L%d-L%d" path (nth 1 s) (nth 2 s)))))
+                          (insert " "))))))))))))
+
 (defun efrit-agent-mention-completion-at-point ()
   "Complete `@path' from the project's files."
   (when (efrit-agent--in-input-region-p)
     (save-excursion
       (let ((end (point)))
-        (when (re-search-backward "@\\(\"[^\"\n]*\\|[^[:space:]\"\n]*\\)\\=" (line-beginning-position) t)
+        (when (re-search-backward "@\\(\"[^\"\n]*\\|[^[:space:]\"\n#]*\\)\\=" (line-beginning-position) t)
           (let ((at (match-beginning 0)))
             (when (efrit-agent-mention--at-word-start-p at)
               (let ((start (1+ at))
@@ -460,6 +533,9 @@ The OS deletes a dragged screenshot soon after the drop."
 (defun efrit-agent-mentions-setup ()
   "Install the completion functions and drop handling in the agent buffer."
   (add-hook 'completion-at-point-functions #'efrit-agent-slash-completion-at-point -10 t)
+  ;; the symbol capf first: it matches only "@path#…", the file one
+  ;; stops at "#"
+  (add-hook 'completion-at-point-functions #'efrit-agent-mention-symbol-completion-at-point -6 t)
   (add-hook 'completion-at-point-functions #'efrit-agent-mention-completion-at-point -5 t)
   (efrit-agent-dnd-enable))
 

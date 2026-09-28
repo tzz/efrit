@@ -155,7 +155,7 @@ LSP, a regexp for etags); file (default the current buffer)."
     (dolist (entry index)
       (let ((name (car entry)) (val (cdr entry)))
         (cond
-         ((equal name imenu--rescan-item) nil)
+         ((or (equal entry imenu--rescan-item) (equal name (car-safe imenu--rescan-item))) nil)
          ((imenu--subalist-p entry)
           (setq out (nconc out (efrit-tool-navigate--flatten-imenu val name))))
          ((or (number-or-marker-p val) (overlayp val))

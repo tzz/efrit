@@ -89,6 +89,56 @@ preview `E` opens the change in ediff; edit buffer B, quit, accept:
 the model applies your text (`user_edits`).  `C-c C-m` `S` saves the
 menu's toggles with `customize-save-variable`.
 
+**Briefs, pins, next steps** (after ai-code-interface):
+
+- Commands from any buffer build a structured brief (Goal / Scope /
+  Context / Boundaries / Agent responsibilities / Verification
+  evidence): `efrit-fix-errors-in-scope` (the Flymake/Flycheck errors
+  of the region, line, defun or file), `efrit-investigate-exception`
+  (a visible `*compilation*`, `*Backtrace*` or `*Warnings*`, the
+  region, C-u the clipboard; a question), `efrit-send-dwim` (Dired
+  marks, region, diagnostics at point as `@file#L42`, else the line),
+  `efrit-refactor` (Fowler's catalog; placeholders ask you with a
+  default from point), `blame-analysis` / `log-analysis` prompts for
+  `efrit-scope-run`, `efrit-shell-command` (`:words` has the model
+  write the one-liner; you edit, it runs in `*compilation*`).
+- A question is a read-only turn: `explain`, `review`,
+  `efrit-investigate-exception` and Magit `explain`/`question` make the
+  sandbox refuse writes, shell and eval for that turn without asking.
+- `C-u RET` grills you first: the model asks its clarifying questions
+  and does not act until you answer (`C-c g` arms it too).  `C-u` on
+  `efrit-scope-run` adds the files of your other windows, `C-u C-u`
+  the clipboard as well.
+- `efrit-prompt-suffix-functions`: an abnormal hook over every
+  outgoing input (a context with the text, the command, a memo).  Add
+  your project rule or test-after-change instruction there.
+- Text marked with `efrit-mark-verbatim` (a pasted diff) is data: no
+  mention expansion inside it.
+- `efrit-context-pin` on a region pins `file#L10-L20` for this project:
+  sent with every turn (header shows `+N pins`) until
+  `efrit-context-unpin` / `efrit-context-clear-pins`.  After `@file`,
+  typing `#` completes the file's definitions and writes the range.
+- Answers that end with a `Next steps` list get buttons: `RET` on an
+  item or `M-1`..`M-4` sends that step.  `efrit-next-steps-ask` asks
+  the model for such a list on non-change prompts.
+- After each `edit_file`/`edit_buffer`, the new Flymake/Flycheck
+  diagnostics of the file (against the turn's baseline) are appended
+  to the tool result, so the model fixes what it broke before saying
+  done (`efrit-diagnostics-baseline-enabled`).
+- `get_last_error`: the model can read your recent command errors
+  with backtrace frames (`efrit-last-error-mode`, on with efrit);
+  `eval_sexp` results also list messages written and buffers changed.
+- `C-c C-,` / menu `,`: checkpoint, the running turn stops and reports
+  goal, files, hypothesis, tests, blockers, failed approaches, next.
+- Magit: `C-c e` on a hunk (or selected hunks) explains, asks, changes
+  or writes tests, with a provenance line; changes are refused on a
+  historical diff.  `efrit-agent-dashboard` (menu `D`) lists every
+  agent buffer with project, branch, dirty count, status and queue.
+- The `position` context source now carries the enclosing function
+  and type headers with line ranges (tree-sitter, else which-function).
+  `path#L3-L5` and `path:L3-L5` in answers open the file with the range
+  selected.
+
 **Outside the agent buffer:**
 
 - `M-x efrit-rewrite-region`: the model rewrites the selected text per

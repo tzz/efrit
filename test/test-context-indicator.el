@@ -77,5 +77,71 @@ dismissal removes the file-bound sources and ends on a region."
       (kill-buffer agent)
       (delete-directory root t))))
 
+(ert-deftest test-context-scope-block-which-function-fallback ()
+  (with-temp-buffer
+    (emacs-lisp-mode)
+    (insert "(defun outer-fn (x)\n  (list x))\n")
+    (goto-char (point-min)) (forward-line 1)
+    ;; which-function reads the imenu index; a fresh buffer has none yet
+    (require 'which-func)
+    (setq imenu--index-alist nil)
+    (imenu--make-index-alist t)
+    (let ((block (efrit-context-scope-block)))
+      (should (string-match-p "outer-fn" block)))
+    ;; the position source carries it
+    (should (string-match-p "outer-fn" (efrit-context--source-position (current-buffer))))))
+
+(ert-deftest test-context-pins-are-per-project-and-render ()
+  (let* ((root (file-name-as-directory (make-temp-file "efrit-pin-" t)))
+         (efrit-project-root root)
+         (efrit-context--pins (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "p.txt" root) (insert "1\n2\n3\n4\n"))
+          (with-current-buffer (find-file-noselect (expand-file-name "p.txt" root))
+            (efrit-context-pin 3 6)          ; lines 2-3
+            (should (equal '("p.txt#L2-L3") (efrit-context-pins root)))
+            (efrit-context-pin nil nil)
+            (should (equal '("p.txt#L2-L3" "p.txt") (efrit-context-pins root)))
+            (let ((text (efrit-context--source-pins (current-buffer))))
+              (should (string-match-p "Pinned by the user" text))
+              (should (string-match-p "p.txt#L2-L3 (lines 2-3 of 4)\n```\n2\n3\n```" text))
+              (should (string-match-p "p.txt (whole file)" text)))
+            (should (string-match-p "\\+2 pins" (efrit-context-describe (current-buffer))))
+            (efrit-context-unpin "p.txt")
+            (should (equal '("p.txt#L2-L3") (efrit-context-pins root)))
+            (efrit-context-clear-pins)
+            (should-not (efrit-context-pins root))
+            (kill-buffer)))
+      (delete-directory root t))))
+
+(ert-deftest test-mention-symbol-completion-after-file ()
+  "After @file#, the file's definitions complete; accepting writes @file#Lstart-Lend."
+  (require 'efrit-agent)
+  (let* ((root (file-name-as-directory (make-temp-file "efrit-sym-" t)))
+         (efrit-project-root root)
+         (efrit-agent-auto-show nil)
+         (agent (get-buffer-create " *sym-agent*")))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "m.el" root)
+            (insert ";;; m.el -*- lexical-binding: t; -*-\n(defun alpha () 1)\n\n(defun beta ()\n  2)\n(provide 'm)\n"))
+          (with-current-buffer agent
+            (efrit-agent-mode) (efrit-agent--init-regions) (efrit-agent--setup-regions)
+            (goto-char (point-max)) (insert "@m.el#be")
+            (let ((capf (efrit-agent-mention-symbol-completion-at-point)))
+              (should capf)
+              (let* ((table (nth 2 capf))
+                     (cands (all-completions "be" table)))
+                (should (equal '("beta") cands))
+                (delete-region (nth 0 capf) (nth 1 capf))
+                (insert "beta")
+                (funcall (plist-get (nthcdr 3 capf) :exit-function) "beta" 'finished)
+                (should (string-match-p "@m.el#L4-L7 $"
+                                        (buffer-substring-no-properties efrit-agent--input-start (point-max))))))))
+      (when-let* ((b (find-buffer-visiting (expand-file-name "m.el" root)))) (kill-buffer b))
+      (kill-buffer agent)
+      (delete-directory root t))))
+
 (provide 'test-context-indicator)
 ;;; test-context-indicator.el ends here

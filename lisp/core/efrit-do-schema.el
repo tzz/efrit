@@ -389,6 +389,11 @@ IMPORTANT: Session PAUSES until user responds.")
                                       ("line" . (("type" . "integer") ("description" . "1-based, when no start_text")))
                                       ("end_line" . (("type" . "integer")))))
                       ("required" . ["file"]))))
+   (("name" . "get_last_error")
+    ("description" . "The user's recent command errors in this Emacs (message, condition, command, buffer, backtrace frame summary), newest first. Use this when the user asks why something just failed, before reproducing anything. Read-only.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("count" . (("type" . "integer") ("description" . "How many (default 1)")))))
+                      ("required" . []))))
    ;; Web search tool - Phase 4: External Knowledge
    (("name" . "web_search")
     ("description" . "Search the web for documentation, solutions, and examples. Use this when you need to look up information, find how to do something in Emacs, or research a problem.

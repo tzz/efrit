@@ -265,6 +265,25 @@ context label; `efrit-context-dismiss` removes the file-bound
 sources for the current target until another file or a region.
 Range mentions `@path#L10-L20` inline only those lines.
 
+ai-code-interface batch (2026-09-28).  `efrit-brief` builds labelled
+briefs; a `question` brief also arms `efrit-brief-question-turn`,
+which `efrit-sandbox-check` reads first: write/shell/elisp are
+refused with a note, no prompt, until `efrit-sandbox-end-turn` at the
+turn's end.  `efrit-prompt-suffix-functions` runs in
+`efrit-agent--api-input-for` after mention expansion; grill-me and
+next-steps-ask are providers.  `efrit-verbatim` text is skipped by the
+mention scanner.  `efrit-diagnostics-baseline` sits in the dispatcher:
+before a write tool it records the file's diagnostics (once per turn),
+after it appends the new ones to the result.  `efrit-tool-last-error`
+advises `command-error-default-function`; `efrit-eval-observe` wraps
+`eval_sexp`.  `efrit-next-steps` marks the closing list at
+stream end.  `efrit-context-pins` are a per-root table rendered by the
+`pins` source.  `efrit-commands` holds the user commands,
+`efrit-prompts-library` the blame/log prompts and the refactoring
+catalog (`{{{?name|Prompt|default}}}` placeholders in
+`efrit-scope-fill`).  `efrit-magit` and `efrit-agent-dashboard` are
+UI over the same paths.
+
 `efrit-notify` (off by default) subscribes to `turn-complete` and
 notifies when a turn of at least `efrit-notify-min-seconds` ends while
 the agent buffer is not the selected window: `alert` if installed,

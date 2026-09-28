@@ -199,6 +199,22 @@
 (defvar efrit-diff-preview--description)
 (defvar efrit-diff-preview--result)
 (defvar efrit-context--dismissed)
+(declare-function efrit-brief "efrit-brief")
+(declare-function efrit-repl-session-begin-turn "efrit-repl-session")
+(declare-function efrit-repl-session-id "efrit-repl-session")
+(declare-function efrit-brief-question-turn "efrit-brief")
+(declare-function efrit-prompt-context-command "efrit-brief")
+(declare-function efrit-context-pin "efrit-context-sources")
+(declare-function efrit-context-pins "efrit-context-sources")
+(declare-function efrit-context-clear-pins "efrit-context-sources")
+(declare-function efrit-next-steps-of-last-answer "efrit-next-steps")
+(declare-function efrit-next-step "efrit-next-steps")
+(declare-function efrit-last-error--record "efrit-tool-last-error")
+(declare-function efrit-tool-get-last-error "efrit-tool-last-error")
+(defvar efrit-prompt-suffix-functions)
+(defvar efrit-grill-me)
+(defvar efrit-context--pins)
+(defvar efrit-last-error--ring)
 (defvar efrit-api-streaming)
 (defvar efrit-rewrite-preview)
 (defvar efrit-context-sources)
@@ -1595,6 +1611,96 @@ Anything here is a step that did not grant what its turn needed.")
             (not (string-match-p "provide 'greet" out)))
        (truncate-string-to-width out 120 nil nil "…")))))
 
+(defun efrit-testdrive--section-11 ()
+  "The ai-code batch: briefs and read-only turns, suffix hook, pins, next steps, last error, diagnostics baseline."
+  (efrit-testdrive--out "\n## 11. Briefs, pins, next steps")
+  (efrit-testdrive--step 11 "A question turn is read-only: the model's write is refused without a prompt"
+    (require 'efrit-brief)
+    (let ((asked nil))
+      (cl-letf (((symbol-function 'efrit-sandbox-request-function) (lambda (_) (setq asked t) 'session)))
+        (efrit-brief-question-turn t)
+        (let ((ev (efrit-testdrive--turn
+                   "question turn: try to write"
+                   (efrit-brief :goal "Append the line QUEBEC to notes.txt using edit_file, then tell me what the tool said."
+                                :kind 'question))))
+          (efrit-brief-question-turn nil)
+          (let ((text (efrit-testdrive--file-text "notes.txt")))
+            (efrit-testdrive--check
+             (and ev (not (string-match-p "QUEBEC" (or text ""))) (not asked))
+             (format "%s; notes.txt has QUEBEC %s; prompt shown %s" (efrit-testdrive--turn-note ev)
+                     (and text (string-match-p "QUEBEC" text) t) asked)))))))
+  (efrit-testdrive--step 11 "A prompt suffix provider adds to the outgoing text once per send"
+    (let* ((efrit-prompt-suffix-functions (list (lambda (ctx) (format "SUFFIX from %s" (efrit-prompt-context-command ctx)))))
+           (efrit-grill-me nil)
+           (api (with-current-buffer (efrit-testdrive--agent-buffer)
+                  (efrit-agent--api-input-for "hello" 'drive-cmd))))
+      (efrit-testdrive--check (and api (string-match-p "hello\n\nSUFFIX from drive-cmd\\'" api))
+                              (format "api text %S" api))))
+  (efrit-testdrive--step 11 "Pinned lines go with every turn and show in the header label"
+    (let ((efrit-context--pins (make-hash-table :test 'equal))
+          (efrit-project-root efrit-testdrive--root)
+          (buf (find-file-noselect (efrit-testdrive--file "greet.el"))))
+      (unwind-protect
+          (with-current-buffer buf
+            (goto-char (point-min)) (forward-line 2)
+            (efrit-context-pin (point) (progn (forward-line 2) (point)))
+            (let* ((pins (efrit-context-pins))
+                   (snap (let ((efrit-context-sources '(pins))) (efrit-context-snapshot buf)))
+                   (label (efrit-context-describe buf)))
+              (efrit-context-clear-pins)
+              (efrit-testdrive--check
+               (and (equal '("greet.el#L3-L4") pins) snap (string-match-p "Pinned by the user" snap)
+                    (string-match-p "defun greet" snap) (string-match-p "\\+1 pin" label))
+               (format "pins %S, label %S" pins label))))
+        (kill-buffer buf))))
+  (efrit-testdrive--step 11 "A `Next steps' list at the end of an answer becomes buttons; M-2 sends step 2"
+    (let ((ev (efrit-testdrive--turn
+               "Reply with exactly this and nothing else: the line `Done.`, a blank line, the line `Next steps:`, then `1. Run the tests (Recommended)`, `2. Add a docstring`, `3. Stop here`, each on its own line.")))
+      (if (not ev)
+          (cons 'FAIL "timed out")
+        (with-current-buffer (efrit-testdrive--agent-buffer)
+          (let* ((steps (efrit-next-steps-of-last-answer))
+                 (sent nil))
+            (cl-letf (((symbol-function 'efrit-submit) (lambda (shown api &rest _) (setq sent (list shown api)) t)))
+              (when (assq 2 steps) (efrit-next-step 2)))
+            (efrit-testdrive--check
+             (and (= 3 (length steps)) (equal "Add a docstring" (cdr (assq 2 steps)))
+                  sent (string-match-p "Add a docstring" (cadr sent)))
+             (format "steps %S; M-2 sent %S" steps (car sent))))))))
+  (efrit-testdrive--step 11 "get_last_error returns the last recorded command error with frames"
+    (require 'efrit-tool-last-error)
+    (let ((efrit-last-error--ring nil))
+      (efrit-last-error--record '(void-function drive-missing-fn) "" 'drive-command)
+      (let* ((r (efrit-tool-get-last-error nil))
+             (e (aref (alist-get 'errors (alist-get 'result r)) 0)))
+        (efrit-testdrive--check
+         (and (eq t (alist-get 'success r)) (string-match-p "drive-missing-fn" (alist-get 'error e))
+              (equal "drive-command" (alist-get 'command e)))
+         (format "error %S from %s, %d frames, recording %s" (alist-get 'error e) (alist-get 'command e)
+                 (length (alist-get 'frames e)) (alist-get 'recording (alist-get 'result r)))))))
+  (efrit-testdrive--step 11 "The model asked to break greet.el gets the new diagnostic back in the edit result"
+    (require 'efrit-diagnostics-baseline)
+    (let ((buf (find-file-noselect (efrit-testdrive--file "greet.el")))
+          (before (efrit-testdrive--file-text "greet.el")))
+      (unwind-protect
+          (progn
+            (with-current-buffer buf
+              (emacs-lisp-mode)
+              (unless (bound-and-true-p flymake-mode) (flymake-mode 1)))
+            (efrit-testdrive--grant 'write efrit-testdrive--root)
+            (let* ((ev (efrit-testdrive--turn
+                        "Use edit_file twice on greet.el: first change the docstring \"Return a greeting for NAME.\" to \"Greet NAME.\"; then, as a second separate edit_file call, replace `(format \"Hello, %s!\" name)` (or whatever the format call now reads) with `(format \"Hello, %s!\" nme)` (a deliberate typo). Then report, quoting it exactly, whatever note the second edit's result contained in square brackets."))
+                   (results (mapcar (lambda (e) (alist-get :result e))
+                                    (cl-remove-if-not (lambda (e) (equal (alist-get :tool e) "edit_file"))
+                                                      (efrit-testdrive--events-of 'tool-result))))
+                   (noted (cl-some (lambda (r) (and (stringp r) (string-match-p "new diagnostics in greet.el" r))) results)))
+              (efrit-testdrive--check
+               (and ev noted)
+               (format "%s; edit results with a diagnostics note: %s of %d" (efrit-testdrive--turn-note ev)
+                       (if noted "yes" "none") (length results)))))
+        (with-temp-file (efrit-testdrive--file "greet.el") (insert before))
+        (with-current-buffer buf (revert-buffer t t t))))))
+
 (defconst efrit-testdrive--sections
   '((0 "Setup" efrit-testdrive--section-0)
     (1 "A round trip" efrit-testdrive--section-1)
@@ -1606,7 +1712,8 @@ Anything here is a step that did not grant what its turn needed.")
     (7 "Copilot batch: context keys, balancer, edit-before-allow, rewrite, commit, scope, regenerate, presets, code blocks" efrit-testdrive--section-7)
     (8 "Minuet batch: text windows, kept partial answers, inline diff, edit history" efrit-testdrive--section-8)
     (9 "Several sessions: instances, parallel turns, per-session sandbox state" efrit-testdrive--section-9)
-    (10 "Navigation and context: xref/imenu tools, ediff edits, context indicator, range mentions" efrit-testdrive--section-10))
+    (10 "Navigation and context: xref/imenu tools, ediff edits, context indicator, range mentions" efrit-testdrive--section-10)
+    (11 "Briefs, pins, next steps, last error, diagnostics baseline" efrit-testdrive--section-11))
   "The automatic drive's sections.")
 
 ;;;; The tour: what needs eyes
@@ -1724,6 +1831,16 @@ Anything here is a step that did not grant what its turn needed.")
   (efrit-testdrive--step 'tour "The menu heading is live and S saves the toggles"
     (efrit-testdrive--ask "Press C-c ? in the agent buffer: is the heading `*buffer*: idle · model · review on · context …'?  Press C-c C-m, toggle streaming (s): does the label flip at once?  Toggle it back.  (S would save all toggles with customize-save-variable.)")))
 
+(defun efrit-testdrive--tour-ai-code ()
+  (efrit-testdrive--out "\n## Briefs and commands")
+  (efrit-testdrive--step 'tour "C-u RET grills you first; M-x efrit-refactor asks for its placeholders"
+    (efrit-testdrive--after-confirm "In the agent input type `rename the helper` and press C-u RET.  Then RET here."
+      (efrit-testdrive--ask "Did the model ask clarifying questions (request_user_input) instead of editing?  Answer or cancel it.  Then in greet.el put point on `greet` and run M-x efrit-refactor, pick `refactor: Rename`: does it prompt Old name (default greet) and New name, then send?")))
+  (efrit-testdrive--step 'tour "efrit-send-dwim, efrit-investigate-exception, efrit-shell-command"
+    (efrit-testdrive--ask "In a file buffer on a line with a Flymake warning run M-x efrit-send-dwim: does the input get `@file#L<n> has: warning: …`?  With a *compilation* buffer visible run M-x efrit-investigate-exception: a read-only question turn quoting it?  M-x efrit-shell-command with `:count lines of elisp in this directory`: a command shown for editing, then run in *compilation*?"))
+  (efrit-testdrive--step 'tour "Magit hunks and the dashboard"
+    (efrit-testdrive--ask "If you use Magit: in a diff buffer put point on a hunk and press C-c e, `explain`: does the turn quote the hunk with a `Diff snapshot:` provenance line?  Then C-c ? D: the dashboard with buffer, project, branch, dirty, status; RET visits?")))
+
 (defconst efrit-testdrive--tour-stops
   '(("Header" efrit-testdrive--tour-header)
     ("Folding" efrit-testdrive--tour-folding)
@@ -1735,7 +1852,8 @@ Anything here is a step that did not grant what its turn needed.")
     ("Edit before allow, candidates, notifications" efrit-testdrive--tour-copilot)
     ("Inline rewrite preview" efrit-testdrive--tour-inline-diff)
     ("Several agent buffers" efrit-testdrive--tour-instances)
-    ("Navigation and context" efrit-testdrive--tour-navigation))
+    ("Navigation and context" efrit-testdrive--tour-navigation)
+    ("Briefs and commands" efrit-testdrive--tour-ai-code))
   "The tour's stops: (TITLE FUNCTION).")
 
 ;;;; Driver

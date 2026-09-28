@@ -205,12 +205,18 @@ in the background into `efrit-markdown-image-cache-directory'."
          (target (efrit-markdown-link-at-point pos)))
     (pcase target
       ((pred stringp) (browse-url target))
-      (`(,file ,line ,column)
+      (`(,file ,line ,column . ,rest)
        (funcall efrit-markdown-open-file-function file)
        (when line
          (goto-char (point-min))
          (forward-line (1- line))
-         (when column (move-to-column column))))
+         (when column (move-to-column column))
+         ;; a range: select it, so the lines stand out
+         (when-let* ((end (car rest)))
+           (when (> end line)
+             (push-mark (point) t t)
+             (forward-line (- end line)) (end-of-line)
+             (exchange-point-and-mark)))))
       (_ (user-error "No link here")))))
 
 (defun efrit-markdown--linkify (start end target help)
@@ -725,9 +731,21 @@ is drawn over it (`display'), fetched first when remote."
        (goto-char e)))))
 
 (defconst efrit-markdown--file-ref-body
-  "\\(\\(?:~\\|\\.\\{1,2\\}\\)?/?\\(?:[[:alnum:]_.-]+/\\)*[[:alnum:]_-]+\\.[[:alnum:]]+\\)\\(?::\\([0-9]+\\)\\(?::\\([0-9]+\\)\\)?\\|#L\\([0-9]+\\)\\)?"
-  "A path with an extension, optionally `:LINE', `:LINE:COL' or `#LNN'.
-Group 1 path, 2 line, 3 column, 4 line (the #L form).")
+  "\\(\\(?:~\\|\\.\\{1,2\\}\\)?/?\\(?:[[:alnum:]_.-]+/\\)*[[:alnum:]_-]+\\.[[:alnum:]]+\\)\\(?::L?\\([0-9]+\\)\\(?::\\([0-9]+\\)\\|-L?\\([0-9]+\\)\\)?\\|#L\\([0-9]+\\)\\(?:-L?\\([0-9]+\\)\\)?\\)?"
+  "A path with an extension, optionally `:LINE', `:LINE:COL', `:L1-L2',
+`#LNN' or `#L1-L2'.  Group 1 path, 2 line, 3 column, 4 end line
+\\(the : form), 5 line and 6 end line (the #L form).")
+
+(defun efrit-markdown--file-ref-target (file)
+  "The link target for the file reference just matched: (FILE LINE COL END-LINE)."
+  (let ((line (or (match-string 2) (match-string 5)))
+        (col (match-string 3))
+        (end (or (match-string 4) (match-string 6))))
+    (append (list file (and line (string-to-number line))
+                  (and col (string-to-number col)))
+            ;; a fourth element only for a range: (FILE LINE COL) stays
+            ;; the shape other code and tests know
+            (and end (list (string-to-number end))))))
 
 (defconst efrit-markdown--file-ref-regexp
   (concat "\\(?:^\\|[^[:alnum:]_/.-]\\)" efrit-markdown--file-ref-body)
@@ -751,13 +769,9 @@ Group 1 path, 2 line, 3 column, 4 line (the #L form).")
   (while (re-search-forward efrit-markdown--file-ref-in-code-regexp end t)
     (let* ((s (match-beginning 1)) (e (match-end 0))
            (path (match-string 1))
-           (line (or (match-string 2) (match-string 4)))
-           (col (match-string 3))
            (file (efrit-markdown--file-ref-file path)))
       (when (and file (not (get-text-property s 'efrit-markdown-target)))
-        (efrit-markdown--linkify s e
-                                 (list file (and line (string-to-number line))
-                                       (and col (string-to-number col)))
+        (efrit-markdown--linkify s e (efrit-markdown--file-ref-target file)
                                  (concat "open " (abbreviate-file-name file))))
       (goto-char e))))
 
@@ -769,13 +783,9 @@ Group 1 path, 2 line, 3 column, 4 line (the #L form).")
       (unless (or (efrit-markdown--span-frozen-p s e)
                   (get-text-property s 'efrit-markdown-target))
         (let* ((path (match-string 1))
-               (line (or (match-string 2) (match-string 4)))
-               (col (match-string 3))
                (file (efrit-markdown--file-ref-file path)))
           (when file
-            (efrit-markdown--linkify s e
-                                     (list file (and line (string-to-number line))
-                                           (and col (string-to-number col)))
+            (efrit-markdown--linkify s e (efrit-markdown--file-ref-target file)
                                      (concat "open " (abbreviate-file-name file))))))
       (goto-char e))))
 
