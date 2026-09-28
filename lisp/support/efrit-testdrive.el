@@ -170,7 +170,15 @@
 (defvar efrit-review-enabled)
 (defvar efrit-agent-display-mode)
 (defvar efrit-default-model)
-(defvar efrit-project-root)
+(declare-function efrit-text-window "efrit-text-window")
+(declare-function efrit-text-window-header "efrit-text-window")
+(declare-function efrit-inline-diff-active-p "efrit-inline-diff")
+(declare-function efrit-edit-history-mode "efrit-edit-history")
+(declare-function efrit-edit-history-record "efrit-edit-history")
+(declare-function efrit-context-snapshot "efrit-context-sources")
+(defvar efrit-api-streaming)
+(defvar efrit-rewrite-preview)
+(defvar efrit-context-sources)
 
 (defgroup efrit-testdrive nil
   "The live test drive."
@@ -1287,6 +1295,101 @@ Anything here is a step that did not grant what its turn needed.")
           (efrit-testdrive--check (and (string-match-p "^echo DELTA$" copied) (equal copied inserted))
                                   (format "copied %S, other window got %S" (string-replace "\n" "\\n" copied) (string-replace "\n" "\\n" inserted))))))))
 
+(defun efrit-testdrive--section-8 ()
+  "The minuet batch: text windows, kept partial answers, inline diff, edit history."
+  (efrit-testdrive--out "\n## 8. Minuet batch")
+  (efrit-testdrive--step 8 "A text window cuts on whole lines and shares the budget by ratio"
+    (require 'efrit-text-window)
+    (with-temp-buffer
+      (dotimes (i 200) (insert (format "row %03d\n" i)))
+      (goto-char (point-min)) (forward-line 100)
+      (let ((w (efrit-text-window :chars 160 :ratio 0.75)))
+        (efrit-testdrive--check
+         (and (plist-get w :before-cut) (plist-get w :after-cut)
+              (string-prefix-p "row " (plist-get w :before))
+              (string-suffix-p "\n" (plist-get w :after))
+              (= 0 (% (length (plist-get w :before)) 8))
+              (> (length (plist-get w :before)) (length (plist-get w :after))))
+         (format "before %d chars, after %d chars, both whole lines; header %S"
+                 (length (plist-get w :before)) (length (plist-get w :after))
+                 (efrit-text-window-header))))))
+  (efrit-testdrive--step 8 "A cancelled stream keeps the text that arrived, marked as cut"
+    (if (not efrit-api-streaming)
+        (cons 'SKIP "streaming is off; the cancel path needs the curl transport")
+      (efrit-testdrive--submit
+       "Write the numbers from one to two hundred as words, one per line, no tools, no preamble.")
+      (let ((first (efrit-testdrive--wait-for (lambda () (efrit-testdrive--events-of 'text-delta))
+                                              30 "the first text delta")))
+        (if (not first)
+            (progn (with-current-buffer (efrit-testdrive--agent-buffer) (ignore-errors (efrit-agent-cancel)))
+                   (efrit-testdrive--wait-for #'efrit-testdrive--turn-ended-p 10)
+                   (cons 'FAIL "no text arrived within 30 s"))
+          (with-current-buffer (efrit-testdrive--agent-buffer) (efrit-agent-cancel))
+          (let* ((ev (efrit-testdrive--wait-for (lambda () (car (efrit-testdrive--events-of 'turn-complete)))
+                                                20 "the cancelled turn to end"))
+                 (session (efrit-testdrive--session))
+                 (last (car (last (efrit-repl-session-api-messages session))))
+                 (kept (and (equal "assistant" (alist-get 'role last))
+                            (let ((c (alist-get 'content last)))
+                              (and (vectorp c) (> (length c) 0)
+                                   (gethash "text" (aref c 0)))))))
+            (efrit-testdrive--check
+             (and ev (equal "interrupted" (alist-get :stop-reason ev))
+                  kept (string-suffix-p "[answer cut short here]" kept)
+                  (eq 'idle (efrit-repl-session-status session)))
+             (format "stop %s; last history message %s; status %s"
+                     (and ev (alist-get :stop-reason ev))
+                     (if kept (format "assistant, %d chars, marked" (length kept)) "not the kept answer")
+                     (efrit-repl-session-status session))))))))
+  (efrit-testdrive--step 8 "The rewrite preview draws removed and added lines in the buffer itself"
+    (require 'efrit-rewrite)
+    (let ((buf (find-file-noselect (efrit-testdrive--file "greet.el")))
+          (seen nil) (overlays 0))
+      (unwind-protect
+          (with-current-buffer buf
+            (goto-char (point-min)) (search-forward "(format \"Hello")
+            (let ((start (line-beginning-position)) (end (line-beginning-position 2))
+                  (efrit-rewrite-preview 'inline))
+              (cl-letf (((symbol-function 'efrit-ask-once)
+                         (lambda (_p cb &rest _)
+                           (funcall cb (format "%s\n  (format \"Yo, %%s!\" name))\n%s"
+                                               efrit-rewrite--start-marker efrit-rewrite--end-marker)
+                                    nil)
+                           nil))
+                        ((symbol-function 'y-or-n-p)
+                         (lambda (&rest _)
+                           (setq seen (efrit-inline-diff-active-p)
+                                 overlays (cl-count-if (lambda (o) (overlay-get o 'efrit-inline-diff))
+                                                       (overlays-in (point-min) (point-max))))
+                           nil)))
+                (efrit-rewrite-region start end "say Yo"))
+              (efrit-testdrive--check
+               (and seen (= 1 overlays) (not (efrit-inline-diff-active-p))
+                    (not (buffer-modified-p)))
+               (format "preview shown %s with %d overlay(s); cleared after %s; buffer untouched %s"
+                       seen overlays (not (efrit-inline-diff-active-p)) (not (buffer-modified-p))))))
+        (kill-buffer buf))))
+  (efrit-testdrive--step 8 "Edit history records a burst as a diff and reaches the context block"
+    (require 'efrit-edit-history)
+    (let ((buf (find-file-noselect (efrit-testdrive--file "notes.txt"))))
+      (unwind-protect
+          (with-current-buffer buf
+            (efrit-edit-history-mode 1)
+            (goto-char (point-max)) (insert "the drive typed this\n")
+            (let* ((entry (efrit-edit-history-record))
+                   (efrit-context-sources '(edit-history))
+                   (snap (efrit-context-snapshot buf)))
+              (set-buffer-modified-p nil)
+              (efrit-edit-history-mode -1)
+              (efrit-testdrive--check
+               (and entry (string-match-p "^\\+the drive typed this" (plist-get entry :diff))
+                    snap (string-match-p "Recent edits" snap)
+                    (not (string-match-p "^--- \\|^\\+\\+\\+ " (plist-get entry :diff))))
+               (format "entry %d chars; context %s"
+                       (if entry (plist-get entry :chars) 0)
+                       (if snap (truncate-string-to-width (string-trim snap) 80 nil nil "…") "none")))))
+        (kill-buffer buf)))))
+
 (defconst efrit-testdrive--sections
   '((0 "Setup" efrit-testdrive--section-0)
     (1 "A round trip" efrit-testdrive--section-1)
@@ -1295,7 +1398,8 @@ Anything here is a step that did not grant what its turn needed.")
     (4 "Rendering" efrit-testdrive--section-4)
     (5 "Input: mentions, commands, drop, restart" efrit-testdrive--section-5)
     (6 "Transcript tools: quote, narrow, transcript, lists, tables, images" efrit-testdrive--section-6)
-    (7 "Copilot batch: context keys, balancer, edit-before-allow, rewrite, commit, scope, regenerate, presets, code blocks" efrit-testdrive--section-7))
+    (7 "Copilot batch: context keys, balancer, edit-before-allow, rewrite, commit, scope, regenerate, presets, code blocks" efrit-testdrive--section-7)
+    (8 "Minuet batch: text windows, kept partial answers, inline diff, edit history" efrit-testdrive--section-8))
   "The automatic drive's sections.")
 
 ;;;; The tour: what needs eyes
@@ -1389,6 +1493,12 @@ Anything here is a step that did not grant what its turn needed.")
       (efrit-testdrive--ask (format "Did a notification `efrit: Turn finished after N s in *efrit-agent*' arrive (through %s)?"
                                     (cond ((featurep 'alert) "alert") ((featurep 'dbusbind) "notifications-notify") (t "the echo area")))))))
 
+(defun efrit-testdrive--tour-inline-diff ()
+  (efrit-testdrive--out "\n## Inline rewrite preview")
+  (efrit-testdrive--step 'tour "efrit-rewrite-region shows the change over the text, then applies it"
+    (efrit-testdrive--after-confirm "In any writable buffer select a sentence or a line, run M-x efrit-rewrite-region, and ask for a small change (for example `make it shorter').  Wait for the prompt.  Then RET here."
+      (efrit-testdrive--ask "Was the old line shown struck in red with the new line in green right below it, in the buffer itself?  Did `y' replace the text and `n' leave it as it was, with the colours gone either way?"))))
+
 (defconst efrit-testdrive--tour-stops
   '(("Header" efrit-testdrive--tour-header)
     ("Folding" efrit-testdrive--tour-folding)
@@ -1397,7 +1507,8 @@ Anything here is a step that did not grant what its turn needed.")
     ("Sandbox prompt" efrit-testdrive--tour-sandbox)
     ("Drag and drop" efrit-testdrive--tour-drop)
     ("Images and the transcript file" efrit-testdrive--tour-images)
-    ("Edit before allow, candidates, notifications" efrit-testdrive--tour-copilot))
+    ("Edit before allow, candidates, notifications" efrit-testdrive--tour-copilot)
+    ("Inline rewrite preview" efrit-testdrive--tour-inline-diff))
   "The tour's stops: (TITLE FUNCTION).")
 
 ;;;; Driver

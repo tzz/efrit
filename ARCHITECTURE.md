@@ -193,6 +193,36 @@ an elisp form can be edited before allowing (`e`); the edited text is
 handed to the asking tool once through `efrit-sandbox-take-edited-input`
 and the scope is forced to `once`.
 
+Text sent "around a point" goes through `efrit-text-window`
+(lisp/core): a character budget split by ratio before and after,
+whole lines only, the slack given to the short side.  Users: the
+rewrite context, long scopes, the region context source.
+`efrit-text-window-header` names the language and indentation for
+code prompts.  The rewrite prompt sends the after-context first so the
+editable region ends the message (minuet's suffix-first for Claude).
+
+A cancelled stream that already produced text delivers it: the
+response carries `efrit_cancelled` (`efrit_partial` for a stream the
+server ended early), `efrit-loop-handle-response` appends
+"[answer cut short here]" to the last text block, records it in the
+history, publishes a `note`, and ends the turn as interrupted.  A
+stream cancelled before any text still ends with "interrupted" and no
+history entry.
+
+`efrit-inline-diff` (lisp/interfaces) draws a proposed change as
+overlays in the buffer: hunks parsed from the diff library's unified
+output (`efrit-vcs-diff-strings`), removed lines faced, added lines as
+one `after-string` per hunk (separate overlays sharing an anchor
+render in no promised order).  `efrit-rewrite-region' uses it when
+`efrit-rewrite-preview' is `inline'.
+
+`efrit-edit-history-mode` (lisp/core) keeps a snapshot per buffer and,
+through an `efrit-throttle` (debounce + minimum interval + skip after
+our own commands), diffs the buffer against it when a burst of edits
+is over; entries feed the `edit-history` context source newest first
+within a budget.  Anything automatic in efrit that can call the API
+must go through `efrit-throttle`.
+
 `efrit-notify` (off by default) subscribes to `turn-complete` and
 notifies when a turn of at least `efrit-notify-min-seconds` ends while
 the agent buffer is not the selected window: `alert` if installed,

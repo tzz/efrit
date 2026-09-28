@@ -67,8 +67,16 @@ A structured, real-time view of agentic sessions with:
 **Outside the agent buffer:**
 
 - `M-x efrit-rewrite-region`: the model rewrites the selected text per
-  your instruction; you see the diff, then it replaces the region (only
-  if the region is unchanged since).
+  your instruction; the change is drawn over the text itself (removed
+  lines in red, new lines in green; `efrit-rewrite-preview` `buffer`
+  for a diff popup instead), then it replaces the region (only if the
+  region is unchanged since).
+- `M-x efrit-edit-history-mode` (or the global variant) records what
+  you change in a buffer as diffs, one entry per burst of typing, and
+  the `edit-history` context source shows the model the latest ones:
+  "continue what I was doing" works.  Off by default.
+- A turn you cancel mid-answer keeps the text that arrived, marked
+  `[answer cut short here]` in the history, so the next turn knows.
 - `M-x efrit-scope-run`: run a library prompt (`explain`, `fix`,
   `document`, `tests`, `review`, `simplify`, or your own) over the
   region, the defun at point, or the buffer, as a turn in the agent

@@ -31,6 +31,7 @@
 (require 'efrit-prompts)
 (require 'efrit-ui-helpers)
 (require 'efrit-agent-input)
+(require 'efrit-text-window)
 
 (defgroup efrit-scope nil
   "Prompts over the region, the defun or the buffer."
@@ -73,12 +74,20 @@ called with no arguments.  Unknown keys are left as they are."
    (t (list (point-min) (point-max) 'buffer))))
 
 (defun efrit-scope--text (start end)
-  "The text START..END, cut to `efrit-scope-max-chars'."
-  (let ((text (buffer-substring-no-properties start end)))
-    (if (> (length text) efrit-scope-max-chars)
-        (concat (substring text 0 efrit-scope-max-chars)
-                (format "\n[… %d more characters omitted]" (- (length text) efrit-scope-max-chars)))
-      text)))
+  "The text START..END, cut to `efrit-scope-max-chars'.
+A long scope is windowed around point on whole lines, with a note on
+each cut side, rather than cut at a character count from the start."
+  (if (<= (- end start) efrit-scope-max-chars)
+      (buffer-substring-no-properties start end)
+    (let* ((pt (min (max (point) start) end))
+           (w (save-restriction
+                (narrow-to-region start end)
+                (efrit-text-window :start pt :chars efrit-scope-max-chars))))
+      (concat (when (plist-get w :before-cut)
+                (format "[… %d characters before this omitted]\n" (- (plist-get w :before-start) start)))
+              (plist-get w :before) (plist-get w :after)
+              (when (plist-get w :after-cut)
+                (format "\n[… %d characters after this omitted]" (- end (plist-get w :after-end))))))))
 
 (defun efrit-scope-values (start end kind)
   "The placeholder values for START..END of KIND in the current buffer."

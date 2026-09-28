@@ -48,6 +48,7 @@
 (require 'efrit-scope)
 (require 'efrit-rewrite)
 (require 'efrit-commit)
+(require 'efrit-edit-history)
 (require 'efrit-repl-loop)
 (declare-function efrit-session-active "efrit-session")
 (require 'efrit-agent-integration)

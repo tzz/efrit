@@ -32,6 +32,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'efrit-text-window)
 (require 'subr-x)
 (require 'project)
 
@@ -54,7 +55,7 @@
   :prefix "efrit-context-")
 
 (defcustom efrit-context-sources
-  '(buffer position region diagnostic project visible-buffers)
+  '(buffer position region diagnostic project visible-buffers edit-history)
   "Sources of editor context prepended to each REPL turn.
 
 Each element is either a symbol naming a built-in source or a
@@ -67,6 +68,8 @@ function.  Built-ins:
   project         project root (and remote host if Tramp), git branch
   visible-buffers other buffers shown in the frame's windows
   recent-files    a few entries from `recentf-list'
+  edit-history    the target buffer's recent edit bursts as diffs
+                  (only while `efrit-edit-history-mode' is on there)
 
 A function element is called with one argument, the target buffer,
 inside `with-current-buffer', and returns a string (one or more
@@ -77,6 +80,7 @@ Set to nil to send no proactive context."
   :type '(repeat (choice (const buffer) (const position) (const region)
                          (const diagnostic) (const project)
                          (const visible-buffers) (const recent-files)
+                         (const edit-history)
                          function))
   :group 'efrit-context)
 
@@ -150,15 +154,25 @@ recent buffer in `buffer-list' that is not efrit's and not hidden."
   (when (use-region-p)
     (let* ((beg (region-beginning))
            (end (region-end))
-           (text (buffer-substring-no-properties beg end))
-           (truncated (> (length text) efrit-context-region-max-chars)))
-      (format "Active region: line %d col %d to line %d col %d (%d chars)%s\n<<<REGION\n%s%s\n>>>"
+           (len (- end beg))
+           (truncated (> len efrit-context-region-max-chars))
+           ;; a long region is cut on whole lines around point, not at
+           ;; a character count from its start
+           (text (if truncated
+                     (let ((w (save-restriction
+                                (narrow-to-region beg end)
+                                (efrit-text-window :start (min (max (point) beg) end)
+                                                   :chars efrit-context-region-max-chars))))
+                       (concat (when (plist-get w :before-cut) "...\n")
+                               (plist-get w :before) (plist-get w :after)
+                               (when (plist-get w :after-cut) "\n...")))
+                   (buffer-substring-no-properties beg end))))
+      (format "Active region: line %d col %d to line %d col %d (%d chars)%s\n<<<REGION\n%s\n>>>"
               (line-number-at-pos beg) (save-excursion (goto-char beg) (current-column))
               (line-number-at-pos end) (save-excursion (goto-char end) (current-column))
-              (length text)
-              (if truncated " [truncated]" "")
-              (if truncated (substring text 0 efrit-context-region-max-chars) text)
-              (if truncated "\n..." "")))))
+              len
+              (if truncated " [truncated around point]" "")
+              text))))
 
 (defun efrit-context--source-diagnostic (_buf)
   (let ((items nil))
@@ -229,7 +243,16 @@ recent buffer in `buffer-list' that is not efrit's and not hidden."
     (diagnostic . efrit-context--source-diagnostic)
     (project . efrit-context--source-project)
     (visible-buffers . efrit-context--source-visible-buffers)
-    (recent-files . efrit-context--source-recent-files)))
+    (recent-files . efrit-context--source-recent-files)
+    (edit-history . efrit-context--source-edit-history)))
+
+(declare-function efrit-edit-history-text "efrit-edit-history")
+(defvar efrit-edit-history-mode)
+
+(defun efrit-context--source-edit-history (buf)
+  (when (and (featurep 'efrit-edit-history)
+             (buffer-local-value 'efrit-edit-history-mode buf))
+    (efrit-edit-history-text buf)))
 
 ;;; Snapshot and rendering
 

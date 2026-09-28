@@ -73,5 +73,25 @@
       (should (equal "old" (buffer-string)))
       (should (equal "new" (car kill-ring))))))
 
+(ert-deftest test-rewrite-inline-preview-is-shown-then-cleared ()
+  "With `efrit-rewrite-preview' inline, the overlays are up while the
+question is asked and gone after, whichever the answer."
+  (skip-unless (executable-find diff-command))
+  (with-temp-buffer
+    (insert "head\nold text here\ntail\n")
+    (let ((start (progn (goto-char (point-min)) (forward-line 1) (point)))
+          (end (progn (forward-line 1) (point)))
+          (seen nil)
+          (efrit-rewrite-preview 'inline))
+      (cl-letf (((symbol-function 'efrit-ask-once)
+                 (lambda (_prompt cb &rest _)
+                   (funcall cb (test-rw--wrap "new text here") nil) nil))
+                ((symbol-function 'y-or-n-p)
+                 (lambda (&rest _) (setq seen (efrit-inline-diff-active-p)) nil)))
+        (efrit-rewrite-region start end "change it"))
+      (should seen)
+      (should-not (efrit-inline-diff-active-p))
+      (should (equal "head\nold text here\ntail\n" (buffer-string))))))
+
 (provide 'test-rewrite)
 ;;; test-rewrite.el ends here

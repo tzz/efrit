@@ -72,6 +72,38 @@ string every stubbed tool dispatch returns."
 
 ;;; Tests
 
+(ert-deftest test-repl-loop-cancelled-answer-is-kept-and-marked ()
+  "A response marked cancelled (text arrived, then C-g) ends the turn
+as interrupted but the text stays in the history with a cut note; a
+stream that ended early is kept the same way and ends as end_turn."
+  (let ((session (efrit-repl-session-create))
+        (turn-reason nil) (notes nil))
+    (test-repl-loop--with-mocks
+        (list (let ((r (test-repl-loop--make-response
+                        (vector (test-repl-loop--make-text "Half an ans")) "end_turn")))
+                (puthash "efrit_cancelled" t r) r)
+              (let ((r (test-repl-loop--make-response
+                        (vector (test-repl-loop--make-text "Cut by the network")) "end_turn")))
+                (puthash "efrit_partial" t r) r))
+        "unused"
+      (let ((sub (lambda (e) (push (alist-get :text e) notes))))
+        (efrit-subscribe 'note sub)
+        (unwind-protect
+            (progn
+              (efrit-repl-continue session "q1" (lambda (_s reason) (setq turn-reason reason)))
+              (should (equal turn-reason "interrupted"))
+              (should (eq (efrit-repl-session-status session) 'idle))
+              (let ((last (car (last (efrit-repl-session-api-messages session)))))
+                (should (equal "assistant" (alist-get 'role last)))
+                (should (equal "Half an ans\n[answer cut short here]"
+                               (gethash "text" (aref (alist-get 'content last) 0)))))
+              (should (cl-some (lambda (n) (string-match-p "cancelled" n)) notes))
+              (efrit-repl-continue session "q2" (lambda (_s reason) (setq turn-reason reason)))
+              (should (equal turn-reason "end_turn"))
+              (should (cl-some (lambda (n) (string-match-p "ended early" n)) notes))
+              (should (= 4 (length (efrit-repl-session-api-messages session)))))
+          (efrit-unsubscribe 'note sub))))))
+
 (ert-deftest test-repl-loop-tool-round-trip-ends-idle ()
   "A turn with one tool call accumulates messages and returns to idle."
   (let ((session (efrit-repl-session-create))

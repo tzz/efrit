@@ -33,6 +33,8 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'efrit-ask)
+(require 'efrit-text-window)
+(require 'efrit-inline-diff)
 (require 'efrit-log)
 (require 'efrit-vcs)
 (require 'efrit-ui-helpers)
@@ -41,14 +43,22 @@
   "Rewrite a region with the model."
   :group 'efrit)
 
-(defcustom efrit-rewrite-context-lines 12
-  "Lines of context sent above and below the region (not editable)."
+(defcustom efrit-rewrite-context-chars 6000
+  "Characters of context sent around the region (not editable).
+Split by `efrit-text-window-ratio' before and after; whole lines."
   :type 'integer
   :group 'efrit-rewrite)
 
 (defcustom efrit-rewrite-confirm t
   "Non-nil shows the diff and asks before replacing; nil replaces at once."
   :type 'boolean
+  :group 'efrit-rewrite)
+
+(defcustom efrit-rewrite-preview 'inline
+  "How the diff is shown before you accept a rewrite.
+`inline' draws removed and added lines over the region in the buffer
+itself; `buffer' opens a `diff-mode' popup."
+  :type '(choice (const inline) (const buffer))
   :group 'efrit-rewrite)
 
 (defconst efrit-rewrite--start-marker "<editable_region_start>")
@@ -70,22 +80,20 @@ Rules:
   "System prompt of the rewrite request.")
 
 (defun efrit-rewrite--context (start end)
-  "The text around START..END: (BEFORE . AFTER), whole lines, capped."
-  (save-excursion
-    (let ((before (progn (goto-char start)
-                         (forward-line (- efrit-rewrite-context-lines))
-                         (buffer-substring-no-properties (point) start)))
-          (after (progn (goto-char end)
-                        (forward-line efrit-rewrite-context-lines)
-                        (buffer-substring-no-properties end (point)))))
-      (cons before after))))
+  "The text around START..END: (BEFORE . AFTER), whole lines, within the budget."
+  (let ((w (efrit-text-window :start start :end end :chars efrit-rewrite-context-chars)))
+    (cons (plist-get w :before) (plist-get w :after))))
 
 (defun efrit-rewrite--prompt (instruction region before after)
-  "The user message: INSTRUCTION, then BEFORE, the marked REGION, AFTER."
-  (format "%s\n\nLanguage or mode: %s.\n\n%s%s\n%s\n%s%s"
+  "The user message: INSTRUCTION, the header, AFTER, then BEFORE and the marked REGION.
+The text after the region comes first so the editable region ends the
+message: models continue best from the end of what they read (minuet
+sends the suffix first to Claude)."
+  (format "%s\n\n%s\n\nThe text after the region, for context only:\n<contextAfterCursor>\n%s</contextAfterCursor>\n\nThe text before the region, then the region to rewrite:\n<contextBeforeCursor>\n%s</contextBeforeCursor>\n%s%s%s"
           instruction
-          (string-remove-suffix "-mode" (symbol-name major-mode))
-          before efrit-rewrite--start-marker region efrit-rewrite--end-marker after))
+          (efrit-text-window-header)
+          after before
+          efrit-rewrite--start-marker region efrit-rewrite--end-marker))
 
 (defun efrit-rewrite-parse (text &optional original)
   "The single editable region in the model's TEXT, or nil.
@@ -178,6 +186,26 @@ the diff, or nothing is replaced."
          (and (= tick (buffer-chars-modified-tick))
               (equal original (buffer-substring-no-properties start-m end-m))))))
 
+(defun efrit-rewrite--ask (buffer start-m original replacement)
+  "Show the change from ORIGINAL to REPLACEMENT and ask; non-nil to apply.
+Per `efrit-rewrite-preview': overlays in BUFFER at START-M, or a
+diff popup.  The preview is taken down before returning."
+  (if (eq efrit-rewrite-preview 'inline)
+      (let ((win (get-buffer-window buffer)))
+        (efrit-inline-diff-show buffer start-m (+ start-m (length original)) replacement)
+        (when win
+          (with-selected-window win (goto-char start-m) (recenter)))
+        (unwind-protect
+            (y-or-n-p "Apply this rewrite (shown in the buffer)? ")
+          (efrit-inline-diff-clear buffer)))
+    (let* ((label (buffer-name buffer))
+           (diff (efrit-vcs-diff-strings original replacement
+                                         (concat "a/" label) (concat "b/" label)))
+           (win (efrit-show-preview "*efrit rewrite*" diff 'diff-mode)))
+      (unwind-protect
+          (y-or-n-p "Apply this rewrite? ")
+        (when (window-live-p win) (quit-window t win))))))
+
 (defun efrit-rewrite--apply (buffer start-m end-m original tick replacement)
   "Replace START-M..END-M of BUFFER with REPLACEMENT after the checks."
   (cond
@@ -193,13 +221,7 @@ the diff, or nothing is replaced."
    (t
     (let ((accept
            (or (not efrit-rewrite-confirm)
-               (let* ((label (buffer-name buffer))
-                      (diff (efrit-vcs-diff-strings original replacement
-                                                    (concat "a/" label) (concat "b/" label)))
-                      (win (efrit-show-preview "*efrit rewrite*" diff 'diff-mode)))
-                 (unwind-protect
-                     (y-or-n-p "Apply this rewrite? ")
-                   (when (window-live-p win) (quit-window t win)))))))
+               (efrit-rewrite--ask buffer start-m original replacement))))
       (cond
        ((not accept) (message "efrit rewrite: not applied"))
        ;; the prompt ran the event loop: check again
