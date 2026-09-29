@@ -132,6 +132,7 @@
 (defvar efrit-diff-preview-buffer-name)
 (defvar efrit-agent--input-start)
 (declare-function efrit-repl-session-queue "efrit-repl-session")
+(declare-function efrit-repl-session-steering "efrit-repl-session")
 (declare-function efrit-repl-session-status "efrit-repl-session")
 (declare-function efrit-repl-session-dequeue "efrit-repl-session")
 (declare-function efrit-repl-session-enqueue "efrit-repl-session")
@@ -250,8 +251,23 @@
 (defface efrit-testdrive-fail '((t :inherit error)) "A failed step.")
 (defface efrit-testdrive-skip '((t :inherit shadow)) "A skipped step.")
 
+(defun efrit-testdrive-report-quit ()
+  "Close the report: delete its window (a side window), keep the buffer.
+`quit-window' on a side window shown by `display-buffer' only buried
+the buffer and left the window in place (tzz, 2026-09-28)."
+  (interactive)
+  (let ((win (selected-window)))
+    (if (and (window-live-p win) (not (eq win (frame-root-window win))))
+        (delete-window win)
+      (quit-window))))
+
+(defvar efrit-testdrive-report-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "q") #'efrit-testdrive-report-quit)
+    map))
+
 (define-derived-mode efrit-testdrive-report-mode special-mode "Testdrive"
-  "The test drive report: Markdown rendered in place; `q' buries it."
+  "The test drive report: Markdown rendered in place; `q' closes it."
   (setq-local truncate-lines nil))
 
 (defun efrit-testdrive--buf ()
@@ -448,12 +464,20 @@ Canonical because the sandbox keys grants on `efrit-sandbox-canonical'
 
 ;;;; Driving the agent
 
+(defvar efrit-testdrive--buffer-name nil
+  "The agent buffer the drive uses: its own instance when instances
+are on (another session's traffic must not reach the drive's
+assertions), else the default buffer.")
+
 (defun efrit-testdrive--on-event (event)
   "Record EVENT when it is the drive's session's (or has no session)."
   (let ((id (alist-get :session-id event))
-        (mine (ignore-errors
-                (efrit-repl-session-id
-                 (buffer-local-value 'efrit-agent--repl-session (efrit-testdrive--agent-buffer))))))
+        ;; filter only when the drive runs in its own instance; with
+        ;; the default buffer any session is the drive's
+        (mine (and efrit-testdrive--buffer-name
+                   (ignore-errors
+                     (efrit-repl-session-id
+                      (buffer-local-value 'efrit-agent--repl-session (efrit-testdrive--agent-buffer)))))))
     (when (or (null id) (null mine) (equal id mine))
       (push event efrit-testdrive--events))))
 
@@ -464,11 +488,6 @@ Canonical because the sandbox keys grants on `efrit-sandbox-canonical'
   "Events of TYPE since the last clear, oldest first."
   (cl-remove-if-not (lambda (e) (eq (alist-get :type e) type))
                     (reverse efrit-testdrive--events)))
-
-(defvar efrit-testdrive--buffer-name nil
-  "The agent buffer the drive uses: its own instance when instances
-are on (another session's traffic must not reach the drive's
-assertions), else the default buffer.")
 
 (defun efrit-testdrive--agent-buffer ()
   (require 'efrit-agent)
@@ -836,7 +855,18 @@ Anything here is a step that did not grant what its turn needed.")
                         60 "the steering to reach the model")))
         (efrit-testdrive--wait-for #'efrit-testdrive--turn-ended-p nil "the steered turn to complete")
         (cond
-         ((not delivered) (cons 'FAIL "no `steered' event: the text never went out with tool results"))
+         ((not delivered)
+          ;; say what the turn did: how many API rounds, how many tool
+          ;; calls, whether the steer was still pending or got queued
+          (let* ((session (efrit-testdrive--session))
+                 (rounds (length (efrit-testdrive--events-of 'api-response)))
+                 (tools (length (efrit-testdrive--events-of 'tool-result)))
+                 (pending (efrit-repl-session-steering session))
+                 (queued (efrit-repl-session-queue session)))
+            (while (efrit-repl-session-dequeue session))
+            (cons 'FAIL (format "no `steered' event; %d API round(s), %d tool result(s), steer pending %s, queued %s, stop %s"
+                                rounds tools (and pending t) (and queued t)
+                                (efrit-testdrive--stop-reason (efrit-testdrive--turn-ended-p))))))
          ((not (with-current-buffer (efrit-testdrive--agent-buffer)
                  (efrit-agent--find-user-message
                   "Change of plan: end your final message with the single word BANANA in capitals." 'steer)))

@@ -103,7 +103,10 @@ the region (modulo blank lines) counts."
   (let ((pos (point-min)) (out nil))
     (while (setq pos (text-property-not-all pos (point-max) 'efrit-next-step nil))
       (let ((v (get-text-property pos 'efrit-next-step)))
-        (push v out)
+        ;; one item can be several runs: the final render pass marks
+        ;; the last line again with a fresh cons (live run 2026-09-28
+        ;; 17:28 listed step 3 twice); same number and text is one item
+        (unless (equal v (car out)) (push v out))
         (setq pos (or (next-single-property-change pos 'efrit-next-step) (point-max)))))
     ;; the last answer's list is the last run of items; keep only the
     ;; tail whose numbers restart at 1

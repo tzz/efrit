@@ -1013,6 +1013,23 @@ through to the next map (the major mode's RET, self-insert for digits)."
     (goto-char (point-min))
     (should (eq (key-binding (kbd "RET")) #'efrit-agent-toggle-expand))))
 
+(ert-deftest test-efrit-agent-regenerate-rewinds-before-the-human-message-not-a-tool-result ()
+  "The rewind mark is the last HUMAN message; tool_result user messages
+after it are skipped, so no tool_use is left without its result."
+  (let ((session (efrit-repl-session-create default-directory)))
+    (efrit-repl-session-add-user-message session "q1")
+    ;; assistant tool_use, then its tool_result (a user message), then the answer
+    (setf (efrit-repl-session-api-messages session)
+          (append (efrit-repl-session-api-messages session)
+                  (list `((role . "assistant")
+                          (content . ,(vector `((type . "tool_use") (id . "t1") (name . "read_file") (input . nil))))))))
+    (efrit-repl-session-add-tool-result session "t1" "contents")
+    (efrit-repl-session-add-assistant-message session "answer")
+    (should (= 4 (length (efrit-repl-session-api-messages session))))
+    (should (efrit-repl-session-tool-result-message-p (nth 2 (efrit-repl-session-api-messages session))))
+    ;; the mark is before q1 (index 0), not before the tool result (index 2)
+    (should (equal '(0) (efrit-agent--history-mark-before-last-user session)))))
+
 (ert-deftest test-efrit-agent-regenerate-replaces-only-on-success ()
   "Regenerate rewinds the history to before the last user message and
 resends it; the old exchange is deleted when the new turn ends well

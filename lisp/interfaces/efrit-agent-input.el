@@ -1022,12 +1022,17 @@ of the exchange being replaced and the history mark it was rewound to.")
     (get-text-property (car b) 'efrit-user-text)))
 
 (defun efrit-agent--history-mark-before-last-user (session)
-  "The API history mark just before SESSION's last user message, or nil."
+  "The API history mark just before SESSION's last HUMAN message, or nil.
+Tool results are user messages too; they do not count.  Rewinding to
+one of them would leave a tool_use without its tool_result and the API
+refuses every later request of the session (live run 2026-09-28 17:43:
+eight steps timed out after one regenerate)."
   (let* ((messages (efrit-repl-session-api-messages session))
          (n (length messages))
          (i (1- n)))
     (while (and (>= i 0)
-                (not (equal (efrit-repl-session--block-get (nth i messages) "role") "user")))
+                (or (not (equal (efrit-repl-session--block-get (nth i messages) "role") "user"))
+                    (efrit-repl-session-tool-result-message-p (nth i messages))))
       (cl-decf i))
     ;; 0 is a valid mark (the first message): return a list so the
     ;; caller can tell "none" from "before the first"

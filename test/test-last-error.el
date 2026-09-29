@@ -55,6 +55,10 @@
     (should (equal '(3 . "Ship it") (get-text-property (point) 'efrit-next-step)))
     (should (equal '((1 . "Run the tests (Recommended)") (2 . "Refactor the loop") (3 . "Ship it"))
                    (efrit-next-steps-of-last-answer)))
+    ;; marked twice (the final render pass does that to the last line):
+    ;; still one item per step
+    (efrit-next-steps-mark (point-min) (point-max))
+    (should (= 3 (length (efrit-next-steps-of-last-answer))))
     (let (sent)
       (cl-letf (((symbol-function 'efrit-submit) (lambda (shown api &rest _) (setq sent (list shown api)) t)))
         (efrit-next-step 2)
