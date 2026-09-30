@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.5.1
+;; Version: 0.5.2
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -237,6 +237,7 @@
 (declare-function efrit-magit-context "efrit-magit")
 (declare-function magit-diff-unstaged "magit-diff")
 (declare-function efrit-agent-instance-for-project "efrit-agent-instances")
+(declare-function efrit-agent-instances-mode "efrit-agent-instances")
 (declare-function efrit-agent-display-in-side-window "efrit-agent-instances")
 (defvar efrit-agent-side)
 (declare-function efrit-transcript--on-turn-start "efrit-transcript")
@@ -2284,7 +2285,7 @@ directory for a read (the prompt offers the wider scope)."
             (redisplay)
             (let ((names (mapcar #'buffer-name bufs)))
               (efrit-testdrive--ask
-               (format "Three agent windows on the %s: %s, grouped by project (the two for the same project next to each other)?  In the selected one press C-c t: do that project's two windows hide (the third stays)?  C-c t again: back?  C-c l: does completion offer all three names?  q here when done."
+               (format "Three agent windows on the %s: %s, grouped by project (the two for the same project next to each other)?  In the selected one press C-c t: do that project's two windows hide (the third stays)?  C-c t again: back?  C-c l: does completion offer all three names?  (Cancel that with C-g, then answer here.)"
                        efrit-agent-side (mapconcat (lambda (n) (format "`%s'" n)) names ", ")))))
         (dolist (b bufs)
           (when (buffer-live-p b)
