@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.5.2
+;; Version: 0.5.3
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -404,6 +404,19 @@ one for every stop)."
     (when-let* ((w (get-buffer-window (current-buffer))))
       (set-window-point w (point-max)))))
 
+(defun efrit-testdrive--log-lines-matching (regexp &optional n)
+  "The last N (default 8) lines of `*efrit-log*' that match REGEXP."
+  (when-let* ((buf (get-buffer "*efrit-log*")))
+    (with-current-buffer buf
+      (let ((lines nil))
+        (save-excursion
+          (goto-char (point-max))
+          (while (and (< (length lines) (or n 8))
+                      (re-search-backward regexp nil t))
+            (push (buffer-substring-no-properties (line-beginning-position) (line-end-position)) lines)
+            (forward-line 0)))
+        lines))))
+
 (defun efrit-testdrive--log-tail (&optional n)
   (when-let* ((buf (get-buffer "*efrit-log*")))
     (with-current-buffer buf
@@ -742,12 +755,34 @@ directory for a read (the prompt offers the wider scope)."
   (efrit-log 'warn "testdrive: sandbox request refused unattended: %S" req)
   nil)
 
+(defun efrit-testdrive--slow-turn-failure ()
+  "Why the slow turn did not get going: the turn's end, the review's
+verdicts, and the review/api failure lines from the log.  (2026-09-30:
+three steps said only \"did not start\" while the reviewer's own call
+was failing every time.)"
+  (let* ((end (car (efrit-testdrive--events-of 'turn-complete)))
+         (verdicts (mapcar (lambda (e) (format "%s%s" (alist-get :verdict e)
+                                               (if (alist-get :reason e) (format " (%s)" (alist-get :reason e)) "")))
+                           (efrit-testdrive--events-of 'review-verdict)))
+         (log (efrit-testdrive--log-lines-matching "review: call failed\\|api ← failed\\|refused\\|HTTP error\\|timed out" 6)))
+    (format "the slow turn did not start a tool within 30 s; turn end: %s%s; reviews: %S; log:\n%s"
+            (if end (efrit-testdrive--stop-reason end) "none")
+            (if (and end (alist-get :error-message end)) (format " (%s)" (alist-get :error-message end)) "")
+            verdicts
+            (if log (mapconcat #'identity log "\n") "(no review/api failure lines in *efrit-log*)"))))
+
 (defun efrit-testdrive--start-slow-turn ()
   "Start a turn of six 2 s tool calls; return when the first tool has started."
   (efrit-testdrive--grant 'elisp)
   ;; A nonce in the request: the model answered a repeat of this
   ;; prompt from memory, without any tool call, and there was nothing
   ;; to cancel or steer
+  ;; The model may issue all six calls in one batch; then the turn has
+  ;; one request seam only, and a steer that misses it is queued as
+  ;; the next turn (the steer step accepts that outcome).  A wording
+  ;; that forced one call per round ("each call must contain the
+  ;; number you received…") was refused by the review endpoint's
+  ;; pre-filter every time (2026-09-30 22:13); this one passes review.
   (efrit-testdrive--submit
    (format "Task %s. You must call the eval_sexp tool six separate times, one call per number: evaluate (progn (sleep-for 2) (* N N)) for N = 1, 2, 3, 4, 5, 6. Do not compute them yourself and do not ask me anything. After the sixth call, list the six results."
            (format-time-string "%H%M%S")))
@@ -940,7 +975,7 @@ directory for a read (the prompt offers the wider scope)."
            (t (cons 'FAIL "the answer was not repeated back"))))))))
   (efrit-testdrive--step 3 "Cancel stops a running turn and the buffer is idle again"
     (if (not (efrit-testdrive--start-slow-turn))
-        (cons 'FAIL "the slow turn did not start a tool within 30 s")
+        (cons 'FAIL (efrit-testdrive--slow-turn-failure))
       (with-current-buffer (efrit-testdrive--agent-buffer) (efrit-agent-cancel))
       (let ((ev (efrit-testdrive--wait-for #'efrit-testdrive--turn-ended-p 30 "the cancel to land")))
         (cond
@@ -954,7 +989,7 @@ directory for a read (the prompt offers the wider scope)."
          (t (cons 'PASS (format "stop %s" (efrit-testdrive--stop-reason ev))))))))
   (efrit-testdrive--step 3 "An input submitted while busy is queued, marked, and sent after"
     (if (not (efrit-testdrive--start-slow-turn))
-        (cons 'FAIL "the slow turn did not start")
+        (cons 'FAIL (efrit-testdrive--slow-turn-failure))
       (with-current-buffer (efrit-testdrive--agent-buffer)
         (efrit-agent-busy-submit-queue "What is the secret word in notes.txt? Answer with the word only."))
       (let ((marked (with-current-buffer (efrit-testdrive--agent-buffer)
@@ -983,14 +1018,34 @@ directory for a read (the prompt offers the wider scope)."
            (t 'PASS))))))
   (efrit-testdrive--step 3 "A steer reaches the running turn with its next tool results"
     (if (not (efrit-testdrive--start-slow-turn))
-        (cons 'FAIL "the slow turn did not start")
+        (cons 'FAIL (efrit-testdrive--slow-turn-failure))
       (with-current-buffer (efrit-testdrive--agent-buffer)
         (efrit-agent-busy-submit-steer "Change of plan: end your final message with the single word BANANA in capitals."))
       (let ((delivered (efrit-testdrive--wait-for
-                        (lambda () (car (efrit-testdrive--events-of 'steered)))
+                        (lambda () (or (car (efrit-testdrive--events-of 'steered))
+                                       ;; the turn ended before any seam: the
+                                       ;; loop queues the text instead
+                                       (car (efrit-testdrive--events-of 'steer-queued))))
                         60 "the steering to reach the model")))
         (efrit-testdrive--wait-for #'efrit-testdrive--turn-ended-p nil "the steered turn to complete")
         (cond
+         ((and delivered (eq (alist-get :type delivered) 'steer-queued))
+          ;; the documented fallback: no tool round was left, so the
+          ;; text starts the next turn.  Let that turn run out, then
+          ;; report it as what it is.
+          (efrit-testdrive--wait-for
+           (lambda () (let ((ends (efrit-testdrive--events-of 'turn-complete)))
+                        (and (>= (length ends) 2) (car ends))))
+           nil "the queued steer's own turn")
+          (let ((noted (with-current-buffer (efrit-testdrive--agent-buffer)
+                         (save-excursion (goto-char (point-min))
+                                         (search-forward "sent as the next turn" nil t)))))
+            (if (not noted)
+                (cons 'FAIL "the steer was queued but the transcript has no note under the steer line")
+              (cons 'PASS (format "the turn ended before a tool round could take the steer (%d API round(s), %d tool result(s)); the loop queued it, said so under the steer line, and it ran as the next turn%s"
+                                  (length (efrit-testdrive--events-of 'api-response))
+                                  (length (efrit-testdrive--events-of 'tool-result))
+                                  (if (string-match-p "BANANA" (efrit-testdrive--reply-text)) ", answered with BANANA" ""))))))
          ((not delivered)
           ;; say what the turn did: how many API rounds, how many tool
           ;; calls, whether the steer was still pending or got queued
@@ -998,11 +1053,21 @@ directory for a read (the prompt offers the wider scope)."
                  (rounds (length (efrit-testdrive--events-of 'api-response)))
                  (tools (length (efrit-testdrive--events-of 'tool-result)))
                  (pending (efrit-repl-session-steering session))
-                 (queued (efrit-repl-session-queue session)))
+                 (queued (efrit-repl-session-queue session))
+                 ;; was the steer event even seen, and did the loop take
+                 ;; it (its log lines name the session)?  2026-09-29 and
+                 ;; 09-30 failed with pending nil and queued nil, which
+                 ;; the plain counts cannot explain
+                 (steer-events (efrit-testdrive--events-of 'steer))
+                 (log-lines (efrit-testdrive--log-lines-matching "steering\\|steer\\|no seam")))
             (while (efrit-repl-session-dequeue session))
-            (cons 'FAIL (format "no `steered' event; %d API round(s), %d tool result(s), steer pending %s, queued %s, stop %s"
+            (cons 'FAIL (format "no `steered' event; %d API round(s), %d tool result(s), steer pending %s, queued %s, stop %s; steer events seen %d (session %S vs mine %S); log:\n%s"
                                 rounds tools (and pending t) (and queued t)
-                                (efrit-testdrive--stop-reason (efrit-testdrive--turn-ended-p))))))
+                                (efrit-testdrive--stop-reason (efrit-testdrive--turn-ended-p))
+                                (length steer-events)
+                                (and steer-events (alist-get :session-id (car steer-events)))
+                                (efrit-repl-session-id session)
+                                (if log-lines (mapconcat #'identity log-lines "\n") "(no steering lines in *efrit-log*)")))))
          ((not (with-current-buffer (efrit-testdrive--agent-buffer)
                  (efrit-agent--find-user-message
                   "Change of plan: end your final message with the single word BANANA in capitals." 'steer)))
