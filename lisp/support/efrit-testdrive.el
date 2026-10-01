@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.6.2
+;; Version: 0.8.0
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -158,6 +158,7 @@
 (declare-function efrit-markdown-render-string "efrit-markdown")
 (declare-function efrit-sandbox-ui-use-menu-p "efrit-sandbox-ui")
 (declare-function efrit-sandbox-ui-prompt "efrit-sandbox-ui")
+(declare-function efrit-review-describe-batch "efrit-review")
 (declare-function efrit-agent--append-to-conversation "efrit-agent-render")
 (declare-function efrit-notify-default "efrit-notify")
 (defvar efrit-notify-enabled)
@@ -238,6 +239,12 @@
 (declare-function magit-diff-unstaged "magit-diff")
 (declare-function efrit-agent-input-up "efrit-agent-input")
 (declare-function efrit-agent-input-hint "efrit-agent-render")
+(declare-function efrit-unattended-mode "efrit-unattended")
+(declare-function efrit-limits-ask-to-raise "efrit-limits")
+(declare-function efrit-limits-set "efrit-limits")
+(declare-function efrit-sandbox-ui-prompt "efrit-sandbox-ui")
+(declare-function efrit-review-describe-batch "efrit-review")
+(defvar efrit-limits-ask)
 (declare-function efrit-agent-instance-for-project "efrit-agent-instances")
 (declare-function efrit-agent-instances-mode "efrit-agent-instances")
 (declare-function efrit-agent-display-in-side-window "efrit-agent-instances")
@@ -1828,7 +1835,90 @@ was failing every time.)"
         (efrit-sandbox-reset-session repo)
         (ignore-errors (delete-file tmp-file))
         (delete-directory repo t)
-        (delete-directory other-root t)))))
+        (delete-directory other-root t))))
+  (efrit-testdrive--step 9 "Unattended mode answers prompts by policy and sums them up; a shell emacs is flagged for review"
+    ;; 2026-10-01: tzz cannot watch efrit every five minutes.  With the
+    ;; mode on, an unusual sandbox request is denied with a note (no
+    ;; menu), a limit is raised once, and the turn's end lists what was
+    ;; decided.  Independent of the mode: a shell line that starts
+    ;; another Emacs is refused with a pointer to eval_sexp.
+    (require 'efrit-unattended) (require 'efrit-limits) (require 'efrit-sandbox-ui)
+    (let* ((opened nil) (notes nil)
+           ;; the real prompt function (it is what runs under the policy
+           ;; gate); only the menu underneath is stubbed
+           (efrit-sandbox-request-function #'efrit-sandbox-ui-prompt)
+           (efrit-limits-ask t) (noninteractive nil)
+           (efrit-project-root efrit-testdrive--root)
+           (listener (lambda (e) (push (or (alist-get :text e) "") notes)))
+           (was-on (bound-and-true-p efrit-unattended-mode)))
+      (efrit-subscribe 'note listener)
+      (unwind-protect
+          (progn
+            (efrit-unattended-mode 1)
+            (efrit-publish 'turn-start `((:session-id . ,(efrit-repl-session-id (efrit-testdrive--session)))))
+            (let* ((home-file (expand-file-name "efrit-drive-unattended.txt" "~"))
+                   (denied (cl-letf (((symbol-function 'efrit-sandbox-ui--ask-with-menu)
+                                      (lambda (_req) (setq opened t) 'session))
+                                     ((symbol-function 'efrit-sandbox-ui--ask-in-echo-area)
+                                      (lambda (_req) (setq opened t) 'session)))
+                             (condition-case nil (progn (efrit-sandbox-check 'write home-file "create_file") nil)
+                               (efrit-sandbox-denied t))))
+                   (raised (cl-letf (((symbol-function 'efrit-limits--define-menu) (lambda () nil)))
+                             (efrit-limits-ask-to-raise 'max-iterations 100)))
+                   ;; a batch emacs is the reviewer's call, not the sandbox's:
+                   ;; the batch text carries a FLAG asking for the reason
+                   (emacs-refused (let ((input (make-hash-table :test 'equal))
+                                        (use (make-hash-table :test 'equal)))
+                                    (puthash "command" "emacs --batch -Q -l x.el" input)
+                                    (puthash "type" "tool_use" use) (puthash "id" "d1" use)
+                                    (puthash "name" "shell_exec" use) (puthash "input" input use)
+                                    (string-match-p "FLAG shell: starts another Emacs"
+                                                    (efrit-review-describe-batch (vector use))))))
+              (efrit-publish 'turn-complete `((:session-id . ,(efrit-repl-session-id (efrit-testdrive--session)))
+                                              (:stop-reason . "end_turn")))
+              (efrit-testdrive--check
+               (and denied (not opened) raised emacs-refused
+                    (cl-some (lambda (n) (string-match-p "answered by policy" n)) notes))
+               (format "sandbox denied without a menu %s (menu opened %s); limit raised to %S; batch emacs flagged for review %s; summary note %s"
+                       denied opened raised (and emacs-refused t)
+                       (and (cl-some (lambda (n) (string-match-p "answered by policy" n)) notes) t)))))
+        (efrit-unsubscribe 'note listener)
+        (unless was-on (efrit-unattended-mode -1))
+        (efrit-limits-set 'max-iterations nil 'once efrit-testdrive--root))))
+  (efrit-testdrive--step 9 "The reviewer sees what a Lisp edit does: a :vc block, an advice and a shadowed macro are flagged; the user's own defun and an unchanged :bind are not"
+    (require 'efrit-review)
+    (require 'efrit-review-flags)
+    (cl-flet ((flag-lines (text)
+                (string-join (cl-remove-if-not (lambda (l) (string-match-p "FLAG" l)) (split-string text "\n")) " ; "))
+              (batch (name &rest kv)
+                (let ((input (make-hash-table :test 'equal))
+                      (use (make-hash-table :test 'equal)))
+                  (while kv (puthash (pop kv) (pop kv) input))
+                  (puthash "type" "tool_use" use) (puthash "id" "d2" use)
+                  (puthash "name" name use) (puthash "input" input use)
+                  (efrit-review-describe-batch (vector use)))))
+      (let* ((edit (batch "edit_file"
+                          "path" (expand-file-name "tzz.emacs.libraries.el" efrit-testdrive--root)
+                          "old_str" "(use-package expand-region :bind (\"C-=\" . er/expand-region))"
+                          "new_str" (concat "(use-package expand-region :bind (\"C-=\" . er/expand-region))\n"
+                                            "(use-package transient-describe :vc (:url \"https://example.invalid/td\" :rev :newest))\n"
+                                            "(advice-add 'save-buffer :before #'tzz-note)\n"
+                                            "(defun tzz-note () nil)")))
+             (shadow (batch "eval_sexp" "expr" "(defmacro transient-describe-global-set-key (&rest _) nil)"))
+             (plain (batch "edit_file" "path" (expand-file-name "notes.txt" efrit-testdrive--root)
+                           "old_str" "a" "new_str" "(advice-add 'x :around #'y)")))
+        (efrit-testdrive--check
+         (and (string-match-p "\\[FLAG vc: use-package transient-describe" edit)
+              (string-match-p "\\[FLAG advice: advice-add save-buffer" edit)
+              (not (string-match-p "expand-region" (flag-lines edit)))
+              (not (string-match-p "tzz-note\\]" edit))
+              (string-match-p "\\[FLAG shadow: defmacro transient-describe-global-set-key" shadow)
+              (not (string-match-p "FLAG" plain))
+              (string-match-p "vc = a use-package" efrit-review--system-prompt))
+         (format "edit flags: %s | eval flags: %s | notes.txt flags: %s"
+                 (let ((f (flag-lines edit))) (if (string-empty-p f) "none" f))
+                 (let ((f (flag-lines shadow))) (if (string-empty-p f) "none" f))
+                 (let ((f (flag-lines plain))) (if (string-empty-p f) "none" f))))))))
 
 (defun efrit-testdrive--section-10 ()
   "The claude-code-ide batch: navigation tools, ediff edits, context indicator, range mentions."
