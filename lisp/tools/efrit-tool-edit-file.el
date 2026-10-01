@@ -4,7 +4,7 @@
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
 ;; Keywords: ai, tools
-;; Version: 0.8.0
+;; Version: 0.8.4
 
 ;;; Commentary:
 ;;
@@ -42,7 +42,7 @@
 ;;; Diff Generation
 
 (define-obsolete-function-alias 'efrit-tool-edit-file--generate-diff
-  #'efrit-tool-unified-diff "0.8.0")
+  #'efrit-tool-unified-diff "0.8.4")
 
 ;;; Main Implementation
 

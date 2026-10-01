@@ -4,7 +4,7 @@
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
 ;; Keywords: ai, tools, diff
-;; Version: 0.8.0
+;; Version: 0.8.4
 
 ;;; Commentary:
 ;;

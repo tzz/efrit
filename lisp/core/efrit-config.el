@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Free Software Foundation, Inc.
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.8.0
+;; Version: 0.8.4
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai, config
 ;; URL: https://github.com/stevey/efrit
@@ -18,7 +18,7 @@
 
 ;;; Version Management
 
-(defconst efrit-version "0.8.0"
+(defconst efrit-version "0.8.4"
   "Version number of Efrit.
 This is the canonical version used throughout the project.
 Update this when releasing new versions.")
