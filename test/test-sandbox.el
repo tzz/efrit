@@ -720,6 +720,31 @@ nothing on another host."
     ;; the advice is inert outside a sandboxed eval
     (should (equal "ok\n" (shell-command-to-string "echo ok")))))
 
+(ert-deftest test-sb-eval-native-compiler-is-not-the-model ()
+  "A batch Emacs started from under `comp-trampoline-compile' (Emacs compiling
+a trampoline for an advised primitive) runs without a shell grant; the same
+process started by the form itself still asks (2026-10-05: a buffer_create
+turn asked tzz whether eval_sexp may run Emacs)."
+  (test-sb--in-project
+    (efrit-sandbox-grant 'elisp t 'session)
+    (let ((emacs (expand-file-name invocation-name invocation-directory)))
+      ;; the model's own call: denied
+      (should-error (efrit-sandbox-eval-form
+                     `(make-process :name "x" :command (list ,emacs "--batch" "--eval" "(kill-emacs 0)")))
+                    :type 'efrit-sandbox-denied)
+      ;; the same call from a comp frame: housekeeping, allowed
+      (cl-letf (((symbol-function 'comp-trampoline-compile)
+                 (lambda (_subr)
+                   (let ((p (make-process :name "x" :command (list emacs "--batch" "--eval" "(kill-emacs 0)"))))
+                     (while (process-live-p p) (accept-process-output p 0.1))
+                     (process-exit-status p)))))
+        (should (= 0 (efrit-sandbox-eval-form '(comp-trampoline-compile 'read-string)))))
+      ;; a comp frame does not launder a different program
+      (cl-letf (((symbol-function 'comp-trampoline-compile)
+                 (lambda (_subr) (call-process "true"))))
+        (should-error (efrit-sandbox-eval-form '(comp-trampoline-compile 'read-string))
+                      :type 'efrit-sandbox-denied)))))
+
 (ert-deftest test-sb-eval-network-needs-net ()
   (test-sb--in-project
     (efrit-sandbox-grant 'elisp t 'session)
