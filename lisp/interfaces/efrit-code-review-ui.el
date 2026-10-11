@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.11.0
+;; Version: 0.11.1
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tools, vc, ai
 
@@ -83,6 +83,7 @@
     (define-key map (kbd "RET") #'efrit-code-review-ui-visit)
     (define-key map (kbd "g") #'efrit-code-review-ui-rerun)
     (define-key map (kbd "k") #'efrit-code-review-ui-cancel)
+    (define-key map (kbd "S") #'efrit-code-review-ui-set-store)
     (define-key map (kbd "?") #'efrit-code-review-ui-help)
     map))
 
@@ -171,7 +172,8 @@
                        (if (= 1 (cl-count 'lgtm findings :key (lambda (f) (plist-get f :type)))) "" "s"))
                'face 'efrit-code-review-meta)
               "\n"
-              (propertize "m queue  u unqueue  x dismiss  A apply queued  RET visit  n/p move  g again  q close"
+              (propertize (format "m queue  u unqueue  x dismiss  A apply queued  RET visit  n/p move  g again  S store [%s]  q close"
+                                  (efrit-code-review-store-for (efrit-code-review-scope-root scope)))
                           'face 'efrit-code-review-meta)
               "\n\n")
       (if (null findings)
@@ -288,6 +290,19 @@ Refused when the change set moved since the review."
       (progn (efrit-code-review-cancel efrit-code-review-ui--state)
              (message "efrit: cancelling after the request in flight"))
     (user-error "No review is running")))
+
+(defun efrit-code-review-ui-set-store ()
+  "Choose where this repository keeps its reviews: JSON files or git notes."
+  (interactive)
+  (let ((scope (plist-get efrit-code-review-ui--result :scope)))
+    (unless scope (user-error "No repository here"))
+    (let ((root (efrit-code-review-scope-root scope)))
+      (efrit-code-review-set-project-store
+       (intern (completing-read (format "Review store for %s: " (abbreviate-file-name root))
+                                '("json" "notes" "unset") nil t))
+       root)
+      (message "efrit: reviews of %s go to %s" (abbreviate-file-name root) (efrit-code-review-store-for root)))
+    (efrit-code-review-ui--render)))
 
 (defun efrit-code-review-ui-help ()
   "Describe the keys."

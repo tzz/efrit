@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.11.0
+;; Version: 0.11.1
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tools, vc, ai
 
@@ -729,8 +729,117 @@ flight."
 
 ;;;; Saved reviews
 
-(defun efrit-code-review--save-file (hash)
+;; Two stores, chosen per repository (tzz, 2026-10-11: "do the notes
+;; storage.  Support JSON as well, the choice is per repo"):
+;;
+;; json   one file per scope hash under efrit-data-directory/code-reviews/.
+;;        Private to this machine; nothing enters the repository.
+;; notes  a git note in refs/notes/<efrit-code-review-notes-ref>,
+;;        attached to a blob whose id is the hash of the key string
+;;        "efrit-code-review <scope hash>" (so a staged review has an
+;;        object to hang on before any commit exists), and copied onto
+;;        the commit when one lands with exactly the reviewed content
+;;        (`efrit-code-review-promote-after-commit' on `vc-checkin-hook'
+;;        and `magit-post-commit-hook').  Travels with the repository
+;;        when pushed on purpose: git push origin refs/notes/efrit-reviews.
+;;
+;; The repository's choice lives in .efrit/settings.json, section
+;; "code-review", key "store"; absent, `efrit-code-review-store'.
+
+(require 'efrit-settings)
+
+(defcustom efrit-code-review-store 'json
+  "Where finished reviews go when a repository does not say.
+`json': files under `efrit-data-directory'.  `notes': git notes in the
+repository (see the Saved reviews commentary)."
+  :type '(choice (const json) (const notes))
+  :group 'efrit-code-review)
+
+(defcustom efrit-code-review-notes-ref "efrit-reviews"
+  "The notes ref (under refs/notes/) reviews are written to with the `notes' store."
+  :type 'string
+  :group 'efrit-code-review)
+
+(defconst efrit-code-review-settings-section "code-review")
+
+(defun efrit-code-review-store-for (root)
+  "The store ROOT uses: its settings override, else `efrit-code-review-store'."
+  (let* ((section (efrit-settings-get (file-name-as-directory root) efrit-code-review-settings-section))
+         (value (and (hash-table-p section) (gethash "store" section))))
+    (if (member value '("json" "notes")) (intern value) efrit-code-review-store)))
+
+(defun efrit-code-review-set-project-store (store &optional root)
+  "Write STORE (`json', `notes', or `unset') as ROOT's review store.
+A value equal to `efrit-code-review-store' removes the override, as
+the other project setters do."
+  (interactive
+   (list (intern (completing-read "Review store for this repository: " '("json" "notes" "unset") nil t))
+         nil))
+  (let ((root (or root (efrit-vcs-root) (efrit-settings-project-root))))
+    (efrit-settings-put root efrit-code-review-settings-section
+                        (unless (or (eq store 'unset) (eq store efrit-code-review-store))
+                          (let ((h (make-hash-table :test 'equal)))
+                            (puthash "store" (symbol-name store) h)
+                            h)))
+    (when (called-interactively-p 'interactive)
+      (message "efrit: reviews of %s go to %s" (abbreviate-file-name root) (efrit-code-review-store-for root)))))
+
+(defun efrit-code-review--json-file (hash)
   (efrit-config-data-file (concat hash ".json") "code-reviews"))
+
+(defun efrit-code-review--notes-key-object (root hash &optional write)
+  "The blob id the note for HASH hangs on in ROOT; WRITE creates the blob."
+  (let ((key (make-temp-file "efrit-review-key-")))
+    (unwind-protect
+        (progn
+          (with-temp-file key (insert "efrit-code-review " hash "\n"))
+          (apply #'efrit-code-review--git root "hash-object" (append (and write '("-w")) (list "--" key))))
+      (delete-file key))))
+
+(defun efrit-code-review--notes-add (root object text)
+  "Attach TEXT as the review note of OBJECT in ROOT; non-nil on success."
+  (let ((file (make-temp-file "efrit-review-note-")))
+    (unwind-protect
+        (progn
+          (with-temp-file file (insert text))
+          (require 'vc-git)
+          (let ((default-directory root))
+            (condition-case err
+                (progn (vc-git-command nil 0 nil "notes" "--ref" efrit-code-review-notes-ref
+                                       "add" "-f" "-F" file object)
+                       t)
+              (error (efrit-log 'warn "code review: could not write the note on %s: %s"
+                                object (error-message-string err))
+                     nil))))
+      (delete-file file))))
+
+(defun efrit-code-review--notes-show (root object)
+  "The review note of OBJECT in ROOT, or nil."
+  (when object
+    (efrit-code-review--git root "notes" "--ref" efrit-code-review-notes-ref "show" object)))
+
+(defun efrit-code-review--write-text (root hash text)
+  "Keep TEXT as the review of HASH in ROOT's store; non-nil on success."
+  (pcase (efrit-code-review-store-for root)
+    ('notes
+     (when-let* ((object (efrit-code-review--notes-key-object root hash t)))
+       (efrit-code-review--notes-add root object text)))
+    (_
+     (let ((file (efrit-code-review--json-file hash)))
+       (condition-case err
+           (progn (make-directory (file-name-directory file) t)
+                  (with-temp-file file (insert text))
+                  t)
+         (error (efrit-log 'warn "code review: could not save %s: %s" file (error-message-string err))
+                nil))))))
+
+(defun efrit-code-review--read-text (root hash)
+  "The saved review text of HASH in ROOT's store, or nil."
+  (pcase (efrit-code-review-store-for root)
+    ('notes (efrit-code-review--notes-show root (efrit-code-review--notes-key-object root hash)))
+    (_ (let ((file (efrit-code-review--json-file hash)))
+         (and (file-readable-p file)
+              (with-temp-buffer (insert-file-contents file) (buffer-string)))))))
 
 (defun efrit-code-review--finding-json (f)
   `((id . ,(plist-get f :id)) (type . ,(symbol-name (plist-get f :type)))
@@ -740,52 +849,100 @@ flight."
     (old_lines . ,(plist-get f :old-lines)) (new_lines . ,(plist-get f :new-lines))
     (downgraded . ,(plist-get f :downgraded))))
 
+(defun efrit-code-review--result-json (result)
+  "RESULT as the JSON text both stores keep."
+  (let ((scope (plist-get result :scope)))
+    (json-encode
+     `((version . 1)
+       (kind . ,(symbol-name (efrit-code-review-scope-kind scope)))
+       (base . ,(efrit-code-review-scope-base scope))
+       (head . ,(efrit-code-review-scope-head scope))
+       (hash . ,(efrit-code-review-scope-hash scope))
+       (files . ,(vconcat (mapcar #'vconcat (efrit-code-review-scope-files scope))))
+       (model . ,(plist-get result :model))
+       (at . ,(plist-get result :at))
+       (rounds . ,(plist-get result :rounds))
+       (findings . ,(vconcat (mapcar #'efrit-code-review--finding-json (plist-get result :findings))))))))
+
+(defvar efrit-code-review--last-staged nil
+  "Alist (ROOT . (HASH . JSON-TEXT)): the last saved staged review per repository.
+Read by `efrit-code-review-promote-after-commit'.")
+
 (defun efrit-code-review-save (result)
-  "Write RESULT under its scope hash.  Quiet on failure."
+  "Keep RESULT in its repository's store.  Quiet on failure."
   (let* ((scope (plist-get result :scope))
-         (file (efrit-code-review--save-file (efrit-code-review-scope-hash scope))))
-    (condition-case err
-        (progn
-          (make-directory (file-name-directory file) t)
-          (with-temp-file file
-            (insert (json-encode
-                     `((version . 1)
-                       (kind . ,(symbol-name (efrit-code-review-scope-kind scope)))
-                       (root . ,(efrit-code-review-scope-root scope))
-                       (base . ,(efrit-code-review-scope-base scope))
-                       (head . ,(efrit-code-review-scope-head scope))
-                       (hash . ,(efrit-code-review-scope-hash scope))
-                       (files . ,(vconcat (mapcar #'vconcat (efrit-code-review-scope-files scope))))
-                       (model . ,(plist-get result :model))
-                       (at . ,(plist-get result :at))
-                       (rounds . ,(plist-get result :rounds))
-                       (findings . ,(vconcat (mapcar #'efrit-code-review--finding-json (plist-get result :findings)))))))))
-      (error (efrit-log 'warn "code review: could not save %s: %s" file (error-message-string err))))))
+         (root (efrit-code-review-scope-root scope))
+         (text (efrit-code-review--result-json result)))
+    (when (efrit-code-review--write-text root (efrit-code-review-scope-hash scope) text)
+      (when (eq (efrit-code-review-scope-kind scope) 'staged)
+        (setf (alist-get root efrit-code-review--last-staged nil nil #'equal)
+              (cons (efrit-code-review-scope-hash scope) text)))
+      t)))
+
+(defun efrit-code-review--parse-saved (scope text)
+  "The result plist for SCOPE from saved TEXT, or nil when it does not parse."
+  (condition-case err
+      (let* ((data (json-parse-string text :object-type 'alist :array-type 'list :null-object nil))
+             (findings
+              (mapcar (lambda (j)
+                        (efrit-code-review-finding
+                         (intern (alist-get 'type j)) (alist-get 'file j)
+                         :lines (alist-get 'lines j) :title (alist-get 'title j)
+                         :description (alist-get 'description j) :patch (alist-get 'patch j)
+                         :old-lines (alist-get 'old_lines j) :new-lines (alist-get 'new_lines j)
+                         :downgraded (alist-get 'downgraded j)
+                         ;; what was applied stays applied; a queue does not survive
+                         :state (if (equal (alist-get 'state j) "applied") 'applied
+                                  (if (equal (alist-get 'type j) "suggestion") 'pending 'applied))))
+                      (alist-get 'findings data))))
+        (list :status 'ok :scope scope :findings findings :saved t
+              :model (alist-get 'model data) :at (alist-get 'at data) :rounds (alist-get 'rounds data)))
+    (error (efrit-log 'warn "code review: saved review for %s does not parse: %s"
+                      (efrit-code-review-scope-hash scope) (error-message-string err))
+           nil)))
 
 (defun efrit-code-review-load (scope)
-  "The saved result for SCOPE's hash, or nil."
-  (let ((file (efrit-code-review--save-file (efrit-code-review-scope-hash scope))))
-    (when (file-readable-p file)
-      (condition-case err
-          (let* ((data (with-temp-buffer
-                         (insert-file-contents file)
-                         (json-parse-buffer :object-type 'alist :array-type 'list :null-object nil)))
-                 (findings
-                  (mapcar (lambda (j)
-                            (let ((f (efrit-code-review-finding
-                                      (intern (alist-get 'type j)) (alist-get 'file j)
-                                      :lines (alist-get 'lines j) :title (alist-get 'title j)
-                                      :description (alist-get 'description j) :patch (alist-get 'patch j)
-                                      :old-lines (alist-get 'old_lines j) :new-lines (alist-get 'new_lines j)
-                                      :downgraded (alist-get 'downgraded j)
-                                      ;; what was applied stays applied; a queue does not survive
-                                      :state (if (equal (alist-get 'state j) "applied") 'applied
-                                               (if (equal (alist-get 'type j) "suggestion") 'pending 'applied)))))
-                              f))
-                          (alist-get 'findings data))))
-            (list :status 'ok :scope scope :findings findings :saved t
-                  :model (alist-get 'model data) :at (alist-get 'at data) :rounds (alist-get 'rounds data)))
-        (error (efrit-log 'warn "code review: could not read %s: %s" file (error-message-string err)) nil)))))
+  "The saved result for SCOPE from its repository's store, or nil."
+  (when-let* ((text (efrit-code-review--read-text (efrit-code-review-scope-root scope)
+                                                  (efrit-code-review-scope-hash scope))))
+    (efrit-code-review--parse-saved scope text)))
+
+;;;; After a commit: the note moves onto the commit
+
+(defun efrit-code-review--commit-hash (root)
+  "The diff hash of HEAD against its first parent (or the empty tree), or nil."
+  (when-let* ((head (efrit-code-review--git root "rev-parse" "--verify" "--quiet" "HEAD")))
+    (let ((parent (or (efrit-code-review--git root "rev-parse" "--verify" "--quiet" "HEAD^")
+                      (efrit-code-review--git root "hash-object" "-t" "tree" "/dev/null"))))
+      (and parent (efrit-code-review--hash root parent head)))))
+
+(defun efrit-code-review-promote-after-commit ()
+  "Put the last staged review's note on HEAD when HEAD is what was reviewed.
+For the `notes' store only; the JSON store already keeps the review
+by hash.  A commit that differs from the review (one more staged line,
+an amend) gets no note, and a message says so."
+  (when-let* ((root (ignore-errors (efrit-vcs-root)))
+              (entry (alist-get root efrit-code-review--last-staged nil nil #'equal)))
+    (when (eq (efrit-code-review-store-for root) 'notes)
+      (let ((commit-hash (efrit-code-review--commit-hash root)))
+        (cond
+         ((null commit-hash)
+          (efrit-log 'debug "code review: no HEAD diff hash in %s; note not promoted" root))
+         ((equal commit-hash (car entry))
+          (setq efrit-code-review--last-staged
+                (assoc-delete-all root efrit-code-review--last-staged #'equal))
+          (if (efrit-code-review--notes-add root "HEAD" (cdr entry))
+              (message "efrit: the code review is now a note on %s"
+                       (substring (or (efrit-code-review--git root "rev-parse" "HEAD") "?") 0 10))
+            (message "efrit: could not attach the review note to HEAD")))
+         (t
+          ;; keep the entry: the user may amend into the reviewed content
+          (message "efrit: the commit differs from the reviewed staged changes; review note not attached")))))))
+
+(add-hook 'vc-checkin-hook #'efrit-code-review-promote-after-commit)
+(with-eval-after-load 'magit
+  (when (boundp 'magit-post-commit-hook)
+    (add-hook 'magit-post-commit-hook #'efrit-code-review-promote-after-commit)))
 
 (provide 'efrit-code-review)
 

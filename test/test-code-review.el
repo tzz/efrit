@@ -287,6 +287,51 @@ defun from the text it was given, not the file on disk."
       (should (= 1 (length defs)))
       (should (string-prefix-p "(defun two" (alist-get 'text (car defs)))))))
 
+(ert-deftest test-cr-notes-store-round-trips-and-promotes-on-commit ()
+  "With the repository set to the notes store the review is a git note
+on a key blob; nothing lands in efrit-data-directory; after a commit of
+exactly the reviewed content the note is on HEAD; a different commit
+gets none."
+  (skip-unless (executable-find "git"))
+  (test-cr--with-repo root
+    (let* ((efrit-code-review-store 'json)
+           (efrit-settings--cache (make-hash-table :test 'equal))
+           (scope (efrit-code-review-scope 'staged root))
+           (result (list :status 'ok :scope scope :model "m" :at "t" :rounds 1
+                         :findings (list (efrit-code-review-finding 'comment "a.el" :lines "4" :title "noted")))))
+      (efrit-settings-forget root)
+      (should (eq 'json (efrit-code-review-store-for root)))
+      (efrit-code-review-set-project-store 'notes root)
+      (should (eq 'notes (efrit-code-review-store-for root)))
+      (should (file-exists-p (expand-file-name ".efrit/settings.json" root)))
+      ;; the default again removes the override and the file
+      (efrit-code-review-set-project-store 'json root)
+      (should-not (file-exists-p (expand-file-name ".efrit/settings.json" root)))
+      (efrit-code-review-set-project-store 'notes root)
+      (should (efrit-code-review-save result))
+      (should-not (file-exists-p (efrit-code-review--json-file (efrit-code-review-scope-hash scope))))
+      (let ((loaded (efrit-code-review-load scope)))
+        (should loaded)
+        (should (equal "noted" (plist-get (car (plist-get loaded :findings)) :title))))
+      (let ((default-directory root))
+        (should (string-match-p "[0-9a-f]\\{40\\}" (or (efrit-code-review--git root "notes" "--ref" "efrit-reviews" "list") "")))
+        ;; a commit with one more line than reviewed: no note on it
+        (with-temp-file "a.el" (insert "(defun add (a b)\n  (+ a b))\n\n(defun sub (a b)\n  (+ a b))\n;; extra\n"))
+        (test-cr--git "add" "a.el")
+        (test-cr--git "commit" "-q" "-m" "different")
+        (efrit-code-review-promote-after-commit)
+        (should-not (efrit-code-review--notes-show root "HEAD"))
+        ;; amend back to the reviewed content: promoted
+        (with-temp-file "a.el" (insert "(defun add (a b)\n  (+ a b))\n\n(defun sub (a b)\n  (+ a b))\n"))
+        (test-cr--git "add" "a.el")
+        (test-cr--git "commit" "-q" "--amend" "-m" "reviewed")
+        (efrit-code-review-promote-after-commit)
+        (let ((note (efrit-code-review--notes-show root "HEAD")))
+          (should note)
+          (should (string-match-p "\"title\":\"noted\"" note)))
+        ;; consumed: a second call does nothing
+        (should-not (alist-get root efrit-code-review--last-staged nil nil #'equal))))))
+
 (provide 'test-code-review)
 
 ;;; test-code-review.el ends here
