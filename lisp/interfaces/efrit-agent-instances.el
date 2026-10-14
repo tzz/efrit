@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.11.1
+;; Version: 0.12.1
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tools, ai, convenience
 
@@ -115,6 +115,88 @@ Returns the buffer, in `efrit-agent-mode' with a fresh REPL session."
     (unless (member root efrit-agent--projects)
       (setq efrit-agent--projects (append efrit-agent--projects (list root))))
     buf))
+
+(defun efrit-agent--worktree-slug (name)
+  (let ((slug (string-trim (replace-regexp-in-string "[^a-z0-9]+" "-" (downcase name)) "-+" "-+")))
+    (if (string-empty-p slug) "agent" slug)))
+
+;;;###autoload
+(defun efrit-agent-new-worktree-instance (name &optional branch destination root)
+  "A new agent buffer NAME on a fresh Git worktree of ROOT's repository.
+BRANCH (default agent/NAME) is created from HEAD at DESTINATION
+\(default a sibling directory ROOT-NAME).  Existing branches and
+directories are refused.  The buffer's project is the worktree, so
+its edits, VC and sandbox grants stay there; the session records the
+worktree and branch and `efrit-resume' checks them.  Every prompt is
+answered before Git is touched."
+  (interactive
+   (let* ((root (or (efrit-vcs-root) (user-error "Not in a Git tree")))
+          (name (read-string "Agent name: "))
+          (slug (efrit-agent--worktree-slug name))
+          (branch (read-string "New branch: " (concat "agent/" slug)))
+          (suggested (concat (directory-file-name root) "-" slug))
+          (destination (read-directory-name "New worktree directory: "
+                                            (file-name-directory suggested) suggested nil
+                                            (file-name-nondirectory suggested))))
+     (list name branch destination root)))
+  (require 'efrit-vcs)
+  (let* ((root (or root (efrit-vcs-root) (user-error "Not in a Git tree")))
+         (name (string-trim name))
+         (branch (or branch (concat "agent/" (efrit-agent--worktree-slug name))))
+         (destination (or destination (concat (directory-file-name root) "-" (efrit-agent--worktree-slug name)))))
+    (when (string-empty-p name) (user-error "The agent needs a name"))
+    (let* ((worktree (condition-case err
+                         (efrit-vcs-worktree-add branch destination root)
+                       (efrit-vcs-error (user-error "%s" (cadr err)))))
+           (buf (efrit-agent-instance-create worktree name)))
+      (with-current-buffer buf
+        (efrit-repl-session-meta-put efrit-agent--repl-session :worktree worktree)
+        (efrit-repl-session-meta-put efrit-agent--repl-session :branch branch))
+      (when (called-interactively-p 'interactive)
+        (efrit-agent-display buf t)
+        (message "efrit: %s works in %s on %s" (buffer-name buf) (abbreviate-file-name worktree) branch))
+      buf)))
+
+(defun efrit-agent-relocate-session (session-id directory)
+  "Point saved SESSION-ID at DIRECTORY, a checkout that replaced its worktree.
+For a session whose recorded worktree moved.  Only the saved record
+changes: the conversation, Git and the directory are left alone.  The
+directory must be a Git tree; you confirm the change."
+  (interactive
+   (let* ((sessions (progn (require 'efrit-session-persist) (efrit-session-persist-list)))
+          (id (completing-read "Session: " (mapcar #'car sessions) nil t))
+          (dir (read-directory-name "Checkout it now lives in: " nil nil t)))
+     (list id dir)))
+  (require 'efrit-session-persist)
+  (require 'efrit-vcs)
+  (let* ((session (or (efrit-session-persist-load session-id)
+                      (user-error "No saved session %s" session-id)))
+         (root (or (efrit-vcs-root directory)
+                   (user-error "%s is not inside a Git tree" (abbreviate-file-name directory))))
+         (branch (efrit-vcs-branch root))
+         (old (efrit-repl-session-meta-get session :worktree)))
+    (when (efrit-agent-buffer-for session-id)
+      (user-error "Session %s is open in a buffer; relocate a session that is not running" session-id))
+    (unless (yes-or-no-p (format "Move session %s from %s to %s (branch %s)? " session-id
+                                 (if old (abbreviate-file-name old) "its project") (abbreviate-file-name root)
+                                 (or branch "?")))
+      (user-error "Not moved"))
+    (efrit-repl-session-meta-put session :worktree root)
+    (efrit-repl-session-meta-put session :branch branch)
+    (setf (efrit-repl-session-project-root session) root)
+    (efrit-session-persist-save session)
+    (message "efrit: session %s now lives in %s" session-id (abbreviate-file-name root))
+    root))
+
+(declare-function efrit-session-persist-list "efrit-session-persist")
+(declare-function efrit-session-persist-load "efrit-session-persist")
+(declare-function efrit-session-persist-save "efrit-session-persist")
+(declare-function efrit-vcs-branch "efrit-vcs")
+(declare-function efrit-agent-buffer-for "efrit-agent-core")
+(declare-function efrit-repl-session-meta-put "efrit-repl-session")
+(declare-function efrit-repl-session-meta-get "efrit-repl-session")
+(declare-function efrit-vcs-worktree-add "efrit-vcs")
+(declare-function efrit-vcs-root "efrit-vcs")
 
 (defun efrit-agent-instance-for-project (&optional root create)
   "The most recently used agent buffer of ROOT, or a new one when CREATE."

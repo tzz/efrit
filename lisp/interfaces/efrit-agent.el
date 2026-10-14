@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.11.1
+;; Version: 0.12.1
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -55,6 +55,9 @@
 (require 'efrit-tool-last-error)
 (require 'efrit-next-steps)
 (require 'efrit-agent-dashboard)
+(require 'efrit-agent-ring)
+(require 'efrit-agent-diagnose)
+(require 'efrit-agent-tab-line)
 (require 'efrit-magit)
 ;; the recorder costs nothing until an error happens; on by default so
 ;; "why did that fail?" has an answer
@@ -282,6 +285,18 @@
     (define-key map (kbd "C-c C-g") #'efrit-agent-refresh)     ; Refresh display
     (define-key map (kbd "C-c C-h") #'efrit-agent-browse-sessions) ; Browse sessions history
     (define-key map (kbd "C-c ?")   #'efrit-agent-menu)        ; The buffer's menu
+    ;; Between agent buffers: next/previous in creation order, the
+    ;; ones that need you, and by number (after the Claude desktop
+    ;; app's chat keys and M-x Machina's ], 2026-10-14)
+    (define-key map (kbd "C-c ]") #'efrit-agent-next)
+    (define-key map (kbd "C-c [") #'efrit-agent-previous)
+    (define-key map (kbd "C-c }") #'efrit-agent-next-attention)
+    (define-key map (kbd "C-c {") #'efrit-agent-previous-attention)
+    (define-key map (kbd "C-c C-z") #'efrit-agent-focus)
+    (define-key map (kbd "C-c u") #'efrit-agent-toggle-unread)
+    (dotimes (i 9)
+      (define-key map (kbd (format "C-c %d" (1+ i)))
+                  (intern (format "efrit-agent-switch-to-%d" (1+ i)))))
     ;; `?' in the read-only conversation opens the menu; in the input
     ;; it types a ? (the input minor mode shadows it)
     (define-key map (kbd "?") #'efrit-agent-menu)
@@ -369,6 +384,8 @@ Status is shown in the header-line at top of window.
   (setq-local inhibit-line-move-field-capture t)
   ;; Don't let cursor jump around during updates
   (setq-local cursor-in-non-selected-windows nil)
+  ;; unread / waiting mark next to the mode name
+  (setq-local mode-line-process '(:eval (efrit-agent-ring-mode-line-string)))
   ;; Initialize state
   (setq efrit-agent--expanded-items (make-hash-table :test 'equal))
   ;; Folded tool bodies are `invisible' text; let ellipses off and
@@ -538,9 +555,19 @@ Select one to restore it into the current agent buffer."
   "Resume session with SESSION-ID.
 Loads the session from disk and restores it into the agent buffer."
   (require 'efrit-session-persist)
-  (let ((session (efrit-session-persist-load session-id)))
-    (if (null session)
-        (message "Failed to load session %s" session-id)
+  (let* ((session (efrit-session-persist-load session-id))
+         (worktree (and session (fboundp 'efrit-repl-session-meta-get)
+                        (efrit-repl-session-meta-get session :worktree))))
+    (cond
+     ((null session)
+      (message "Failed to load session %s" session-id))
+     ;; a session made for a worktree that is gone: say so, start
+     ;; nothing in its place (after M-x Machina: a failed resume must
+     ;; never silently become a new conversation, 2026-10-14)
+     ((and worktree (not (file-directory-p worktree)))
+      (user-error "Session %s worked in %s, which no longer exists; M-x efrit-agent-relocate-session to point it elsewhere"
+                  session-id (abbreviate-file-name worktree)))
+     (t
       ;; A buffer of its own when instances are on (the default buffer
       ;; may be mid-conversation); else the default buffer
       (let ((buffer (if (bound-and-true-p efrit-agent-instances-mode)
@@ -576,7 +603,7 @@ Loads the session from disk and restores it into the agent buffer."
           (when (and efrit-agent--input-start
                      (marker-position efrit-agent--input-start))
             (goto-char efrit-agent--input-start)))
-        (message "Resumed session %s" session-id)))))
+        (message "Resumed session %s" session-id))))))
 
 (defun efrit-agent-refresh ()
   "Refresh the status display.

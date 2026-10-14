@@ -4,7 +4,7 @@
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
 ;; Maintainer: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.11.1
+;; Version: 0.12.1
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai, assistant, claude
 ;; URL: https://github.com/steveyegge/efrit
@@ -102,6 +102,14 @@ Use M-x efrit-help for more information."
     (define-key map (kbd "D") 'efrit-do-sync) ; 'D' for sync do/execute (legacy)
     (define-key map (kbd "q") 'efrit-remote-queue-start) ; 'q' for queue
     (define-key map (kbd "Q") 'efrit-remote-queue-status) ; 'Q' for queue status
+    (define-key map (kbd "]") 'efrit-agent-next)           ; next agent buffer
+    (define-key map (kbd "[") 'efrit-agent-previous)
+    (define-key map (kbd "}") 'efrit-agent-next-attention) ; the one that needs you
+    (define-key map (kbd "{") 'efrit-agent-previous-attention)
+    (define-key map (kbd "l") 'efrit-agent-dashboard)      ; list them
+    (define-key map (kbd "z") 'efrit-agent-focus)          ; one agent, whole frame; again restores
+    (define-key map (kbd "i") 'efrit-agent-diagnose)
+    (define-key map (kbd "u") 'efrit-agent-toggle-unread)  ; mark the agent unread / read
     map)
   "Keymap for Efrit commands.")
 
@@ -204,7 +212,7 @@ Shows version, installation status, and basic connectivity."
   (interactive)
   (require 'efrit-config)
   (require 'efrit-common)
-  (let* ((version "0.11.1")
+  (let* ((version "0.12.1")
          (api-key (condition-case nil
                       (efrit-common-get-api-key)
                     (error nil)))
@@ -270,6 +278,24 @@ Executes all ERT tests and displays results in a buffer."
 ;;;###autoload
 (autoload 'efrit-review-all-packages "efrit-package-review-ui"
   "Review every installed package with efrit; collect the verdicts in one buffer." t)
+;;;###autoload
+(autoload 'efrit-agent-next "efrit-agent-ring" "Show the next agent buffer." t)
+;;;###autoload
+(autoload 'efrit-agent-previous "efrit-agent-ring" "Show the previous agent buffer." t)
+;;;###autoload
+(autoload 'efrit-agent-next-attention "efrit-agent-ring" "Show the agent buffer that needs you." t)
+;;;###autoload
+(autoload 'efrit-agent-previous-attention "efrit-agent-ring" "Show the previous agent buffer that needs you." t)
+;;;###autoload
+(autoload 'efrit-agent-toggle-unread "efrit-agent-ring" "Mark the agent buffer unread, or read." t)
+;;;###autoload
+(autoload 'efrit-agent-tab-line-mode "efrit-agent-tab-line" "Agent buffers in every tab line, lit when they need you." t)
+;;;###autoload
+(autoload 'efrit-agent-focus "efrit-agent-dashboard" "Fill the frame with one agent buffer, or restore." t)
+;;;###autoload
+(autoload 'efrit-agent-diagnose "efrit-agent-diagnose" "Diagnose an agent session without touching it." t)
+;;;###autoload
+(autoload 'efrit-agent-new-worktree-instance "efrit-agent-instances" "A new agent in a fresh Git worktree." t)
 ;;;###autoload
 (autoload 'efrit-code-review "efrit-code-review-ui"
   "Review the staged changes (prefix: unpushed, branch); findings as patches." t)

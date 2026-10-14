@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.11.1
+;; Version: 0.12.1
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -46,7 +46,9 @@
 ;;                     the next tool results (`efrit-repl-loop--steer')
 ;;   steered           :text -- the text was delivered to the model
 ;;   steer-queued      :text -- no tool round was left; the text starts the next turn
-;;   prompt-open       :label -- a modal prompt is about to wait for the user
+;;   prompt-open       :label :session-id -- a modal prompt is about to wait for the user
+;;   prompt-closed     :label :session-id -- that prompt is answered or abandoned
+;;   attention-changed :buffer -- an agent buffer's unread/waiting mark changed
 ;;   prompt-answered-unattended :label :answer :why -- unattended mode answered it
 ;;   queued            :text :count -- an input waits for the turn to end
 ;;   turn-complete     :stop-reason :completion-message
@@ -286,11 +288,12 @@ published so a desktop notification can say that efrit is waiting
                             (list (cons :label ,label) (cons :answer (car ,policy)) (cons :why (cdr ,policy))))
              (throw 'efrit-prompt-answered (car ,policy)))))
         (t
-         (efrit-publish 'prompt-open (list (cons :label ,label)))
+         (efrit-publish 'prompt-open (list (cons :label ,label) (cons :session-id efrit-current-session-id)))
          (let ((outer efrit-prompt--owner))
            (setq efrit-prompt--owner ,me)
            (unwind-protect (progn ,@body)
-             (setq efrit-prompt--owner outer)))))))))
+             (setq efrit-prompt--owner outer)
+             (efrit-publish 'prompt-closed (list (cons :label ,label) (cons :session-id efrit-current-session-id)))))))))))
 
 (defun efrit-elapsed-working (since &optional waiting-at-start)
   "Seconds since SINCE (a time value) minus time spent waiting on the user.

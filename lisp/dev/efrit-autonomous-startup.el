@@ -4,7 +4,7 @@
 
 ;; Author: Efrit Development Team
 ;; Keywords: ai, development, autonomous
-;; Version: 0.11.1
+;; Version: 0.12.1
 ;; Package-Requires: ((emacs "25.1"))
 
 ;;; Commentary:
