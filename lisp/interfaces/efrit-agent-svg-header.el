@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.12.1
+;; Version: 0.12.13
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -393,20 +393,46 @@ whole header at twice the body text.  (The spinner already did this.)"
 (defvar efrit-agent-svg--last-error nil
   "The last error the header value function caught, for `efrit-doctor'.")
 
+(defcustom efrit-agent-header-extra-functions nil
+  "Functions whose strings are shown after efrit's own header.
+Each is called with no arguments in the agent buffer and returns a
+propertized string (images welcome) or nil.  For other packages'
+indicators the user wants in sight while agents run -- nngmail's G and
+its unread/starred pills, for instance -- without efrit knowing them.
+Errors in a function are logged and skipped, never shown."
+  :type 'hook
+  :group 'efrit-agent-header)
+
+(defun efrit-agent-svg--extras ()
+  "The concatenated results of `efrit-agent-header-extra-functions', or nil."
+  (let (parts)
+    (dolist (fn efrit-agent-header-extra-functions)
+      (condition-case err
+          (when-let* ((s (funcall fn)))
+            (when (and (stringp s) (not (string-empty-p s)))
+              (push s parts)))
+        (error (efrit-log 'warn "header extra %s: %s" fn (error-message-string err)))))
+    (and parts (string-join (nreverse parts) " "))))
+
 (defun efrit-agent-svg-header ()
   "Return the header-line string per `efrit-agent-header-style'.
 Never signals: an error inside a `header-line-format' :eval makes
 redisplay blank the header and set the format to nil for the buffer,
 which showed up as no logo until the next open.  Errors are logged
-and the plain text header is returned instead."
-  (condition-case err
-      (efrit-agent-svg--header-1)
-    (error
-     (setq efrit-agent-svg--last-error (error-message-string err))
-     (efrit-log 'warn "header: %s" efrit-agent-svg--last-error)
-     (condition-case nil
-         (efrit-agent--format-header-line)
-       (error " efrit")))))
+and the plain text header is returned instead.  Other packages'
+indicators (`efrit-agent-header-extra-functions') follow efrit's own."
+  (let ((own (condition-case err
+                 (efrit-agent-svg--header-1)
+               (error
+                (setq efrit-agent-svg--last-error (error-message-string err))
+                (efrit-log 'warn "header: %s" efrit-agent-svg--last-error)
+                (condition-case nil
+                    (efrit-agent--format-header-line)
+                  (error " efrit")))))
+        (extras (and efrit-agent-header-extra-functions (efrit-agent-svg--extras))))
+    (cond ((and own extras) (concat own "  " extras))
+          (extras (concat " " extras))
+          (t own))))
 
 (defun efrit-agent-svg--header-1 ()
   "The header string; may signal (see `efrit-agent-svg-header')."

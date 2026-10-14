@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.12.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tools, ai
 
@@ -44,6 +44,7 @@
 (require 'seq)
 (require 'efrit-events)
 (require 'efrit-pill)
+(defvar efrit-pill-e-alert-color)
 
 (declare-function efrit-agent-buffers "efrit-agent-core")
 (declare-function efrit-agent-display "efrit-agent-core")
@@ -212,6 +213,10 @@ CURRENT absent: the first entry."
         (interactive)
         (efrit-agent-switch-to-number n)))))
 
+(defvar-local efrit-agent--unread-pinned nil
+  "Non-nil when the user set the unread mark by hand: the first dwell
+in the same visit must not clear it.  Cleared when the buffer leaves view.")
+
 (defun efrit-agent-mark-unread (&optional buffer)
   "Mark BUFFER (default the current agent buffer) unread, to come back to it.
 It joins the attention queue after the waiting ones; the dwell clock
@@ -233,10 +238,6 @@ does not clear it until you leave and look again."
       (progn (efrit-agent-mark-read buffer) (message "%s marked read" (buffer-name (or buffer (current-buffer)))))
     (efrit-agent-mark-unread buffer)))
 
-(defvar-local efrit-agent--unread-pinned nil
-  "Non-nil when the user set the unread mark by hand: the first dwell
-in the same visit must not clear it.  Cleared when the buffer leaves view.")
-
 (defun efrit-agent-mark-read (&optional buffer)
   "Clear the unread mark of BUFFER (default the current agent buffer)."
   (interactive)
@@ -253,15 +254,67 @@ in the same visit must not clear it.  Cleared when the buffer leaves view.")
   (concat (if (efrit-agent-ring--waiting-p buffer) " ?" "")
           (if (efrit-agent-ring--unread-p buffer) " •" "")))
 
-(defun efrit-agent-ring-mode-line-string ()
-  "The current buffer's unread/waiting mark for its mode line, or nil."
-  (when (and efrit-agent-ring-mode-line (derived-mode-p 'efrit-agent-mode))
+(declare-function efrit-agent-spinner-frame "efrit-agent-spinner")
+(declare-function efrit-agent-spinner-available-p "efrit-agent-spinner")
+
+(defun efrit-agent-attention-state (buffer)
+  "BUFFER's state: `waiting', `unread', `working', `failed' or `idle'."
+  (with-current-buffer buffer
     (cond
-     (efrit-agent--waiting
-      (concat " " (efrit-pill "?" :state 'waiting :strong t
-                              :help-echo (format "efrit is waiting for you: %s" efrit-agent--waiting))))
-     (efrit-agent--unread
-      (concat " " (efrit-pill "•" :state 'unread :help-echo "unread reply (C-c u toggles)"))))))
+     (efrit-agent--waiting 'waiting)
+     (efrit-agent--unread 'unread)
+     ((and efrit-agent--repl-session (eq (efrit-repl-session-status efrit-agent--repl-session) 'working)) 'working)
+     ((and efrit-agent--repl-session (eq (efrit-repl-session-status efrit-agent--repl-session) 'failed)) 'failed)
+     (t 'idle))))
+
+(defun efrit-agent-attention-dot (buffer &optional text)
+  "BUFFER's attention mark: a disc inside a pill, red when it needs you.
+TEXT (default the state) is the pill text; \"\" gives the disc alone."
+  (let* ((state (efrit-agent-attention-state buffer))
+         (needs (memq state '(waiting unread))))
+    (efrit-pill (or text (symbol-name state)) :state state
+                :dot (if needs 'filled 'ring)
+                :strong (and needs (eq state 'waiting))
+                :help-echo (pcase state
+                             ('waiting (format "%s is waiting for you: %s" (buffer-name buffer)
+                                               (buffer-local-value 'efrit-agent--waiting buffer)))
+                             ('unread (format "%s has a reply you have not read (C-c u toggles)" (buffer-name buffer)))
+                             ('working (format "%s is working" (buffer-name buffer)))
+                             (_ (format "%s: nothing needs you (%s)" (buffer-name buffer) state))))))
+
+(declare-function efrit-agent-spinner-still "efrit-agent-spinner")
+(defvar efrit-agent--spinner-index)
+(defvar efrit-agent--thinking-label)
+
+(defun efrit-agent-logo (&optional color)
+  "The efrit e, whole and still, as a mode-line image in COLOR; nil without SVG."
+  (when (and (require 'efrit-agent-spinner nil t) (efrit-agent-spinner-available-p))
+    (efrit-agent-spinner-still (+ 2 (frame-char-height)) color 'mode-line)))
+
+(defun efrit-agent-ring-mode-line-string ()
+  "The efrit logo for this agent's mode line.
+Animated (the highlight running along the e) while a request is in
+flight, the spinner timer redrawing mode lines on each tick; the
+whole e at rest otherwise; red when a prompt waits or a reply is
+unread.  Nil without a graphic display: the dot pill then (tzz,
+2026-10-14: \"animated when there's action. Otherwise it should be
+the full e\")."
+  (when (and efrit-agent-ring-mode-line (derived-mode-p 'efrit-agent-mode))
+    (let* ((state (efrit-agent-attention-state (current-buffer)))
+           (needs (memq state '(waiting unread)))
+           (color (and needs efrit-pill-e-alert-color))
+           (help (pcase state
+                   ('waiting (format "efrit is waiting for you: %s" efrit-agent--waiting))
+                   ('unread "a reply you have not read (C-c u toggles)")
+                   ('working "efrit is working")
+                   (_ (format "efrit: %s" state)))))
+      (if-let* ((frame (and (require 'efrit-agent-spinner nil t) (efrit-agent-spinner-available-p)
+                            (if efrit-agent--thinking-label
+                                (efrit-agent-spinner-frame efrit-agent--spinner-index (+ 2 (frame-char-height))
+                                                           color 'mode-line)
+                              (efrit-agent-logo color)))))
+          (propertize frame 'help-echo help)
+        (efrit-agent-attention-dot (current-buffer) "")))))
 
 (defun efrit-agent-ring-summary ()
   "One line: how many agents work, wait, are unread, are idle."
@@ -349,8 +402,12 @@ NOW (a float time) is for tests."
         (efrit-agent-ring--reset-dwell)
         (cl-return-from efrit-agent-ring-check-dwell nil))
       (let ((view (list (selected-window) buf)))
+        ;; the heartbeat ticks once a second, a little late; a gap must
+        ;; be clearly more than that to count as sleep rather than
+        ;; reading (2026-10-14: at 1.0 every tick restarted the clock
+        ;; and a buffer stayed unread for hours)
         (when (or (not (equal view (seq-take efrit-agent-ring--dwell 2)))
-                  (> (- now (nth 3 efrit-agent-ring--dwell)) 1.0)
+                  (> (- now (nth 3 efrit-agent-ring--dwell)) 2.5)
                   (< now (nth 3 efrit-agent-ring--dwell)))
           (setq efrit-agent-ring--dwell (list (selected-window) buf now now)))
         (setf (nth 3 efrit-agent-ring--dwell) now)
@@ -387,8 +444,19 @@ NOW (a float time) is for tests."
 (defun efrit-agent-ring--stamp-current ()
   (efrit-agent-ring--stamp (current-buffer)))
 
+(defun efrit-agent-ring-apply-mode-name ()
+  "Make every live agent buffer show the logo as its mode name.
+`efrit-agent-mode' sets it for new buffers; this is for buffers that
+exist across a reload (tzz, 2026-10-14: \"the text is still there\")."
+  (dolist (b (efrit-agent-buffers))
+    (with-current-buffer b
+      (setq mode-name '(:eval (or (efrit-agent-ring-mode-line-string) "Efrit-Agent")))
+      (setq mode-line-process nil)))
+  (force-mode-line-update t))
+
 (defun efrit-agent-ring-install ()
   "Subscribe to the events and hooks the marks depend on."
+  (efrit-agent-ring-apply-mode-name)
   (add-hook 'efrit-agent-mode-hook #'efrit-agent-ring--stamp-current)
   (efrit-subscribe 'turn-complete #'efrit-agent-ring--on-turn-complete)
   (efrit-subscribe 'prompt-open #'efrit-agent-ring--on-prompt-open)

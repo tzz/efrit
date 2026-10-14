@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.12.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tools, ai, faces
 
@@ -32,6 +32,8 @@
 (require 'cl-lib)
 (require 'color)
 (require 'svg)
+
+(require 'dom)
 
 (defgroup efrit-pill nil
   "Pills and badges."
@@ -81,9 +83,36 @@ or the reverse when `:strong' is asked for."
 (defvar efrit-pill--cache (make-hash-table :test 'equal))
 (defvar efrit-pill--cache-key nil)
 
+;; A reload of this file (efrit-reload, tzz-reload) must not keep
+;; serving images drawn by the old code: the cache keys carry only
+;; text and colours, not the drawing (2026-10-14, the new e did not
+;; show after a reload).
+(clrhash efrit-pill--cache)
+(setq efrit-pill--cache-key nil)
+
+(defun efrit-pill-flush ()
+  "Drop every cached pill and logo image so the next draw uses the current code."
+  (interactive)
+  (clrhash efrit-pill--cache)
+  (setq efrit-pill--cache-key nil)
+  (when (fboundp 'efrit-agent-spinner-reset-cache) (efrit-agent-spinner-reset-cache))
+  (when (fboundp 'tab-line-force-update) (tab-line-force-update t))
+  (force-mode-line-update t))
+
 (defun efrit-pill-available-p ()
   "Non-nil when pills can be drawn as images here."
   (and (display-graphic-p) (image-type-available-p 'svg)))
+
+(defun efrit-pill--rgb (color)
+  "COLOR (#rrggbb or #rgb, or a name) as (R G B) in 0..1.
+Hex is parsed here: `color-name-to-rgb' consults the display and in
+batch returns wrong values for hex colours."
+  (cond
+   ((and (stringp color) (string-match "\\`#\\([0-9a-fA-F]\\{6\\}\\)\\'" color))
+    (mapcar (lambda (i) (/ (string-to-number (substring color (1+ (* 2 i)) (+ 3 (* 2 i))) 16) 255.0)) '(0 1 2)))
+   ((and (stringp color) (string-match "\\`#\\([0-9a-fA-F]\\{3\\}\\)\\'" color))
+    (mapcar (lambda (i) (/ (string-to-number (substring color (1+ i) (+ 2 i)) 16) 15.0)) '(0 1 2)))
+   (t (or (color-name-to-rgb color) '(0.5 0.5 0.5)))))
 
 (defun efrit-pill--hex (rgb)
   (apply #'color-rgb-to-hex (append rgb '(2))))
@@ -99,7 +128,7 @@ or the reverse when `:strong' is asked for."
   "The colour of STATE; LIGHT gives a pale variant of it.  Nil for an unknown state."
   (when-let* ((hex (alist-get state efrit-pill-state-colors)))
     (if (not light) hex
-      (pcase-let* ((`(,r ,g ,b) (color-name-to-rgb hex))
+      (pcase-let* ((`(,r ,g ,b) (efrit-pill--rgb hex))
                    (`(,h ,s ,_l) (color-rgb-to-hsl r g b)))
         (efrit-pill--hex (color-hsl-to-rgb h (* 0.9 s) efrit-pill-background-lightness))))))
 
@@ -109,27 +138,82 @@ or the reverse when `:strong' is asked for."
       (clrhash efrit-pill--cache)
       (setq efrit-pill--cache-key key))))
 
-(defun efrit-pill--draw (text bg fg scale)
-  "TEXT as a pill image string with BG and FG colours at SCALE."
+(defun efrit-pill--draw (text bg fg scale &optional dot)
+  "TEXT as a pill image string with BG and FG colours at SCALE.
+DOT non-nil draws a disc inside the pill, before the text: red when
+DOT is `filled' (the agent needs you), a soft complement of the pill's
+colour otherwise.  The pill itself is always filled (tzz, 2026-10-14)."
   (let* ((height (max 12 (round (* scale (default-font-height)))))
          (font-size (round (* 0.62 height)))
          (family (face-attribute 'default :family))
-         (width (+ (* (string-width text) (round (* 0.66 font-size))) (default-font-width)))
+         (dot-d (and dot (round (* 0.6 height))))
+         (text-only (string-empty-p text))
+         (dot-space (if dot (+ dot-d (if text-only 0 (round (* 0.35 font-size)))) 0))
+         (width (+ (* (string-width text) (round (* 0.66 font-size))) (default-font-width) dot-space))
          (svg (svg-create width height)))
     (svg-rectangle svg 0 1 width (- height 2) :rx (/ height 2.0) :fill bg)
-    (svg-text svg text :x (/ width 2.0) :y (/ height 2.0)
-              :text-anchor "middle" :dominant-baseline "central"
-              :font-family family :font-weight "bold" :font-size font-size :fill fg)
-    (propertize text 'display (svg-image svg :ascent 'center :scale 1))))
+    (when dot
+      ;; the mark: a solid embossed disc, red when the agent needs you,
+      ;; a soft complement of the pill otherwise (tzz, 2026-10-14: a
+      ;; drawn e did not read well at tab size)
+      (efrit-pill--dot svg (/ (default-font-width) 2.0) (/ (- height dot-d) 2.0) dot-d bg
+                       (max 0.6 (/ dot-d 16.0)) (eq dot 'filled)))
+    (unless text-only
+      (svg-text svg text :x (+ (/ (+ width dot-space) 2.0)) :y (/ height 2.0)
+                :text-anchor "middle" :dominant-baseline "central"
+                :font-family family :font-weight "bold" :font-size font-size :fill fg))
+    (propertize (if text-only "●" text) 'display (svg-image svg :ascent 'center :scale 1))))
 
-(cl-defun efrit-pill (text &key key state strong bg fg (scale efrit-pill-scale) help-echo)
+(defcustom efrit-pill-e-alert-color "#d62828"
+  "The attention dot when the agent needs you: red, whatever the pill's colour."
+  :type 'string
+  :group 'efrit-pill)
+
+(defun efrit-pill-complement (color)
+  "A soft colour across the wheel from COLOR, never in the red band.
+Hue rotated a half turn; hues within 40 degrees of red are pushed to
+the nearest edge of that band (the red dot means something else).
+Saturation eased and lightness kept middling so it reads on pale and
+on saturated pills alike."
+  (pcase-let* ((`(,r ,g ,b) (efrit-pill--rgb color))
+               (`(,h ,s ,_l) (color-rgb-to-hsl r g b))
+               (deg (mod (+ (* 360.0 h) 180.0) 360.0))
+               (deg (cond ((< deg 40) 40.0) ((> deg 320) 320.0) (t deg))))
+    (efrit-pill--hex (color-hsl-to-rgb (/ deg 360.0) (min 0.55 (max 0.35 s)) 0.52))))
+
+(defun efrit-pill--dot (svg x y size color width alert)
+  "Draw a solid embossed disc on SVG at X Y in a SIZE square.
+With ALERT it is `efrit-pill-e-alert-color' (red); otherwise a soft
+complement of COLOR, the pill's colour.  A radial gradient gives the
+emboss, a thin darker ring of WIDTH the edge."
+  (let* ((cx (+ x (/ size 2.0))) (cy (+ y (/ size 2.0))) (r (* size 0.42))
+         (tone (if alert efrit-pill-e-alert-color (efrit-pill-complement color)))
+         (id (format "efrit-dot-%s" (substring (md5 tone) 0 8)))
+         (light (efrit-pill--mix tone "#ffffff" 0.5))
+         (dark (efrit-pill--mix tone "#000000" 0.4)))
+    (svg--def svg (dom-node 'radialGradient `((id . ,id) (cx . "35%") (cy . "30%") (r . "70%"))
+                            (dom-node 'stop `((offset . "0%") (stop-color . ,light)))
+                            (dom-node 'stop `((offset . "60%") (stop-color . ,tone)))
+                            (dom-node 'stop `((offset . "100%") (stop-color . ,dark)))))
+    (svg-circle svg cx cy r :fill (format "url(#%s)" id) :stroke dark :stroke-width width)))
+
+(defun efrit-pill--mix (a b amount)
+  "Colour A moved AMOUNT (0..1) towards colour B, as #rrggbb."
+  (pcase-let ((`(,r1 ,g1 ,b1) (efrit-pill--rgb a))
+              (`(,r2 ,g2 ,b2) (efrit-pill--rgb b)))
+    (efrit-pill--hex (list (+ r1 (* amount (- r2 r1))) (+ g1 (* amount (- g2 g1))) (+ b1 (* amount (- b2 b1)))))))
+
+(cl-defun efrit-pill (text &key key state strong dot bg fg (scale efrit-pill-scale) help-echo)
   "TEXT drawn as a pill.
 KEY picks a stable hue (default TEXT); STATE picks a colour from
 `efrit-pill-state-colors' instead; STRONG swaps to a saturated
-background with pale text (the selected tab, an alarm); BG and FG
-override everything.  SCALE is the height relative to the line.
-HELP-ECHO becomes the tooltip.  Without SVG, TEXT with a face."
-  (or (and efrit-pill-function
+background with pale text (the selected tab, an alarm); DOT puts a
+disc inside the pill before the text: red when `filled' (needs you),
+a soft complement of the pill otherwise.  BG and FG
+override the colours.  SCALE is the height relative to the line.
+HELP-ECHO becomes the tooltip.  Without SVG, TEXT with a face (and
+● in front when DOT)."
+  (or (and efrit-pill-function (not dot)
            (ignore-errors (funcall efrit-pill-function text :key key :bg bg :fg fg :scale scale :help-echo help-echo)))
       (progn
         (efrit-pill--reset-cache-if-needed)
@@ -138,12 +222,13 @@ HELP-ECHO becomes the tooltip.  Without SVG, TEXT with a face."
                (deep (or (and state (efrit-pill-state-color state)) (efrit-pill-hue-color key)))
                (bg (or bg (if strong deep pale)))
                (fg (or fg (if strong pale deep)))
-               (cache-key (list text bg fg scale))
+               (cache-key (list text bg fg scale dot))
                (drawn (or (gethash cache-key efrit-pill--cache)
                           (puthash cache-key
                                    (if (efrit-pill-available-p)
-                                       (efrit-pill--draw text bg fg scale)
-                                     (propertize text 'face (list :inherit 'efrit-pill-fallback :foreground deep)))
+                                       (efrit-pill--draw text bg fg scale dot)
+                                     (propertize (if (string-empty-p text) "●" (concat (if dot "● " "") text))
+                                                 'face (list :inherit 'efrit-pill-fallback :foreground deep)))
                                    efrit-pill--cache))))
           (if help-echo (propertize drawn 'help-echo help-echo) (copy-sequence drawn))))))
 

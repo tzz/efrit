@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.12.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tools, ai, convenience
 
@@ -43,17 +43,13 @@
 (declare-function efrit-repl-session-status "efrit-repl-session")
 (defvar efrit-agent--repl-session)
 (defvar efrit-agent--instance)
+(defvar global-tab-line-mode)
+(defvar tab-line-exclude)
+(defvar efrit-agent-tab-line-mode)
 
 (defgroup efrit-agent-tab-line nil
   "Agent buffers in the tab line."
   :group 'efrit-agent-ring)
-
-(defcustom efrit-agent-tab-line-exclude-agent-windows t
-  "When non-nil, a window showing an agent buffer lists only the agents.
-Its own buffer history is the agent conversation; the other agents
-are what you switch between there."
-  :type 'boolean
-  :group 'efrit-agent-tab-line)
 
 (defcustom efrit-agent-tab-line-label-function #'efrit-agent-tab-line-label-default
   "Function from an agent buffer to the short text on its tab."
@@ -67,19 +63,8 @@ are what you switch between there."
   (and (bufferp tab) (buffer-live-p tab)
        (with-current-buffer tab (derived-mode-p 'efrit-agent-mode))))
 
-(defun efrit-agent-tab-line-state (buffer)
-  "BUFFER's state for colouring: `waiting', `unread', `working', `failed' or `idle'."
-  (with-current-buffer buffer
-    (cond
-     (efrit-agent--waiting 'waiting)
-     (efrit-agent--unread 'unread)
-     ((and efrit-agent--repl-session
-           (memq (efrit-repl-session-status efrit-agent--repl-session) '(working)))
-      'working)
-     ((and efrit-agent--repl-session
-           (eq (efrit-repl-session-status efrit-agent--repl-session) 'failed))
-      'failed)
-     (t 'idle))))
+(defalias 'efrit-agent-tab-line-state #'efrit-agent-attention-state
+  "BUFFER's state for colouring: `waiting', `unread', `working', `failed' or `idle'.")
 
 (defun efrit-agent-tab-line-label-default (buffer)
   "\"proj\" or \"proj:name\" from the buffer name, without the *efrit[ ]* wrap."
@@ -93,19 +78,23 @@ are what you switch between there."
   "The pill for agent BUFFER: label, state colour, strong when waiting or SELECTED."
   (let* ((state (efrit-agent-tab-line-state buffer))
          (label (funcall efrit-agent-tab-line-label-function buffer))
-         (text (pcase state
-                 ('waiting (concat "? " label))
-                 ('unread (concat "• " label))
-                 ('working (concat "… " label))
-                 (_ label)))
+         ;; the selected tab reads =name=, as the user's own tabs do
+         ;; (tzz, 2026-10-14: "the same for active efrit buffers so
+         ;; they are easier to spot")
+         (text (if selected (format "=%s=" label) label))
          (help (pcase state
                  ('waiting (format "%s is waiting for you: %s" (buffer-name buffer)
                                    (buffer-local-value 'efrit-agent--waiting buffer)))
                  ('unread (format "%s has a reply you have not read" (buffer-name buffer)))
                  ('working (format "%s is working" (buffer-name buffer)))
                  (_ (format "%s (%s)" (buffer-name buffer) state)))))
-    (efrit-pill text :state state :strong (or selected (eq state 'waiting))
-                :scale (if selected 1.1 efrit-pill-scale) :help-echo help)))
+    ;; the e's counter is filled when the agent needs you (saturated
+    ;; pill when waiting), open otherwise (tzz, 2026-10-14)
+    (let ((needs (memq state '(waiting unread))))
+      (efrit-pill text :state state
+                  :dot (if needs 'filled 'ring)
+                  :strong (and needs (or selected (eq state 'waiting)))
+                  :scale (if selected 1.1 efrit-pill-scale) :help-echo help))))
 
 (defun efrit-agent-tab-line--format (orig tab tabs)
   "Draw agent tabs as pills; hand every other TAB to ORIG."
@@ -122,16 +111,26 @@ are what you switch between there."
 ;;;; Which tabs
 
 (defun efrit-agent-tab-line--tabs (tabs)
-  "TABS with the live agent buffers appended, in ring order, no duplicates.
-In a window showing an agent, only the agents when
-`efrit-agent-tab-line-exclude-agent-windows'."
+  "TABS with the live agent buffers appended, in ring order, no duplicates."
   (let ((agents (efrit-agent-ring)))
-    (cond
-     ((null agents) tabs)
-     ((and efrit-agent-tab-line-exclude-agent-windows
-           (efrit-agent-tab-line-agent-p (window-buffer)))
-      agents)
-     (t (append (seq-remove #'efrit-agent-tab-line-agent-p tabs) agents)))))
+    (if (null agents) tabs
+      (append (seq-remove #'efrit-agent-tab-line-agent-p tabs) agents))))
+
+(defun efrit-agent-tab-line--switch-in-place (orig &rest args)
+  "Run ORIG (a tab-line switch) so a dedicated agent window changes buffer in place.
+`tab-line-switch-to-next-tab' and friends `switch-to-buffer'; a
+dedicated window refuses and the buffer pops up elsewhere, so C-<prior>
+in an agent window seemed to do nothing (tzz, 2026-10-14).  The
+dedication is lifted for the switch and put back on the window when
+it still shows an agent."
+  (let* ((window (selected-window))
+         (was-dedicated (window-dedicated-p window)))
+    (if (not (and was-dedicated (efrit-agent-tab-line-agent-p (window-buffer window))))
+        (apply orig args)
+      (set-window-dedicated-p window nil)
+      (unwind-protect (apply orig args)
+        (when (efrit-agent-tab-line-agent-p (window-buffer window))
+          (set-window-dedicated-p window was-dedicated))))))
 
 (defun efrit-agent-tab-line--cache-key (keys)
   "KEYS plus the agents' states, so a state change redraws."
@@ -140,6 +139,22 @@ In a window showing an agent, only the agents when
 (defun efrit-agent-tab-line--refresh (&rest _)
   (when (fboundp 'tab-line-force-update)
     (tab-line-force-update t)))
+
+(defun efrit-agent-tab-line--ensure-in-agent-buffers ()
+  "Turn `tab-line-mode' on in every agent buffer.
+`global-tab-line-mode' skips them: their names start with `*' and
+`tab-line-exclude-buffers' commonly excludes that (tzz, 2026-10-14:
+\"I don't see the tab line\").  The agent tab line is where the other
+agents are, so these buffers get it regardless of the exclusion."
+  (dolist (b (efrit-agent-buffers))
+    (with-current-buffer b
+      (unless tab-line-mode (tab-line-mode 1)))))
+
+(defun efrit-agent-tab-line--on-agent-mode ()
+  (when efrit-agent-tab-line-mode
+    (setq-local tab-line-exclude nil)
+    (tab-line-mode 1)
+    (efrit-agent-tab-line--refresh)))
 
 ;;;; Mode
 
@@ -156,23 +171,37 @@ itself is yours to turn on (`global-tab-line-mode')."
     (add-function :filter-return tab-line-tabs-function #'efrit-agent-tab-line--tabs)
     (add-function :around tab-line-tab-name-format-function #'efrit-agent-tab-line--format)
     (add-function :filter-return tab-line-cache-key-function #'efrit-agent-tab-line--cache-key)
+    (dolist (fn '(tab-line-switch-to-next-tab tab-line-switch-to-prev-tab tab-line-select-tab-buffer))
+      (advice-add fn :around #'efrit-agent-tab-line--switch-in-place))
     (efrit-subscribe 'attention-changed #'efrit-agent-tab-line--refresh)
     (efrit-subscribe 'status #'efrit-agent-tab-line--refresh)
-    (add-hook 'efrit-agent-mode-hook #'efrit-agent-tab-line--refresh)
-    (add-hook 'kill-buffer-hook #'efrit-agent-tab-line--on-kill))
+    (add-hook 'efrit-agent-mode-hook #'efrit-agent-tab-line--on-agent-mode)
+    (add-hook 'kill-buffer-hook #'efrit-agent-tab-line--on-kill)
+    (efrit-agent-tab-line--ensure-in-agent-buffers))
    (t
     (remove-function tab-line-tabs-function #'efrit-agent-tab-line--tabs)
     (remove-function tab-line-tab-name-format-function #'efrit-agent-tab-line--format)
     (remove-function tab-line-cache-key-function #'efrit-agent-tab-line--cache-key)
+    (dolist (fn '(tab-line-switch-to-next-tab tab-line-switch-to-prev-tab tab-line-select-tab-buffer))
+      (advice-remove fn #'efrit-agent-tab-line--switch-in-place))
     (efrit-unsubscribe 'attention-changed #'efrit-agent-tab-line--refresh)
     (efrit-unsubscribe 'status #'efrit-agent-tab-line--refresh)
-    (remove-hook 'efrit-agent-mode-hook #'efrit-agent-tab-line--refresh)
+    (remove-hook 'efrit-agent-mode-hook #'efrit-agent-tab-line--on-agent-mode)
     (remove-hook 'kill-buffer-hook #'efrit-agent-tab-line--on-kill)))
   (efrit-agent-tab-line--refresh))
 
 (defun efrit-agent-tab-line--on-kill ()
   (when (derived-mode-p 'efrit-agent-mode)
     (run-at-time 0 nil #'efrit-agent-tab-line--refresh)))
+
+;; On by default where a tab line is in use: with `global-tab-line-mode'
+;; already on at load, or when it is turned on later.
+(defun efrit-agent-tab-line--follow-global ()
+  (when (and (bound-and-true-p global-tab-line-mode) (not efrit-agent-tab-line-mode))
+    (efrit-agent-tab-line-mode 1)))
+
+(add-hook 'global-tab-line-mode-hook #'efrit-agent-tab-line--follow-global)
+(efrit-agent-tab-line--follow-global)
 
 (provide 'efrit-agent-tab-line)
 

@@ -4,7 +4,7 @@
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
 ;; Maintainer: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.12.1
+;; Version: 0.12.13
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai, assistant, claude
 ;; URL: https://github.com/steveyegge/efrit
@@ -110,6 +110,8 @@ Use M-x efrit-help for more information."
     (define-key map (kbd "z") 'efrit-agent-focus)          ; one agent, whole frame; again restores
     (define-key map (kbd "i") 'efrit-agent-diagnose)
     (define-key map (kbd "u") 'efrit-agent-toggle-unread)  ; mark the agent unread / read
+    (define-key map (kbd "f") 'efrit-agent-new-worktree-instance) ; fresh worktree agent
+    (define-key map (kbd "r") 'efrit-code-review)          ; review the staged changes
     map)
   "Keymap for Efrit commands.")
 
@@ -212,7 +214,7 @@ Shows version, installation status, and basic connectivity."
   (interactive)
   (require 'efrit-config)
   (require 'efrit-common)
-  (let* ((version "0.12.1")
+  (let* ((version "0.12.12")
          (api-key (condition-case nil
                       (efrit-common-get-api-key)
                     (error nil)))

@@ -67,7 +67,7 @@ key gives the same colour; a state picks its colour; a user drawer wins."
                (q (efrit-agent-tab-line--format orig a tabs)))
           (should (= 1 calls))
           (should (equal (format "orig:%s" (buffer-name plain)) p))
-          (should (equal "proj" (substring-no-properties q)))
+          (should (equal "● proj" (substring-no-properties q)))
           (should (eq a (get-text-property 0 'tab q)))
           (should (get-text-property 0 'keymap q)))))
     ;; states and labels
@@ -75,21 +75,27 @@ key gives the same colour; a state picks its colour; a user drawer wins."
     (should (equal "proj:fix" (efrit-agent-tab-line-label-default b)))
     (efrit-publish 'prompt-open (list (cons :label "sandbox") (cons :session-id (test-tl--id b))))
     (should (eq 'waiting (efrit-agent-tab-line-state b)))
-    (should (string-prefix-p "? " (substring-no-properties (efrit-agent-tab-line-pill b))))
+    (should (string-prefix-p "● " (substring-no-properties (efrit-agent-tab-line-pill b))))
     (efrit-publish 'prompt-closed (list (cons :label "sandbox") (cons :session-id (test-tl--id b))))
     (efrit-agent-mark-unread b)
     (should (eq 'unread (efrit-agent-tab-line-state b)))
-    (should (string-prefix-p "• " (substring-no-properties (efrit-agent-tab-line-pill b))))
+    (should (string-prefix-p "● " (substring-no-properties (efrit-agent-tab-line-pill b))))
+    (should (string-prefix-p "● " (substring-no-properties (efrit-agent-tab-line-pill a))))
+    (should (string-suffix-p "=proj=" (substring-no-properties (efrit-agent-tab-line-pill a t))))
     ;; the cache key carries the states, so a change invalidates
     (let ((k1 (efrit-agent-tab-line--cache-key '(x))))
       (efrit-agent-mark-read b)
       (should-not (equal k1 (efrit-agent-tab-line--cache-key '(x)))))
-    ;; in an agent window only agents are listed
-    (with-current-buffer a
-      (save-window-excursion
-        (set-window-buffer (selected-window) a)
-        (let ((tabs (efrit-agent-tab-line--tabs (list (get-buffer "*scratch*") a))))
-          (should (cl-every #'efrit-agent-tab-line-agent-p tabs)))))
+    ;; C-<prior> in a dedicated agent window switches in place
+    (save-window-excursion
+      (set-window-buffer (selected-window) a)
+      (set-window-dedicated-p (selected-window) t)
+      (tab-line-switch-to-next-tab nil 1)
+      (should (eq b (window-buffer (selected-window))))
+      (should (window-dedicated-p (selected-window)))
+      (tab-line-switch-to-prev-tab nil 1)
+      (should (eq a (window-buffer (selected-window))))
+      (set-window-dedicated-p (selected-window) nil))
     ;; the real pipeline, through tab-line's own functions
     (should (memq a (funcall tab-line-tabs-function)))
     (efrit-agent-tab-line-mode -1)

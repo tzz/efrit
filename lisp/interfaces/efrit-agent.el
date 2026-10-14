@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.12.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -58,6 +58,7 @@
 (require 'efrit-agent-ring)
 (require 'efrit-agent-diagnose)
 (require 'efrit-agent-tab-line)
+(require 'efrit-agent-consult)
 (require 'efrit-magit)
 ;; the recorder costs nothing until an error happens; on by default so
 ;; "why did that fail?" has an answer
@@ -384,8 +385,10 @@ Status is shown in the header-line at top of window.
   (setq-local inhibit-line-move-field-capture t)
   ;; Don't let cursor jump around during updates
   (setq-local cursor-in-non-selected-windows nil)
-  ;; unread / waiting mark next to the mode name
-  (setq-local mode-line-process '(:eval (efrit-agent-ring-mode-line-string)))
+  ;; the efrit logo stands for the mode name (tzz, 2026-10-14: "remove
+  ;; the efrit-agent text, the e is enough"); `mode-name' stays
+  ;; "Efrit-Agent" for `describe-mode' and `derived-mode-p' users
+  (setq mode-name '(:eval (or (efrit-agent-ring-mode-line-string) "Efrit-Agent")))
   ;; Initialize state
   (setq efrit-agent--expanded-items (make-hash-table :test 'equal))
   ;; Folded tool bodies are `invisible' text; let ellipses off and

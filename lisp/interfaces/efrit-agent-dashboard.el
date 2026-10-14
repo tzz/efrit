@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.12.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tools, ai, convenience
 
@@ -36,6 +36,7 @@
 (require 'efrit-events)
 (require 'efrit-agent-ring)
 (require 'efrit-pill)
+(defvar efrit-pill-e-alert-color)
 
 (declare-function efrit-repl-session-status "efrit-repl-session")
 (declare-function efrit-repl-session-queue "efrit-repl-session")
@@ -102,9 +103,7 @@ Nothing moves on disk; the dashboard groups by it."
                          (t "no session")))
            (queue (if session (length (efrit-repl-session-queue session)) 0))
            (last (and session (efrit-repl-session-last-activity session)))
-           (mark (cond ((buffer-local-value 'efrit-agent--waiting buf) (efrit-pill "?" :state 'waiting :strong t))
-                       ((buffer-local-value 'efrit-agent--unread buf) (efrit-pill "•" :state 'unread))
-                       (t " ")))
+           (mark (efrit-agent-attention-dot buf ""))
            (folder (efrit-agent-folder buf)))
       (list buf
             (vector mark
@@ -262,7 +261,7 @@ Machina's z, 2026-10-14)."
 (define-derived-mode efrit-agent-dashboard-mode tabulated-list-mode "Efrit-Agents"
   "The agent buffers by folder.  \\{efrit-agent-dashboard-mode-map}"
   (setq tabulated-list-format
-        [("" 1 nil) ("Buffer" 24 t) ("Folder" 14 t) ("Project" 26 t) ("Branch" 14 t)
+        [("" 3 nil) ("Buffer" 24 t) ("Folder" 14 t) ("Project" 26 t) ("Branch" 14 t)
          ("Dirty" 5 t :right-align t) ("Status" 9 t) ("Queue" 5 t :right-align t)
          ("Model" 22 t) ("Last" 8 t)])
   (setq tabulated-list-padding 1)
@@ -272,7 +271,12 @@ Machina's z, 2026-10-14)."
   (add-hook 'kill-buffer-hook #'efrit-agent-dashboard--unsubscribe nil t))
 
 (defun efrit-agent-dashboard--set-mode-line ()
-  (setq mode-line-process (list " " (efrit-agent-dashboard--header))))
+  "The logo (red when any agent needs you) and the counts, in the mode line."
+  (let* ((needs (efrit-agent-ring-attention-queue))
+         (logo (efrit-agent-logo (and needs efrit-pill-e-alert-color))))
+    (setq mode-line-process
+          (list " " (if logo (propertize logo 'help-echo "efrit agents dashboard") "")
+                " " (efrit-agent-dashboard--header)))))
 
 (defun efrit-agent-dashboard--on-change (_event)
   (when-let* ((buf (get-buffer efrit-agent-dashboard-buffer)))

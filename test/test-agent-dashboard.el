@@ -47,7 +47,8 @@
       (should (equal "folder:Work/Billing" (car (nth 2 entries))))
       (should (eq a (car (nth 3 entries))))
       ;; b waits: mark and status say so
-      (should (equal "?" (substring-no-properties (aref (cadr (nth 1 entries)) 0))))
+      (should (equal "●" (substring-no-properties (aref (cadr (nth 1 entries)) 0))))
+      (should (equal "●" (substring-no-properties (aref (cadr (nth 3 entries)) 0))))
       (should (equal "waiting" (substring-no-properties (aref (cadr (nth 1 entries)) 6)))))
     (should (string-match-p "1 waiting" (efrit-agent-dashboard--header)))
     (efrit-publish 'prompt-closed (list (cons :label "q") (cons :session-id (test-dash--id b))))

@@ -206,3 +206,24 @@ header blank on startup until the model changed (first RET)."
     (should (stringp (efrit-agent--spinner-frame)))
     (should (member (efrit-agent--spinner-frame t)
                     (append efrit-agent--spinner-frames-unicode nil)))))
+
+(ert-deftest test-svg-header-extra-functions-follow-the-header ()
+  "Strings from `efrit-agent-header-extra-functions' are appended after efrit's
+own header; a function that errors or returns nil is skipped."
+  (test-svg--in-agent-buffer
+    (let ((efrit-agent-header-style 'text)
+          (efrit-agent-header-extra-functions
+           (list (lambda () (propertize "G 3 unread" 'face 'bold))
+                 (lambda () nil)
+                 (lambda () (error "boom"))
+                 (lambda () "second"))))
+      (cl-letf (((symbol-function 'efrit-agent--format-header-line) (lambda () " efrit-own")))
+        (let ((h (efrit-agent-svg-header)))
+          (should (string-prefix-p " efrit-own  " h))
+          (should (string-search "G 3 unread second" h))
+          (should (eq 'bold (get-text-property (string-search "G 3" h) 'face h)))))
+      ;; Style none: only the extras, so a hidden efrit header still shows them.
+      (let ((efrit-agent-header-style 'none))
+        (should (equal " G 3 unread second" (substring-no-properties (efrit-agent-svg-header))))))))
+
+
