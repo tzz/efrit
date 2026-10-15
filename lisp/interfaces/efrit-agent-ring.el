@@ -291,6 +291,68 @@ TEXT (default the state) is the pill text; \"\" gives the disc alone."
   (when (and (require 'efrit-agent-spinner nil t) (efrit-agent-spinner-available-p))
     (efrit-agent-spinner-still (+ 2 (frame-char-height)) color 'mode-line)))
 
+(declare-function efrit-agent-menu "efrit-agent-menu")
+(declare-function efrit-agent-new-session "efrit-agent")
+(declare-function efrit-agent-new-instance "efrit-agent-instances")
+(declare-function efrit-agent-new-worktree-instance "efrit-agent-instances")
+(declare-function efrit-agent-cancel "efrit-agent")
+(declare-function efrit-agent-dashboard "efrit-agent-dashboard")
+(declare-function efrit-agent-focus "efrit-agent-dashboard")
+(declare-function efrit-agent-diagnose "efrit-agent-diagnose")
+(declare-function efrit-code-review "efrit-code-review-ui")
+(declare-function efrit-resume "efrit-agent")
+(declare-function efrit-menu "efrit-menu")
+
+(defvar efrit-agent-logo-menu
+  (let ((menu (make-sparse-keymap "efrit")))
+    (define-key menu [dashboard] '(menu-item "Agents dashboard" efrit-agent-dashboard))
+    (define-key menu [next-attention] '(menu-item "Next agent that needs me" efrit-agent-next-attention))
+    (define-key menu [sep1] '(menu-item "--"))
+    (define-key menu [new-session] '(menu-item "New conversation here" efrit-agent-new-session))
+    (define-key menu [new-instance] '(menu-item "New agent for this project" efrit-agent-new-instance))
+    (define-key menu [new-worktree] '(menu-item "New agent in a fresh worktree" efrit-agent-new-worktree-instance))
+    (define-key menu [resume] '(menu-item "Resume a saved session" efrit-resume))
+    (define-key menu [sep2] '(menu-item "--"))
+    (define-key menu [toggle-unread] '(menu-item "Mark unread / read" efrit-agent-toggle-unread))
+    (define-key menu [focus] '(menu-item "Focus this agent (again: restore)" efrit-agent-focus))
+    (define-key menu [cancel] '(menu-item "Cancel the running turn" efrit-agent-cancel))
+    (define-key menu [sep3] '(menu-item "--"))
+    (define-key menu [review] '(menu-item "Code review of the staged changes" efrit-code-review))
+    (define-key menu [diagnose] '(menu-item "Diagnose this session" efrit-agent-diagnose))
+    (define-key menu [agent-menu] '(menu-item "The buffer's menu (C-c ?)" efrit-agent-menu))
+    (define-key menu [efrit-menu] '(menu-item "efrit settings menu" efrit-menu))
+    menu)
+  "The popup menu on the mode-line logo.")
+
+(defun efrit-agent-logo-popup (event)
+  "Pop up `efrit-agent-logo-menu' at mouse EVENT, in the event's buffer."
+  (interactive "e")
+  (with-selected-window (posn-window (event-start event))
+    (popup-menu efrit-agent-logo-menu event)))
+
+(defun efrit-agent-logo-mouse-1 (event)
+  "mouse-1 on the logo: the agent buffer's transient menu, else the dashboard."
+  (interactive "e")
+  (with-selected-window (posn-window (event-start event))
+    (if (derived-mode-p 'efrit-agent-mode)
+        (progn (require 'efrit-agent-menu) (call-interactively #'efrit-agent-menu))
+      (efrit-agent-dashboard))))
+
+(defconst efrit-agent-logo-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mode-line mouse-1] #'efrit-agent-logo-mouse-1)
+    (define-key map [mode-line mouse-2] #'efrit-agent-dashboard)
+    (define-key map [mode-line down-mouse-3] #'efrit-agent-logo-popup)
+    map)
+  "Mouse bindings of the mode-line logo.")
+
+(defun efrit-agent-logo-clickable (image help)
+  "IMAGE (a propertized string) with the logo's mouse bindings and HELP as tooltip."
+  (propertize image
+              'help-echo (concat help "\nmouse-1: this agent's menu · mouse-2: dashboard · mouse-3: actions")
+              'mouse-face 'mode-line-highlight
+              'local-map efrit-agent-logo-map))
+
 (defun efrit-agent-ring-mode-line-string ()
   "The efrit logo for this agent's mode line.
 Animated (the highlight running along the e) while a request is in
@@ -313,8 +375,8 @@ the full e\")."
                                 (efrit-agent-spinner-frame efrit-agent--spinner-index (+ 2 (frame-char-height))
                                                            color 'mode-line)
                               (efrit-agent-logo color)))))
-          (propertize frame 'help-echo help)
-        (efrit-agent-attention-dot (current-buffer) "")))))
+          (efrit-agent-logo-clickable frame help)
+        (efrit-agent-logo-clickable (efrit-agent-attention-dot (current-buffer) "") help)))))
 
 (defun efrit-agent-ring-summary ()
   "One line: how many agents work, wait, are unread, are idle."

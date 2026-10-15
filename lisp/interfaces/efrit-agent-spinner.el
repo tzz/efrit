@@ -262,6 +262,7 @@ works somewhere; clicking it goes to that buffer."
                 (efrit-agent-buffers))))
 
 (declare-function efrit-agent-buffers "efrit-agent-core")
+(declare-function efrit-agent-logo-popup "efrit-agent-ring")
 
 (defun efrit-agent-spinner-mode-line-string ()
   "The mode-line text: the spinner frame while efrit works, else nil.
@@ -281,6 +282,8 @@ shows the agent buffer."
                     'local-map (let ((m (make-sparse-keymap)))
                                  (define-key m [mode-line mouse-1]
                                              (lambda () (interactive) (pop-to-buffer buf)))
+                                 (when (fboundp 'efrit-agent-logo-popup)
+                                   (define-key m [mode-line down-mouse-3] #'efrit-agent-logo-popup))
                                  m))))))
 
 (defconst efrit-agent-spinner--mode-line-construct

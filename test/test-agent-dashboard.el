@@ -58,7 +58,9 @@
     (cl-letf (((symbol-function 'pop-to-buffer) (lambda (buf &rest _) (set-buffer buf))))
       (efrit-agent-dashboard)
       (should (derived-mode-p 'efrit-agent-dashboard-mode))
-      (should (string-match-p "dash-a" (buffer-string))))))
+      (should (string-match-p "dash-a" (buffer-string)))
+      (should (eq 'revert-buffer (key-binding (kbd "g"))))
+      (should (eq 'tabulated-list-sort (key-binding (kbd "S")))))))
 
 (defun test-dash--id (buf)
   (efrit-repl-session-id (buffer-local-value 'efrit-agent--repl-session buf)))

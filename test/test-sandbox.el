@@ -743,7 +743,21 @@ turn asked tzz whether eval_sexp may run Emacs)."
       (cl-letf (((symbol-function 'comp-trampoline-compile)
                  (lambda (_subr) (call-process "true"))))
         (should-error (efrit-sandbox-eval-form '(comp-trampoline-compile 'read-string))
-                      :type 'efrit-sandbox-denied)))))
+                      :type 'efrit-sandbox-denied))
+      ;; the async worker's own command line, with no comp frame on the
+      ;; stack (it starts from a timer): recognised by its shape
+      ;; (2026-10-15: "why does efrit want to run emacs to pwd?")
+      (let ((tmp (make-temp-file "emacs-async-comp-x-" nil ".el")))
+        (unwind-protect
+            (let ((p (efrit-sandbox-eval-form
+                      `(make-process :name "x" :command (list ,emacs "-no-comp-spawn" "-Q" "--batch" "--eval" "(kill-emacs 0)" "-l" ,tmp)))))
+              (should (processp p))
+              (while (process-live-p p) (accept-process-output p 0.1)))
+          (delete-file tmp)))
+      ;; the same shape pointing at another program still asks
+      (should-error (efrit-sandbox-eval-form
+                     '(make-process :name "x" :command (list "/usr/bin/true" "-no-comp-spawn" "--batch" "-l" "/tmp/emacs-async-comp-x.el")))
+                    :type 'efrit-sandbox-denied))))
 
 (ert-deftest test-sb-eval-network-needs-net ()
   (test-sb--in-project

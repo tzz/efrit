@@ -141,7 +141,7 @@ batch returns wrong values for hex colours."
 (defun efrit-pill--draw (text bg fg scale &optional dot)
   "TEXT as a pill image string with BG and FG colours at SCALE.
 DOT non-nil draws a disc inside the pill, before the text: red when
-DOT is `filled' (the agent needs you), a soft complement of the pill's
+DOT is `filled' (the agent needs you), a dimple in the background
 colour otherwise.  The pill itself is always filled (tzz, 2026-10-14)."
   (let* ((height (max 12 (round (* scale (default-font-height)))))
          (font-size (round (* 0.62 height)))
@@ -154,7 +154,7 @@ colour otherwise.  The pill itself is always filled (tzz, 2026-10-14)."
     (svg-rectangle svg 0 1 width (- height 2) :rx (/ height 2.0) :fill bg)
     (when dot
       ;; the mark: a solid embossed disc, red when the agent needs you,
-      ;; a soft complement of the pill otherwise (tzz, 2026-10-14: a
+      ;; a background-coloured dimple otherwise (tzz, 2026-10-14: a
       ;; drawn e did not read well at tab size)
       (efrit-pill--dot svg (/ (default-font-width) 2.0) (/ (- height dot-d) 2.0) dot-d bg
                        (max 0.6 (/ dot-d 16.0)) (eq dot 'filled)))
@@ -169,33 +169,42 @@ colour otherwise.  The pill itself is always filled (tzz, 2026-10-14)."
   :type 'string
   :group 'efrit-pill)
 
-(defun efrit-pill-complement (color)
-  "A soft colour across the wheel from COLOR, never in the red band.
-Hue rotated a half turn; hues within 40 degrees of red are pushed to
-the nearest edge of that band (the red dot means something else).
-Saturation eased and lightness kept middling so it reads on pale and
-on saturated pills alike."
-  (pcase-let* ((`(,r ,g ,b) (efrit-pill--rgb color))
-               (`(,h ,s ,_l) (color-rgb-to-hsl r g b))
-               (deg (mod (+ (* 360.0 h) 180.0) 360.0))
-               (deg (cond ((< deg 40) 40.0) ((> deg 320) 320.0) (t deg))))
-    (efrit-pill--hex (color-hsl-to-rgb (/ deg 360.0) (min 0.55 (max 0.35 s)) 0.52))))
+(defun efrit-pill--frame-background ()
+  "The frame's background as #rrggbb (the default face's), #000000 when unknown."
+  (let ((bg (face-attribute 'default :background nil t)))
+    (if (and (stringp bg) (not (string= bg "unspecified-bg")))
+        (efrit-pill--hex (efrit-pill--rgb bg))
+      "#000000")))
 
 (defun efrit-pill--dot (svg x y size color width alert)
-  "Draw a solid embossed disc on SVG at X Y in a SIZE square.
-With ALERT it is `efrit-pill-e-alert-color' (red); otherwise a soft
-complement of COLOR, the pill's colour.  A radial gradient gives the
-emboss, a thin darker ring of WIDTH the edge."
+  "Draw a disc on SVG at X Y in a SIZE square.
+With ALERT it is `efrit-pill-e-alert-color' (red), embossed.  Otherwise
+it is a dimple: the frame background colour at the centre, fading to
+COLOR (the pill's colour) at the rim, so it signals nothing and sits
+well on any pill, red ones included (tzz, 2026-10-15: \"draw the circle
+in the background color, with a gentle embossing gradient from the
+pill color\").  WIDTH is the edge ring."
   (let* ((cx (+ x (/ size 2.0))) (cy (+ y (/ size 2.0))) (r (* size 0.42))
-         (tone (if alert efrit-pill-e-alert-color (efrit-pill-complement color)))
-         (id (format "efrit-dot-%s" (substring (md5 tone) 0 8)))
-         (light (efrit-pill--mix tone "#ffffff" 0.5))
-         (dark (efrit-pill--mix tone "#000000" 0.4)))
-    (svg--def svg (dom-node 'radialGradient `((id . ,id) (cx . "35%") (cy . "30%") (r . "70%"))
-                            (dom-node 'stop `((offset . "0%") (stop-color . ,light)))
-                            (dom-node 'stop `((offset . "60%") (stop-color . ,tone)))
-                            (dom-node 'stop `((offset . "100%") (stop-color . ,dark)))))
-    (svg-circle svg cx cy r :fill (format "url(#%s)" id) :stroke dark :stroke-width width)))
+         (bg (efrit-pill--frame-background))
+         (id (format "efrit-dot-%s" (substring (md5 (format "%s%s%s" color bg alert)) 0 8))))
+    (if alert
+        (let* ((tone efrit-pill-e-alert-color)
+               (light (efrit-pill--mix tone "#ffffff" 0.5))
+               (dark (efrit-pill--mix tone "#000000" 0.4)))
+          (svg--def svg (dom-node 'radialGradient `((id . ,id) (cx . "35%") (cy . "30%") (r . "70%"))
+                                  (dom-node 'stop `((offset . "0%") (stop-color . ,light)))
+                                  (dom-node 'stop `((offset . "60%") (stop-color . ,tone)))
+                                  (dom-node 'stop `((offset . "100%") (stop-color . ,dark)))))
+          (svg-circle svg cx cy r :fill (format "url(#%s)" id) :stroke dark :stroke-width width))
+      ;; the dimple: background in the middle, the pill colour creeping
+      ;; in at the rim, a little more from below (light from above)
+      (svg--def svg (dom-node 'radialGradient `((id . ,id) (cx . "40%") (cy . "35%") (r . "65%"))
+                              (dom-node 'stop `((offset . "0%") (stop-color . ,bg)))
+                              (dom-node 'stop `((offset . "60%") (stop-color . ,bg)))
+                              (dom-node 'stop `((offset . "85%") (stop-color . ,(efrit-pill--mix bg color 0.35))))
+                              (dom-node 'stop `((offset . "100%") (stop-color . ,(efrit-pill--mix bg color 0.8))))))
+      (svg-circle svg cx cy r :fill (format "url(#%s)" id)
+                  :stroke (efrit-pill--mix color bg 0.3) :stroke-width (* 0.7 width)))))
 
 (defun efrit-pill--mix (a b amount)
   "Colour A moved AMOUNT (0..1) towards colour B, as #rrggbb."
@@ -209,7 +218,7 @@ KEY picks a stable hue (default TEXT); STATE picks a colour from
 `efrit-pill-state-colors' instead; STRONG swaps to a saturated
 background with pale text (the selected tab, an alarm); DOT puts a
 disc inside the pill before the text: red when `filled' (needs you),
-a soft complement of the pill otherwise.  BG and FG
+a dimple in the background colour otherwise.  BG and FG
 override the colours.  SCALE is the height relative to the line.
 HELP-ECHO becomes the tooltip.  Without SVG, TEXT with a face (and
 ● in front when DOT)."

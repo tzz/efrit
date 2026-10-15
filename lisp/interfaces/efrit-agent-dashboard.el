@@ -235,6 +235,11 @@ Machina's z, 2026-10-14)."
 
 (defvar efrit-agent-dashboard-mode-map
   (let ((map (make-sparse-keymap)))
+    ;; a defvar'd map does not get `tabulated-list-mode-map' as parent
+    ;; from `define-derived-mode' (that only happens for a map it makes
+    ;; itself), so g, n, p, S were missing (tzz, 2026-10-15)
+    (set-keymap-parent map tabulated-list-mode-map)
+    (define-key map (kbd "g") #'revert-buffer)
     (define-key map (kbd "RET") #'efrit-agent-dashboard-visit)
     (define-key map (kbd "k") #'efrit-agent-dashboard-kill)
     (define-key map (kbd "s") #'efrit-agent-dashboard-vc-status)
@@ -275,7 +280,7 @@ Machina's z, 2026-10-14)."
   (let* ((needs (efrit-agent-ring-attention-queue))
          (logo (efrit-agent-logo (and needs efrit-pill-e-alert-color))))
     (setq mode-line-process
-          (list " " (if logo (propertize logo 'help-echo "efrit agents dashboard") "")
+          (list " " (if logo (efrit-agent-logo-clickable logo "efrit agents dashboard") "")
                 " " (efrit-agent-dashboard--header)))))
 
 (defun efrit-agent-dashboard--on-change (_event)

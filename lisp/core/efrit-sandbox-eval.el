@@ -204,15 +204,32 @@ is this very Emacs in batch mode."
     (mapbacktrace (lambda (_evald func _args _flags)
                     (when (memq func efrit-sandbox-eval--native-comp-frames)
                       (setq comp-frame func))))
-    (and comp-frame
-         (or (null command)
-             (and (listp command) (stringp (car command))
-                  (member "--batch" command)
-                  (or (string-suffix-p "/Emacs" (car command))
-                      (string-match-p "/emacs\\(?:-[0-9.]+\\)?\\'" (car command))
-                      (equal (file-truename (car command))
-                             (file-truename (expand-file-name invocation-name invocation-directory))))))
-         comp-frame)))
+    (cond
+     ;; The async worker's command line is unmistakable on its own:
+     ;; this Emacs, -no-comp-spawn -Q --batch, loading an
+     ;; emacs-async-comp-*.el it just wrote (comp-run.el).  The frame
+     ;; test alone missed it when the spawn came from a timer rather
+     ;; than the model's eval (tzz, 2026-10-15: "why does efrit want to
+     ;; run emacs to pwd?").
+     ((and (listp command) (stringp (car command))
+           (member "-no-comp-spawn" command)
+           (member "--batch" command)
+           (cl-some (lambda (a) (and (stringp a) (string-match-p "/emacs-async-comp-.*\\.el\\'" a))) command)
+           (efrit-sandbox-eval--this-emacs-p (car command)))
+      'comp-run-async-workers)
+     ((and comp-frame
+           (or (null command)
+               (and (listp command) (stringp (car command))
+                    (member "--batch" command)
+                    (efrit-sandbox-eval--this-emacs-p (car command)))))
+      comp-frame))))
+
+(defun efrit-sandbox-eval--this-emacs-p (program)
+  "Non-nil when PROGRAM is the running Emacs binary."
+  (or (string-suffix-p "/Emacs" program)
+      (string-match-p "/emacs\\(?:-[0-9.]+\\)?\\'" program)
+      (equal (file-truename program)
+             (file-truename (expand-file-name invocation-name invocation-directory)))))
 
 (defun efrit-sandbox-eval--op-cap (op)
   "Capability OP needs, or nil for pure name manipulation
