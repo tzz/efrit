@@ -1048,7 +1048,17 @@ Each test opts into a target buffer by binding the functions itself."
               ;; a temp (fileless) buffer is fine
               (should (equal "hi"
                              (efrit-sandbox-eval-form
-                              '(with-temp-buffer (insert "hi") (buffer-string))))))
+                              '(with-temp-buffer (insert "hi") (buffer-string)))))
+              ;; efrit's own functions may switch through the buffer list
+              ;; to look (`efrit-agent-buffers' tests each major mode); the
+              ;; model did not name the buffer (2026-10-16: hrt.md)
+              (require 'efrit-agent-core)
+              (should (listp (efrit-sandbox-eval-form '(efrit-agent-buffers))))
+              ;; but naming it in the form still asks
+              (should-error
+               (efrit-sandbox-eval-form
+                `(progn (efrit-agent-buffers) (with-current-buffer ,(buffer-name buf) (point))))
+               :type 'efrit-sandbox-denied))
           (kill-buffer buf)
           (delete-directory outside t))))))
 
@@ -1329,6 +1339,20 @@ refusal.  The option turns it off."
       (let ((efrit-sandbox-shell-refuse-emacs-equivalents nil))
         (should-error (efrit-sandbox-check 'shell line "shell_exec" line) :type 'efrit-sandbox-denied)
         (should asked)))))
+
+(ert-deftest test-sb-efrit-prompts-may-read-input-inside-an-eval ()
+  "The eval's input stubs block the model's `read-string' but not efrit's
+own prompt under `efrit-with-user-waiting' (2026-10-16: `w' at a prompt
+raised by eval_sexp failed with the blocked-input error)."
+  (require 'efrit-tools)
+  (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "the user's words")))
+    (efrit-tools--call-with-input-blocked
+     (lambda ()
+       (should-error (read-string "x: ") :type 'error)
+       (should (equal "the user's words"
+                      (efrit-with-user-waiting (read-string "x: "))))
+       ;; and blocked again after the prompt
+       (should-error (read-string "x: ") :type 'error)))))
 
 (ert-deftest test-sb-refusal-with-words-reaches-the-model ()
   "The user's words at the prompt ride in the denial text as the instruction."

@@ -208,20 +208,34 @@ Signals an error if rate limit would be exceeded."
 Each blocks the Emacs event loop waiting for keyboard input, which
 freezes the editor when called from the async tool loop (ef-bdg).")
 
+(defvar efrit-tools-input-allowed nil
+  "Non-nil while efrit itself asks the user from inside an eval.
+The stubs `efrit-tools--call-with-input-blocked' installs are global:
+they replace `read-string' for everyone until the eval returns, and
+efrit's own prompts run inside the eval (the sandbox menu's `w' and
+`e', a y-or-n-p from the ediff path).  Bound to t by
+`efrit-with-user-waiting', the stubs call the real function then
+\(2026-10-16: `w' at a prompt raised by eval_sexp failed with the
+blocked-input error).")
+
 (defun efrit-tools--call-with-input-blocked (thunk)
   "Call THUNK with synchronous input functions overridden to signal errors.
 Temporarily replaces each function in
 `efrit-tools--blocked-input-functions' with a stub that errors,
-directing the model to the request_user_input tool instead."
+directing the model to the request_user_input tool instead.  With
+`efrit-tools-input-allowed' non-nil the real function runs."
   (let ((saved (mapcar (lambda (fn) (cons fn (symbol-function fn)))
                        efrit-tools--blocked-input-functions)))
     (unwind-protect
         (progn
-          (dolist (fn efrit-tools--blocked-input-functions)
-            (let ((fn-name fn))
-              (fset fn (lambda (&rest _)
-                         (error "`%s' is blocked in eval_sexp: synchronous user input freezes Emacs.  Use the request_user_input tool to ask the user"
-                                fn-name)))))
+          (dolist (pair saved)
+            (let ((fn-name (car pair)) (orig (cdr pair)))
+              (fset fn-name
+                    (lambda (&rest args)
+                      (if efrit-tools-input-allowed
+                          (apply orig args)
+                        (error "`%s' is blocked in eval_sexp: synchronous user input freezes Emacs.  Use the request_user_input tool to ask the user"
+                               fn-name))))))
           (funcall thunk))
       (dolist (pair saved)
         (fset (car pair) (cdr pair))))))

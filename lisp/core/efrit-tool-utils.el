@@ -38,6 +38,7 @@
 (require 'dom)
 (declare-function efrit-sandbox-check "efrit-sandbox")
 (declare-function efrit-sandbox-abbreviate "efrit-sandbox")
+(declare-function efrit-sandbox--git-toplevel "efrit-sandbox")
 (defvar efrit-sandbox-enabled)
 
 ;;; Customization
@@ -124,8 +125,13 @@ Returns the expanded absolute path."
     ;; agent buffer in ~/autodist/files/ saved its grants to
     ;; files/.efrit/ while the same checkout's other grants lived in
     ;; autodist/.efrit/ (2026-10-07).
+    ;; Cached per directory (the sandbox's table): this runs from
+    ;; header and context code, and a VC probe per call was part of
+    ;; the per-keystroke cost (2026-10-16)
     ((let ((top (and (not (file-remote-p default-directory))
-                     (ignore-errors (vc-call-backend (vc-responsible-backend default-directory) 'root default-directory)))))
+                     (if (fboundp 'efrit-sandbox--git-toplevel)
+                         (efrit-sandbox--git-toplevel (file-name-as-directory (expand-file-name default-directory)))
+                       (ignore-errors (vc-call-backend (vc-responsible-backend default-directory) 'root default-directory))))))
        (and top (not (string= (expand-file-name top) (expand-file-name "~/")))
             (not (string= (expand-file-name top) "/"))
             top)))

@@ -202,6 +202,8 @@ Clocks take a reading at their start and subtract the difference.")
 ;; global value is used.
 (efrit-session-local 'efrit-user-waiting-seconds 'efrit-user-waiting-depth)
 
+(defvar efrit-tools-input-allowed)
+
 (defmacro efrit-with-user-waiting (&rest body)
   "Run BODY, a prompt to the user, with efrit's clocks paused.
 Adds the time BODY takes to `efrit-user-waiting-seconds' and suspends
@@ -209,7 +211,10 @@ any enclosing `with-timeout'.  Nested uses count the time once."
   (declare (indent 0) (debug t))
   (let ((start (make-symbol "start")) (suspended (make-symbol "suspended")))
     `(let ((,start (float-time))
-           (,suspended (with-timeout-suspend)))
+           (,suspended (with-timeout-suspend))
+           ;; a prompt of efrit's own may read from the user even while
+           ;; an eval has the model's input functions stubbed out
+           (efrit-tools-input-allowed t))
        (cl-incf efrit-user-waiting-depth)
        (unwind-protect
            (progn ,@body)

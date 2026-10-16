@@ -446,16 +446,48 @@ never named)."
          (push (symbol-name func) names))))
     (mapconcat #'identity (nreverse names) " < ")))
 
+(defun efrit-sandbox-eval--switched-by-efrit-p ()
+  "Non-nil when the innermost Lisp caller of this buffer switch is efrit's own code.
+`efrit-agent-buffers' walks the buffer list with `with-current-buffer'
+to test the major mode; a form that only called it was asked to grant
+the user's most recent file buffer (2026-10-16: `hrt.md', named
+nowhere in the form).  The model chose the function, not the buffer;
+efrit's functions switch into buffers to look, and the file-name
+handler still guards what they read.  Only efrit's frames count: a
+`with-current-buffer' written in the form is still the model's."
+  ;; Walk outward from the switch to the eval's own frame.  Any named
+  ;; efrit function met on the way (not the sandbox's and not the
+  ;; eval machinery's) made the switch.  Interpreted code shows `let',
+  ;; `progn' and lambdas as frames, so the nearest named frame is not
+  ;; enough; a lambda the model wrote is anonymous and counts for
+  ;; nothing, which is the point.
+  (let ((found nil) (done nil))
+    (mapbacktrace
+     (lambda (_evald func _args _flags)
+       (unless done
+         (when (symbolp func)
+           (cond
+            ((memq func '(eval efrit-sandbox-eval-form efrit-tools-eval-sexp efrit-tools--eval-with-context
+                          efrit-tools--call-with-input-blocked))
+             (setq done t))
+            ((and (string-prefix-p "efrit-" (symbol-name func))
+                  (not (string-prefix-p "efrit-sandbox-eval--" (symbol-name func))))
+             (setq found t done t)))))))
+    found))
+
 (defun efrit-sandbox-eval--check-buffer (buffer-or-name op)
   "Check BUFFER-OR-NAME for the `buffer' capability if it visits a file.
 OP names the operation for the prompt.  Fileless or missing buffers
-pass; efrit's buffer check applies the target/in-project exemptions."
+pass; efrit's buffer check applies the target/in-project exemptions;
+a switch made inside one of efrit's own functions passes
+\(`efrit-sandbox-eval--switched-by-efrit-p')."
   (let ((buffer (and buffer-or-name (get-buffer buffer-or-name))))
     (when (and buffer
                (not load-in-progress)
                (not efrit-sandbox-eval--loading)
                (buffer-local-value 'buffer-file-name buffer)
-               (not (efrit-sandbox-buffer-allowed-p buffer)))
+               (not (efrit-sandbox-buffer-allowed-p buffer))
+               (not (efrit-sandbox-eval--switched-by-efrit-p)))
       (let ((callers (efrit-sandbox-eval--caller-summary)))
         (efrit-log 'info "sandbox: %s on buffer %s from: %s" op (buffer-name buffer) callers)
         (efrit-sandbox-check-buffer buffer "eval_sexp"
