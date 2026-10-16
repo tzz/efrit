@@ -492,14 +492,24 @@ answer.  The remote identity is kept as written."
   (let* ((expanded (expand-file-name path))
          (resolved (if (file-exists-p expanded)
                        (condition-case nil (file-truename expanded) (error expanded))
-                     ;; resolve the deepest existing parent so a new
-                     ;; file under a symlinked dir canonicalizes right
-                     (let* ((dir (file-name-directory expanded))
-                            (base (file-name-nondirectory expanded)))
-                       (if (and dir (not (equal dir expanded)) (file-exists-p dir))
+                     ;; resolve the deepest existing ancestor so a new
+                     ;; path under a symlinked dir canonicalizes right.
+                     ;; All the way up, not one level: `mkdir -p
+                     ;; old/files' under a symlinked checkout left the
+                     ;; symlink unresolved, the grant (on the truename)
+                     ;; did not match, and the user's `p' looked
+                     ;; ignored (tzz, 2026-10-15: "note I DID grant
+                     ;; write access")
+                     (let ((dir (directory-file-name expanded)) (tail nil))
+                       (while (and dir (not (file-exists-p dir))
+                                   (not (equal dir (directory-file-name (file-name-directory dir)))))
+                         (push (file-name-nondirectory dir) tail)
+                         (setq dir (directory-file-name (file-name-directory dir))))
+                       (if (and dir (file-exists-p dir) tail)
                            (concat (file-name-as-directory
                                     (condition-case nil (file-truename dir) (error dir)))
-                                   base)
+                                   (mapconcat #'identity tail "/")
+                                   (if (directory-name-p expanded) "/" ""))
                          expanded)))))
     (if (file-directory-p resolved)
         (file-name-as-directory resolved)
@@ -567,7 +577,7 @@ An always-ask LINE is covered only by an exact (command . LINE) grant."
      ((eq gt t) t)
      ((eq line t) nil)                  ; a blanket request needs a blanket grant
      ((efrit-sandbox-shell-target-p gt)
-      (let ((names (efrit-sandbox-shell-commands line)))
+      (let ((names (efrit-sandbox-shell-grant-names line)))
         (and names (cl-subsetp names (cdr gt) :test #'equal))))
      (t nil))))
 
@@ -694,7 +704,7 @@ write."
     (cond
      ((not (stringp target)) t)
      ((efrit-sandbox-shell-always-ask-match target) (cons 'command target))
-     (t (let ((names (efrit-sandbox-shell-commands target)))
+     (t (let ((names (efrit-sandbox-shell-grant-names target)))
           (if names (cons 'shell names) (cons 'command target))))))
    ;; a fileless buffer: grant exactly that buffer, never wider
    ((and (eq cap 'buffer) (consp target)) target)
@@ -834,6 +844,12 @@ work itself, and requests for them are expected this turn (tzz,
 2026-10-01: an article's own URL should not need a grant)."
   (puthash (bound-and-true-p efrit-current-session-id) nil efrit-sandbox--turn-state)
   (when (stringp user-text)
+    ;; what the user typed, without the editor-context snapshot the
+    ;; REPL prepends: command names in the snapshot are not a request
+    (efrit-sandbox--turn-set :user-text
+                             (if (string-match "</editor-context>\n*" user-text)
+                                 (substring user-text (match-end 0))
+                               user-text))
     (efrit-sandbox--turn-set :mentioned (efrit-sandbox-mentions user-text))))
 
 (defun efrit-sandbox-mentions (text)
@@ -973,31 +989,76 @@ matches.  Read-only tools by default."
                         (and (stringp d) (file-name-as-directory (efrit-sandbox-canonical d)))))
                     option)))
 
+(defun efrit-sandbox--shell-line-plain-p (line)
+  "Non-nil when shell LINE has no redirection, substitution or background job.
+Those change what a read-only command can do; `&&' and `||' only
+sequence.  Routing stderr (`2>/dev/null', `2>&1') changes nothing
+\(2026-10-03: `ls ... 2>/dev/null' asked for a grant over seven
+read-only commands).  Inside single quotes nothing expands: an awk
+program's `$3' is text, not a substitution."
+  (and (stringp line)
+       (let ((s (replace-regexp-in-string "'[^']*'" "" line t t)))
+         (setq s (replace-regexp-in-string "2>&1\\|2>/dev/null" "" s t t))
+         (and (not (string-match-p "[<>`$]" s))
+              (not (string-match-p "\\(?:^\\|[^&]\\)&\\(?:[^&]\\|$\\)" s))))))
+
+(defun efrit-sandbox--expected-command-p (name line)
+  "Non-nil when command NAME, as used on LINE, is in `efrit-sandbox-expected-shell-commands'."
+  (or (member name efrit-sandbox-expected-shell-commands)
+      ;; "git status" style entries: command + its first word
+      (and (string-match (concat "\\(?:^\\|[;|&]\\s-*\\)" (regexp-quote name) "\\s-+\\([a-z-]+\\)") line)
+           (member (concat name " " (match-string 1 line))
+                   efrit-sandbox-expected-shell-commands))))
+
+(defun efrit-sandbox-shell-unusual-commands (line)
+  "The command names on shell LINE outside `efrit-sandbox-expected-shell-commands'."
+  (cl-remove-if (lambda (name) (efrit-sandbox--expected-command-p name line))
+                (efrit-sandbox-shell-commands line)))
+
+(defun efrit-sandbox-shell-grant-names (line)
+  "The command names on shell LINE that a grant must cover.
+On a plain line (see `efrit-sandbox--shell-line-plain-p') that is
+not always-ask, the read-only commands are free: a grant on tmux
+covers `tmux ls | grep x', and the grant asked for names tmux alone
+\(2026-10-16: a line granted for cd, tmux, head, echo asked again
+because grep was added).  On any other line every command counts."
+  (let ((names (efrit-sandbox-shell-commands line)))
+    (if (and (efrit-sandbox--shell-line-plain-p line)
+             (not (efrit-sandbox-shell-always-ask-match line)))
+        (or (efrit-sandbox-shell-unusual-commands line) names)
+      names)))
+
 (defun efrit-sandbox--expected-shell-line-p (line)
   "Non-nil when every command on shell LINE is in `efrit-sandbox-expected-shell-commands'."
   (and (stringp line)
        (not (efrit-sandbox-shell-always-ask-match line))
-       ;; redirections, substitutions and background jobs change what a
-       ;; read-only command can do; `&&' and `||' only sequence.  Sending
-       ;; stderr to /dev/null changes nothing (2026-10-03: `ls ... 2>/dev/null'
-       ;; asked for a grant over seven read-only commands)
-       ;; Inside single quotes nothing expands: an awk program's `$3' is
-       ;; text, not a substitution
-       (not (string-match-p "[<>`$]"
-                            (replace-regexp-in-string
-                             "'[^']*'" ""
-                             (replace-regexp-in-string "2>/dev/null" "" line t t) t t)))
-       (not (string-match-p "\\(?:^\\|[^&]\\)&\\(?:[^&]\\|$\\)" line))
-       (let ((names (efrit-sandbox-shell-commands line)))
-         (and names
-              (cl-every
-               (lambda (name)
-                 (or (member name efrit-sandbox-expected-shell-commands)
-                     ;; "git status" style entries: command + its first word
-                     (and (string-match (concat "\\(?:^\\|[;|&]\\s-*\\)" (regexp-quote name) "\\s-+\\([a-z-]+\\)") line)
-                          (member (concat name " " (match-string 1 line))
-                                  efrit-sandbox-expected-shell-commands))))
-               names)))))
+       (efrit-sandbox--shell-line-plain-p line)
+       (and (efrit-sandbox-shell-commands line)
+            (null (efrit-sandbox-shell-unusual-commands line)))))
+
+(defun efrit-sandbox-shell-named-commands (line)
+  "The grant-needing commands on LINE that this turn's user text names as words.
+The user who asked about tmux expects tmux to run; the reviewer
+weighs this (`efrit-review-confidence'), the sandbox itself does not."
+  (let ((text (efrit-sandbox--turn-get :user-text))
+        (case-fold-search t))
+    (and (stringp text)
+         (cl-remove-if-not (lambda (name)
+                             (string-match-p (concat "\\b" (regexp-quote name) "\\b") text))
+                           (efrit-sandbox-shell-grant-names line)))))
+
+(defun efrit-sandbox-shell-granted-commands (line root)
+  "The grant-needing commands on LINE that a standing shell grant for ROOT covers."
+  (let ((granted nil) (any nil))
+    (dolist (g (efrit-sandbox-grants-for 'shell line root))
+      (when (eq (plist-get g :cap) 'shell)
+        (let ((gt (plist-get g :target)))
+          (cond ((eq gt t) (setq any t))
+                ((efrit-sandbox-shell-target-p gt) (setq granted (append (cdr gt) granted)))))))
+    (if any
+        (efrit-sandbox-shell-grant-names line)
+      (cl-remove-if-not (lambda (name) (member name granted))
+                        (efrit-sandbox-shell-grant-names line)))))
 
 (defun efrit-sandbox-expected-p (cap target root)
   "Why CAP on TARGET is an expected request for ROOT, or nil when it is unusual.
@@ -1193,7 +1254,17 @@ With `efrit-sandbox-enabled' nil this is a no-op that returns t."
                 ;; target, so the re-check passes; a once grant is
                 ;; consumed by this re-check.
                 (or (efrit-sandbox-allowed-p cap ctarget root)
-                    (signal 'efrit-sandbox-denied (list req))))
+                    ;; the user said yes and the grant still does not
+                    ;; cover the target: an efrit bug (a canonical
+                    ;; form mismatch), not the user's no; say so
+                    (progn
+                      (efrit-log 'warn "sandbox: %s granted for %s (%s) but %s is still not covered; the canonical forms differ"
+                                 cap (efrit-sandbox-request-target req) scope ctarget)
+                      (signal 'efrit-sandbox-denied
+                              (list (efrit-sandbox-request-create
+                                     :cap cap :target ctarget :tool tool
+                                     :detail (format "efrit bug: the user granted %s on %s but %s was not matched by it; report this with M-x efrit-agent-diagnose"
+                                                     cap (efrit-sandbox-request-target req) ctarget)))))))
             (efrit-log 'info "sandbox: denied %s %s (%s)" cap ctarget tool)
             (when (fboundp 'efrit-publish)
               (efrit-publish 'sandbox-denied `((:cap . ,cap) (:target . ,ctarget) (:tool . ,tool))))

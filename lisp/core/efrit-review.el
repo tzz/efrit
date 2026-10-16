@@ -421,15 +421,27 @@ A line [SANDBOX would ask: CAP TARGET | computed confidence S | facts] under a c
 user's sandbox has no grant for it and would stop to ask them.  The facts are what efrit
 knows: how often the user granted or denied this pattern before, whether the request names
 the target, whether the shell line is read-only, whether the path is in a repository they
-granted before.  You may vouch for the user: add \"confidence\": C (0..1), how sure you are
+granted before; for a shell line, which commands the user already granted this session,
+which their request names (a request about tmux.conf makes tmux expected), and which are
+new.  Read the facts against the task: a command the task is about is not suspicious because
+it is outside the read-only set.  You may vouch for the user: add \"confidence\": C (0..1), how sure you are
 the user would say yes, and \"grant\": \"once\" or \"session\".  C may not exceed S; S already
 counts the facts, you only lower it when the request itself gives reason (an odd target for
 the task, a command whose output the task does not need).  At or above the user's threshold
 your vouching replaces their keypress for this turn, so vouch only when you would bet on it.
 A call with no SANDBOX line needs no confidence.
 
+Starting another Emacs (a [FLAG shell: starts another Emacs] line, or an eval_sexp whose form
+runs emacs --batch) is refused by efrit without asking the user: everything the agent needs is
+in the running Emacs.  The one exception is testing: a package must be loaded in a clean
+emacs -Q, or a byte-compile/ERT run must not disturb the live session, and the agent said so
+and no in-process way exists.  When you are confident of that, add \"emacs\": \"testing\" and
+\"emacs_reason\": \"<why, one sentence>\" beside your confidence; at or above the user's threshold
+efrit then asks the user instead of refusing.  Never add it for a task the running Emacs can do.
+
 Answer with one JSON object and nothing else -- no prose before it, no code fence:
 {\"verdict\": \"approve\"}, {\"verdict\": \"approve\", \"confidence\": 0.97, \"grant\": \"session\"},
+{\"verdict\": \"approve\", \"confidence\": 0.98, \"emacs\": \"testing\", \"emacs_reason\": \"ERT run of the package in a clean emacs -Q, as the user asked\"},
 or {\"verdict\": \"reject\", \"reason\": \"<one or two sentences, addressed to the agent, saying what to change>\"}"
   "System prompt for the reviewer.")
 
@@ -474,8 +486,10 @@ every turn, because it only saw the request of the moment."
                     ("content" . ,(efrit-review--user-message intent proposer-text batch)))])))
 
 (defvar efrit-review--last-vouch nil
-  "(:confidence C :grant SCOPE) from the last parsed approve, or nil.
-Set by `efrit-review-parse-verdict'; read by the loop right after.")
+  "(:confidence C :grant SCOPE :emacs REASON-OR-NIL) from the last parsed approve, or nil.
+Set by `efrit-review-parse-verdict'; read by the loop right after.
+:emacs is the reviewer's reason when it judged that starting another
+Emacs is for testing with no in-process alternative.")
 
 (defun efrit-review-parse-verdict (text)
   "Parse the reviewer's TEXT into (VERDICT . REASON), or nil if malformed.
@@ -506,12 +520,16 @@ around the object by taking the first {...} span."
                        (reason (alist-get 'reason parsed))
                        (confidence (alist-get 'confidence parsed))
                        (grant (alist-get 'grant parsed))
+                       (emacs (alist-get 'emacs parsed))
+                       (emacs-reason (alist-get 'emacs_reason parsed))
                        (sym (and (stringp verdict) (intern (downcase verdict)))))
                   (when (memq sym efrit-review-verdicts)
                     (setq efrit-review--last-vouch
                           (and (eq sym 'approve) (numberp confidence)
                                (list :confidence (float confidence)
-                                     :grant (and (stringp grant) (intern (downcase grant))))))
+                                     :grant (and (stringp grant) (intern (downcase grant)))
+                                     :emacs (and (equal emacs "testing")
+                                                 (if (stringp emacs-reason) emacs-reason "testing")))))
                     (setq obj (cons sym (and (stringp reason) reason)))))
               (error nil)))
           (setq start (and (not obj) (string-search "{" text (1+ start))))))

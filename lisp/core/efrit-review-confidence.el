@@ -50,6 +50,9 @@
 (declare-function efrit-sandbox--expected-shell-line-p "efrit-sandbox")
 (declare-function efrit-sandbox-shell-always-ask-match "efrit-sandbox")
 (declare-function efrit-sandbox-shell-commands "efrit-sandbox")
+(declare-function efrit-sandbox-shell-unusual-commands "efrit-sandbox")
+(declare-function efrit-sandbox-shell-granted-commands "efrit-sandbox")
+(declare-function efrit-sandbox-shell-named-commands "efrit-sandbox")
 (declare-function efrit-sandbox-remote-p "efrit-sandbox")
 (declare-function efrit-sandbox-repo-of "efrit-sandbox")
 (declare-function efrit-sandbox-abbreviate "efrit-sandbox")
@@ -87,6 +90,9 @@ yeses -- all recent.  Sixty days later each is worth half."
     (history-mixed . 0.10)      ; granted more than denied, but denied too
     (mentioned . 0.45)          ; the request names the target
     (read-only-shell . 0.35)    ; every command is in the read-only set
+    (granted-commands . 0.25)   ; some grant-needing commands already have a shell grant
+    (task-commands . 0.45)      ; every grant-needing command is named in the user's request
+    (new-commands . -0.20)      ; a command neither granted, named, nor read-only
     (read-cap . 0.15)           ; a read, not a write / shell / net
     (granted-repo . 0.25)       ; inside a repository the user has granted before
     (known-host . 0.30)         ; a host fetched before
@@ -99,7 +105,11 @@ Tuned so that one strong fact is never enough: a read granted three
 times before in a repository granted before reaches the 0.95 line
 \(0.60 + 0.25 + 0.15); a read-only shell line scores 0.25 on its own,
 0.85 with a strong history, 0.95 only when the request also names
-its target or the history is strong AND the line is named."
+its target or the history is strong AND the line is named.  A shell
+line whose commands the user already granted and whose remaining
+command their request names (tmux, for a tmux.conf review) scores
+0.60 before history; a command that is none of granted, named or
+read-only pulls the line down."
   :type '(alist :key-type symbol :value-type number)
   :group 'efrit-review-confidence)
 
@@ -200,6 +210,31 @@ A fact named `blocked' means no score may grant this."
         (fact 'mentioned "named in the user's request"))
       (when (and (eq cap 'shell) (ignore-errors (efrit-sandbox--expected-shell-line-p target)))
         (fact 'read-only-shell (format "only %s" (string-join (efrit-sandbox-shell-commands target) ", "))))
+      ;; a shell line in context: which of its grant-needing commands
+      ;; the user already granted, which their request names, and
+      ;; which are new (2026-10-16: tmux granted and the task about
+      ;; tmux.conf, and the reviewer saw only "a command outside the
+      ;; read-only set")
+      (when (and (eq cap 'shell) (stringp target)
+                 (not (efrit-sandbox-shell-always-ask-match target)))
+        (let* ((root (efrit-sandbox-project-root))
+               ;; the read-only commands are the read-only-shell fact's
+               ;; business; here only the others count
+               (needed (ignore-errors (efrit-sandbox-shell-unusual-commands target)))
+               (granted (cl-intersection
+                         needed (ignore-errors (efrit-sandbox-shell-granted-commands target root))
+                         :test #'equal))
+               (named (cl-intersection
+                       needed (ignore-errors (efrit-sandbox-shell-named-commands target))
+                       :test #'equal))
+               (new (cl-remove-if (lambda (n) (or (member n granted) (member n named))) needed)))
+          (when granted
+            (fact 'granted-commands (format "%s already granted" (string-join granted ", "))))
+          (when (and named (null (cl-set-difference needed named :test #'equal)))
+            (fact 'task-commands (format "%s named in the user's request" (string-join named ", "))))
+          (when new
+            (fact 'new-commands (format "%s neither granted, named by the user, nor read-only"
+                                        (string-join new ", "))))))
       (when (and (memq cap '(read write)) (stringp target)
                  (efrit-review-confidence--granted-repo-p target))
         (fact 'granted-repo (format "inside %s, which the user granted before"

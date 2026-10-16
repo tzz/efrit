@@ -40,7 +40,7 @@
 (require 'efrit-log)
 
 (declare-function efrit-sandbox-repo-of "efrit-sandbox")
-(declare-function efrit-sandbox-shell-commands "efrit-sandbox")
+(declare-function efrit-sandbox-shell-grant-names "efrit-sandbox")
 (declare-function efrit-sandbox-canonical "efrit-sandbox")
 (declare-function efrit-sandbox-remote-p "efrit-sandbox")
 
@@ -101,9 +101,11 @@ Returns a string, or nil for targets no pattern should ever cover
     ('net
      (when (and (consp target) (eq (car target) 'host) (stringp (cdr target)))
        (format "net %s" (downcase (cdr target)))))
+    ;; the commands a grant would name, so `tmux ls' and `tmux ls | grep
+    ;; x' are one pattern (see `efrit-sandbox-shell-grant-names')
     ('shell
      (when (stringp target)
-       (let ((names (ignore-errors (efrit-sandbox-shell-commands target))))
+       (let ((names (ignore-errors (efrit-sandbox-shell-grant-names target))))
          (and names (format "shell %s" (string-join (sort (copy-sequence names) #'string<) " "))))))
     (_ nil)))
 

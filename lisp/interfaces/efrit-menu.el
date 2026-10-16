@@ -46,6 +46,7 @@
 (declare-function efrit-agent-dashboard "efrit-agent-dashboard")
 (declare-function efrit-agent-diagnose "efrit-agent-diagnose")
 (declare-function efrit-agent-new-worktree-instance "efrit-agent-instances")
+(declare-function efrit-agent-new-instance "efrit-agent-instances")
 (declare-function efrit-agent-toggle-unread "efrit-agent-ring")
 (declare-function efrit-agent-tab-line-mode "efrit-agent-tab-line")
 (declare-function efrit-testdrive "efrit-testdrive")
@@ -208,6 +209,7 @@ stick (claude-code-ide's Save suffix, 2026-09-28)."
        ("z" "Focus one agent (again: restore windows)" efrit-agent-focus)
        ("a" "Agents dashboard (folders, state, worktrees)" efrit-agent-dashboard)
        ("I" "Diagnose this session" efrit-agent-diagnose)
+       ("J" "New agent for a directory (no repository needed)" efrit-agent-new-instance)
        ("f" "New agent in a fresh Git worktree" efrit-agent-new-worktree-instance)
        ("U" "Mark this agent unread / read" efrit-agent-toggle-unread :transient t)
        ("B" efrit-agent-tab-line-mode :transient t

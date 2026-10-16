@@ -4,7 +4,7 @@
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
 ;; Maintainer: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.12.13
+;; Version: 0.12.14
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai, assistant, claude
 ;; URL: https://github.com/steveyegge/efrit
@@ -110,7 +110,8 @@ Use M-x efrit-help for more information."
     (define-key map (kbd "z") 'efrit-agent-focus)          ; one agent, whole frame; again restores
     (define-key map (kbd "i") 'efrit-agent-diagnose)
     (define-key map (kbd "u") 'efrit-agent-toggle-unread)  ; mark the agent unread / read
-    (define-key map (kbd "f") 'efrit-agent-new-worktree-instance) ; fresh worktree agent
+    (define-key map (kbd "n") 'efrit-agent-new-instance)          ; new agent for a directory
+    (define-key map (kbd "f") 'efrit-agent-new-worktree-instance) ; new agent in a fresh worktree
     (define-key map (kbd "r") 'efrit-code-review)          ; review the staged changes
     map)
   "Keymap for Efrit commands.")
@@ -298,6 +299,8 @@ Executes all ERT tests and displays results in a buffer."
 (autoload 'efrit-agent-diagnose "efrit-agent-diagnose" "Diagnose an agent session without touching it." t)
 ;;;###autoload
 (autoload 'efrit-agent-new-worktree-instance "efrit-agent-instances" "A new agent in a fresh Git worktree." t)
+;;;###autoload
+(autoload 'efrit-agent-new-instance "efrit-agent-instances" "A new agent for a directory you name." t)
 ;;;###autoload
 (autoload 'efrit-code-review "efrit-code-review-ui"
   "Review the staged changes (prefix: unpushed, branch); findings as patches." t)

@@ -127,10 +127,19 @@ BRANCH (default agent/NAME) is created from HEAD at DESTINATION
 \(default a sibling directory ROOT-NAME).  Existing branches and
 directories are refused.  The buffer's project is the worktree, so
 its edits, VC and sandbox grants stay there; the session records the
-worktree and branch and `efrit-resume' checks them.  Every prompt is
-answered before Git is touched."
+worktree and branch and `efrit-resume' checks them.  Interactively the
+repository is asked for first, with completion, defaulting to the
+current buffer's.  Every prompt is answered before Git is touched."
   (interactive
-   (let* ((root (or (efrit-vcs-root) (user-error "Not in a Git tree")))
+   (let* ((here (efrit-vcs-root))
+          ;; always ask, with completion, defaulting to this buffer's
+          ;; repository when there is one (tzz, 2026-10-15: "whether
+          ;; there's a git tree in the current buffer or not, prompt
+          ;; with path completion")
+          (chosen (read-directory-name "Repository to branch from: "
+                                       (or here default-directory) here t))
+          (root (or (efrit-vcs-root chosen)
+                    (user-error "%s is not inside a Git tree" (abbreviate-file-name chosen))))
           (name (read-string "Agent name: "))
           (slug (efrit-agent--worktree-slug name))
           (branch (read-string "New branch: " (concat "agent/" slug)))
@@ -297,6 +306,21 @@ hides and restores a project's agent windows per tab.
 `efrit-agent-display' shows an instance buffer in its side window."
   :global t
   :group 'efrit-agent-instances)
+
+;;;###autoload
+(defun efrit-agent-new-instance (directory &optional name)
+  "A new agent buffer working in DIRECTORY; no repository needed.
+Interactively asks for the directory only (default: the current
+project or `default-directory'); the buffer is named after it,
+`*efrit[dir]*', and `efrit-agent-rename-instance' renames it.  NAME
+is for callers.  The buffer is shown and selected (tzz, 2026-10-15)."
+  (interactive
+   (let ((default (or (efrit-agent-project-root) default-directory)))
+     (list (read-directory-name "New agent in directory: " default default t))))
+  (let* ((root (file-name-as-directory (expand-file-name directory)))
+         (buf (efrit-agent-instance-create root name)))
+    (efrit-agent-display buf t)
+    buf))
 
 (defun efrit-agent-open-instance (&optional new)
   "Open the current project's agent buffer; with NEW, a new instance of it."

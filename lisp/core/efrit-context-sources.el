@@ -130,7 +130,7 @@ recent buffer in `buffer-list' that is not efrit's and not hidden."
 
 ;;; Built-in sources
 
-(defun efrit-context--source-buffer (_buf)
+(defun efrit-context--source-buffer (buf)
   (let ((file (buffer-file-name)))
     (concat
      (format "Buffer: %s" (buffer-name))
@@ -141,7 +141,8 @@ recent buffer in `buffer-list' that is not efrit's and not hidden."
                                   (and (buffer-narrowed-p) "narrowed")))))
        (when flags (format "\nState: %s" (string-join flags ", "))))
      (unless file
-       (format "\nDirectory: %s" (abbreviate-file-name default-directory))))))
+       (format "\nDirectory: %s" (abbreviate-file-name
+                                  (with-current-buffer (or buf (current-buffer)) default-directory)))))))
 
 (declare-function treesit-node-at "treesit")
 (declare-function treesit-node-parent "treesit")
@@ -267,6 +268,9 @@ enclosing node (after ai-code-interface, 2026-09-28)."
           (buffer-substring (point-min) (min (point-max) 12)))))))
 
 (defun efrit-context--source-project (_buf)
+  ;; `efrit-tool--get-project-root' honours `efrit-project-root', which
+  ;; efrit-repl-loop binds to the session's root while the snapshot is
+  ;; taken, so a bound agent reports its own project
   (let* ((root (condition-case nil
                    (if (fboundp 'efrit-tool--get-project-root)
                        (efrit-tool--get-project-root)

@@ -728,9 +728,16 @@ turn asked tzz whether eval_sexp may run Emacs)."
   (test-sb--in-project
     (efrit-sandbox-grant 'elisp t 'session)
     (let ((emacs (expand-file-name invocation-name invocation-directory)))
-      ;; the model's own call: denied
-      (should-error (efrit-sandbox-eval-form
-                     `(make-process :name "x" :command (list ,emacs "--batch" "--eval" "(kill-emacs 0)")))
+      ;; the model's own call: refused outright, with the reason, no prompt
+      (let* ((asked (list nil))
+             (efrit-sandbox-request-function (lambda (&rest _) (setcar asked t) nil)))
+        (let ((err (should-error (efrit-sandbox-eval-form
+                                  `(make-process :name "x" :command (list ,emacs "--batch" "--eval" "(kill-emacs 0)")))
+                                 :type 'efrit-sandbox-denied)))
+          (should (string-match-p "must not start another Emacs" (format "%s" (cdr err))))
+          (should-not (car asked))))
+      ;; the same through call-process, whose argv is positional
+      (should-error (efrit-sandbox-eval-form `(call-process ,emacs nil nil nil "--batch" "--eval" "(kill-emacs 0)"))
                     :type 'efrit-sandbox-denied)
       ;; the same call from a comp frame: housekeeping, allowed
       (cl-letf (((symbol-function 'comp-trampoline-compile)
@@ -754,10 +761,72 @@ turn asked tzz whether eval_sexp may run Emacs)."
               (should (processp p))
               (while (process-live-p p) (accept-process-output p 0.1)))
           (delete-file tmp)))
+      ;; the synchronous compiler (comp--final) goes through call-process
+      ;; with an emacs-int-comp-* file: allowed too
+      (let ((tmp (make-temp-file "emacs-int-comp-y-" nil ".el")))
+        (unwind-protect
+            (should (= 0 (efrit-sandbox-eval-form
+                          `(call-process ,emacs nil nil nil "-no-comp-spawn" "-Q" "--batch" "--eval" "(kill-emacs 0)" "-l" ,tmp))))
+          (delete-file tmp)))
       ;; the same shape pointing at another program still asks
       (should-error (efrit-sandbox-eval-form
                      '(make-process :name "x" :command (list "/usr/bin/true" "-no-comp-spawn" "--batch" "-l" "/tmp/emacs-async-comp-x.el")))
-                    :type 'efrit-sandbox-denied))))
+                    :type 'efrit-sandbox-denied)
+      ))
+  ;; the escape hatch brings the prompt back (a fresh project: the
+  ;; denials above leave a standing no for the turn)
+  (test-sb--in-project
+    (efrit-sandbox-grant 'elisp t 'session)
+    (let* ((emacs (expand-file-name invocation-name invocation-directory))
+           (efrit-sandbox-eval-allow-emacs t)
+           (asked (list nil))
+           (efrit-sandbox-request-function (lambda (&rest _) (setcar asked t) nil)))
+      (should-error (efrit-sandbox-eval-form
+                     `(make-process :name "x" :command (list ,emacs "--batch" "--eval" "(kill-emacs 0)")))
+                    :type 'efrit-sandbox-denied)
+      (should (car asked))))
+  ;; so does the reviewer's testing vouch for the turn
+  (test-sb--in-project
+    (efrit-sandbox-grant 'elisp t 'session)
+    (efrit-sandbox--turn-set :emacs-vouched "ERT run in a clean emacs -Q")
+    (let* ((emacs (expand-file-name invocation-name invocation-directory))
+           (seen (list nil))
+           (efrit-sandbox-request-function
+            (lambda (req) (setcar seen (efrit-sandbox-request-detail req)) nil)))
+      (should-error (efrit-sandbox-eval-form
+                     `(make-process :name "x" :command (list ,emacs "--batch" "--eval" "(kill-emacs 0)")))
+                    :type 'efrit-sandbox-denied)
+      (should (string-match-p "reviewer: an external Emacs for testing: ERT run" (or (car seen) ""))))))
+
+(ert-deftest test-sb-new-path-under-symlinked-root-matches-the-grant ()
+  "A write to a not-yet-existing nested path reached through a symlinked
+checkout canonicalizes to the truename, so a project grant on the
+truename covers it (2026-10-15: mkdir old/files under ~/autodist ->
+~/ai_workspace/source/autodist was denied right after the user's p)."
+  (let* ((real (file-name-as-directory (file-truename (make-temp-file "efrit-sb-real-" t))))
+         (link (concat (directory-file-name (file-truename temporary-file-directory))
+                       "/efrit-sb-link-" (format "%06d" (random 1000000)))))
+    (make-symbolic-link (directory-file-name real) link)
+    (unwind-protect
+        (let* ((efrit-project-root (file-name-as-directory link))
+               (efrit-sandbox-enabled t)
+               (efrit-sandbox-default-project-grants '(read))
+               (answers (list 'project))
+               (efrit-sandbox-request-function (lambda (_req) (pop answers)))
+               (efrit-sandbox--session-grants (make-hash-table :test 'equal))
+               (efrit-sandbox--project-grants (make-hash-table :test 'equal))
+               (efrit-sandbox--turn-state (make-hash-table :test 'equal))
+               (efrit-sandbox-store--loaded (make-hash-table :test 'equal))
+               (efrit-sandbox-expected-write-roots nil))
+          (should (equal (concat real "old/files/") (efrit-sandbox-canonical (concat link "/old/files/"))))
+          ;; one prompt, answered project; the write is then allowed, and
+          ;; so is the next one under the same not-yet-made directory
+          (should (efrit-sandbox-check 'write (concat link "/old/files/")))
+          (should (null answers))
+          (should (efrit-sandbox-allowed-p 'write (concat link "/old/files/jump")))
+          (should (efrit-sandbox-allowed-p 'write (concat real "elsewhere/x.txt"))))
+      (delete-file link)
+      (delete-directory real t))))
 
 (ert-deftest test-sb-eval-network-needs-net ()
   (test-sb--in-project
@@ -1175,6 +1244,38 @@ outside any repo still ask."
   (should-not (efrit-sandbox--expected-shell-line-p "echo $(whoami)"))
   (should-not (efrit-sandbox--expected-shell-line-p "python3 x.py"))
   (should-not (efrit-sandbox--expected-shell-line-p ""))))
+
+(ert-deftest test-sb-shell-grant-ignores-read-only-extras ()
+  "A grant on the commands that need one covers the same line with read-only
+filters added: granted for cd, tmux, head, echo, the line with grep at the
+end does not ask again (2026-10-16).  Redirection, substitution and an
+always-ask line still need every command covered or an exact grant."
+  (let ((efrit-sandbox-expected-shell-commands (eval (car (get 'efrit-sandbox-expected-shell-commands 'standard-value)) t))
+        (efrit-sandbox-shell-always-ask (eval (car (get 'efrit-sandbox-shell-always-ask 'standard-value)) t)))
+    (should (equal '("tmux") (efrit-sandbox-shell-grant-names "cd /tmp && tmux -L t new-session -d 2>&1 | head -40; echo ---; tmux -L t list-keys | grep -cE '^bind'")))
+    (should (equal '("tmux") (efrit-sandbox-shell-unusual-commands "tmux ls | grep x")))
+    (should (equal '("ls" "head") (efrit-sandbox-shell-grant-names "ls | head")))
+    (should (equal '("ls" "tmux") (efrit-sandbox-shell-grant-names "ls > out; tmux ls")))
+    (should (equal '(shell "tmux") (efrit-sandbox--suggest-target 'shell "tmux ls | grep x" "/")))
+    (should (efrit-sandbox--shell-grant-covers-p '(shell "tmux") "tmux ls | grep x | sort"))
+    (should (efrit-sandbox--shell-grant-covers-p '(shell "tmux") "tmux ls 2>&1 | grep x"))
+    (should-not (efrit-sandbox--shell-grant-covers-p '(shell "tmux") "tmux ls | grep x > /tmp/out"))
+    (should-not (efrit-sandbox--shell-grant-covers-p '(shell "tmux") "tmux ls | python3 x.py"))
+    (should-not (efrit-sandbox--shell-grant-covers-p '(shell "sudo" "ls") "sudo ls")))
+  (test-sb--in-project
+    (setq efrit-sandbox-expected-shell-commands
+          (eval (car (get 'efrit-sandbox-expected-shell-commands 'standard-value)) t))
+    (efrit-sandbox-begin-turn "review my tmux.conf and check the bindings")
+    (efrit-sandbox-grant 'shell '(shell "tmux") 'session)
+    (should (efrit-sandbox-allowed-p 'shell "tmux -L t list-keys | grep bind | head -3"))
+    (should-not (efrit-sandbox-allowed-p 'shell "tmux ls; python3 x.py"))
+    ;; what the reviewer is told: granted, named by the user, new
+    (should (equal '("tmux") (efrit-sandbox-shell-granted-commands "tmux ls | grep x" root)))
+    (should (equal '("tmux") (efrit-sandbox-shell-named-commands "tmux ls; python3 x.py")))
+    (should (equal '("tmux") (efrit-sandbox-shell-granted-commands "tmux ls; python3 x.py" root)))
+    ;; a word in the editor-context snapshot is not the user's request
+    (efrit-sandbox-begin-turn "<editor-context>\npython3 things\n</editor-context>\nhello")
+    (should-not (efrit-sandbox-shell-named-commands "python3 x.py"))))
 
 (ert-deftest test-sb-mentioned-targets-are-expected-this-turn ()
   "Hosts and paths named in the user's own input are the work: fetching

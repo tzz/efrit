@@ -185,6 +185,15 @@ Reading those is never the user's data; a `(require ...)' or
                         (string-prefix-p (file-name-as-directory (expand-file-name dir)) path)))
                  load-path))))
 
+(defcustom efrit-sandbox-eval-allow-emacs nil
+  "When non-nil, an eval may start another Emacs after the usual prompt.
+Off by default: another Emacs is never what a task needs; the one
+case is testing a package in a clean `emacs -Q', and for that bind
+this around the call.  Emacs's own native-compiler subprocesses are
+recognised and allowed regardless."
+  :type 'boolean
+  :group 'efrit-sandbox)
+
 (defconst efrit-sandbox-eval--native-comp-frames
   '(comp-trampoline-compile comp--trampoline-compile comp-run-async-workers
     comp--run-async-workers native-compile-async native--compile-async
@@ -205,16 +214,16 @@ is this very Emacs in batch mode."
                     (when (memq func efrit-sandbox-eval--native-comp-frames)
                       (setq comp-frame func))))
     (cond
-     ;; The async worker's command line is unmistakable on its own:
-     ;; this Emacs, -no-comp-spawn -Q --batch, loading an
-     ;; emacs-async-comp-*.el it just wrote (comp-run.el).  The frame
-     ;; test alone missed it when the spawn came from a timer rather
-     ;; than the model's eval (tzz, 2026-10-15: "why does efrit want to
-     ;; run emacs to pwd?").
+     ;; The compiler's command line is unmistakable on its own: this
+     ;; Emacs, -no-comp-spawn -Q --batch, loading an emacs-async-comp-*
+     ;; (comp-run.el, a timer) or emacs-int-comp-* (comp.el `comp--final',
+     ;; synchronous: trampolines, native-compile of a defun) file it
+     ;; just wrote.  The frame test alone missed both (tzz, 2026-10-15:
+     ;; "why does efrit want to run emacs to pwd?").
      ((and (listp command) (stringp (car command))
            (member "-no-comp-spawn" command)
            (member "--batch" command)
-           (cl-some (lambda (a) (and (stringp a) (string-match-p "/emacs-async-comp-.*\\.el\\'" a))) command)
+           (cl-some (lambda (a) (and (stringp a) (string-match-p "/emacs-\\(?:async\\|int\\)-comp-.*\\.el\\'" a))) command)
            (efrit-sandbox-eval--this-emacs-p (car command)))
       'comp-run-async-workers)
      ((and comp-frame
@@ -311,11 +320,34 @@ file comes back through this handler and is checked then."
 
 ;; Process / network advice.  Installed once; only active inside a
 ;; sandboxed eval.
-(defun efrit-sandbox-eval--guard-process (orig &rest args)
+(defun efrit-sandbox-eval--process-argv (fn args)
+  "The argv (PROGRAM ARG...) FN was called with, from ARGS, or nil.
+`make-process' carries it in :command; `call-process' and
+`process-file' as (PROGRAM INFILE DEST DISPLAY ARG...); `start-process'
+and `start-file-process' as (NAME BUFFER PROGRAM ARG...);
+`call-process-region' as (START END PROGRAM DELETE DEST DISPLAY ARG...).
+Taking only the program lost the flags that identify Emacs's own
+compiler subprocess (2026-10-15: \"again it's asking me to run Emacs\")."
+  (let ((name (and (symbolp fn) fn)))
+    (cond
+     ((plist-get args :command) (plist-get args :command))
+     ((memq name '(call-process process-file))
+      (and (stringp (car args)) (cons (car args) (cl-remove-if-not #'stringp (nthcdr 4 args)))))
+     ((memq name '(start-process start-file-process))
+      (and (stringp (nth 2 args)) (cons (nth 2 args) (cl-remove-if-not #'stringp (nthcdr 3 args)))))
+     ((eq name 'call-process-region)
+      (and (stringp (nth 2 args)) (cons (nth 2 args) (cl-remove-if-not #'stringp (nthcdr 6 args)))))
+     ((stringp (car args)) (list (car args)))
+     (t nil))))
+
+(defun efrit-sandbox-eval--guard-process-1 (name orig &rest args)
+  "The process guard for primitive NAME (a symbol, or nil when unknown).
+Advice receives ORIG as a function object, so NAME comes from the
+per-primitive wrapper `efrit-sandbox-eval--install-advice' makes;
+it decides how the argv is read out of ARGS."
   (when (and efrit-sandbox-eval--active (not efrit-sandbox-eval--in-guard))
     (let ((efrit-sandbox-eval--in-guard t))
-      (let* ((command (or (plist-get args :command)
-                          (and (stringp (car args)) (list (car args)))))
+      (let* ((command (efrit-sandbox-eval--process-argv name args))
              (line (cond ((and (listp command) command (cl-every #'stringp command))
                           (mapconcat #'shell-quote-argument command " "))
                          ((stringp command) command)
@@ -325,12 +357,34 @@ file comes back through this handler and is checked then."
         ;; The detail names the primitive, so the prompt reads
         ;; "eval_sexp: call-process emacs ..." and not as if efrit
         ;; itself wanted to run something.
-        (if-let* ((frame (efrit-sandbox-eval--native-comp-p command)))
-            (efrit-log 'debug "sandbox: native compiler (%s) starts a batch Emacs; not the model's doing, allowed" frame)
+        (cond
+         ((efrit-sandbox-eval--native-comp-p command)
+          (efrit-log 'debug "sandbox: native compiler (%s) starts a batch Emacs; not the model's doing, allowed"
+                     (efrit-sandbox-eval--native-comp-p command)))
+         ;; The model starting another Emacs is never the right tool:
+         ;; everything it needs is in this one.  Refused outright, no
+         ;; prompt (tzz, 2026-10-15: "running an external emacs almost
+         ;; never makes sense with efrit ... everything it needs should
+         ;; be inside Emacs already").  Two ways to the prompt instead:
+         ;; `efrit-sandbox-eval-allow-emacs', or the reviewer's
+         ;; "emacs": "testing" vouch for this turn (turn state
+         ;; :emacs-vouched, set by efrit-loop at the user's threshold).
+         ((and (not efrit-sandbox-eval-allow-emacs)
+               (not (efrit-sandbox--turn-get :emacs-vouched))
+               (listp command) (stringp (car command))
+               (efrit-sandbox-eval--this-emacs-p (car command)))
+          (signal 'efrit-sandbox-denied
+                  (list (format "eval_sexp must not start another Emacs (%s). Do the work in this Emacs: evaluate the form here, use the tools, or run a shell command that is not Emacs."
+                                (truncate-string-to-width (if (stringp line) line "process") 120 nil nil "…")))))
+         (t
           (efrit-sandbox-check 'shell line "eval_sexp"
-                               (format "subprocess via %s: %s"
-                                       (or (and (symbolp orig) orig) "make-process")
-                                       (if (stringp line) line "process")))))))
+                               (format "subprocess via %s: %s%s"
+                                       (or name "make-process")
+                                       (if (stringp line) line "process")
+                                       (let ((why (and (listp command) (stringp (car command))
+                                                       (efrit-sandbox-eval--this-emacs-p (car command))
+                                                       (efrit-sandbox--turn-get :emacs-vouched))))
+                                         (if (stringp why) (format "\nreviewer: an external Emacs for testing: %s" why) "")))))))))
   ;; A nested advised call (call-process under shell-command-to-string)
   ;; runs with the guard suppressed: the outer check already passed.
   (let ((efrit-sandbox-eval--in-guard t))
@@ -437,8 +491,15 @@ current buffer is where eval already runs."
 
 (defun efrit-sandbox-eval--install-advice ()
   (dolist (fn efrit-sandbox-eval--process-fns)
-    (unless (advice-member-p #'efrit-sandbox-eval--guard-process fn)
-      (advice-add fn :around #'efrit-sandbox-eval--guard-process)))
+    ;; one named wrapper per primitive, so the guard knows which argv
+    ;; shape it is looking at (advice gets the function, not the name)
+    (let ((wrapper (intern (format "efrit-sandbox-eval--guard-%s" fn))))
+      (unless (fboundp wrapper)
+        (defalias wrapper
+          (lambda (orig &rest args) (apply #'efrit-sandbox-eval--guard-process-1 fn orig args))
+          (format "The eval sandbox's process guard around `%s'." fn)))
+      (unless (advice-member-p wrapper fn)
+        (advice-add fn :around wrapper))))
   (dolist (fn '(make-network-process open-network-stream url-retrieve
                 url-retrieve-synchronously))
     (unless (advice-member-p #'efrit-sandbox-eval--guard-network fn)

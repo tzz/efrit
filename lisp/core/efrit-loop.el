@@ -49,6 +49,8 @@
 (require 'efrit-sandbox)
 (require 'efrit-review)
 (require 'efrit-limits)
+(declare-function efrit-sandbox--turn-set "efrit-sandbox")
+(defvar efrit-review-auto-grant-threshold)
 (declare-function efrit-review-confidence-remember-grant "efrit-review-confidence")
 (defvar efrit-review--last-vouch)
 (require 'efrit-events)
@@ -558,6 +560,16 @@ the turn is handed to the user instead."
             ;; would otherwise ask the user about (0.12.12)
             (when-let* ((vouch (and (boundp 'efrit-review--last-vouch) efrit-review--last-vouch)))
               (setq efrit-review--last-vouch nil)
+              ;; the reviewer judged an external Emacs to be for testing
+              ;; with no alternative: the eval guard may ask the user
+              ;; this turn instead of refusing (tzz, 2026-10-15)
+              (when (and (plist-get vouch :emacs)
+                         (boundp 'efrit-review-auto-grant-threshold) efrit-review-auto-grant-threshold
+                         (>= (plist-get vouch :confidence) efrit-review-auto-grant-threshold)
+                         (fboundp 'efrit-sandbox--turn-set))
+                (efrit-log 'info "%s %s: reviewer allows an external Emacs this turn to be asked about (%.2f: %s)"
+                           name session-id (plist-get vouch :confidence) (plist-get vouch :emacs))
+                (efrit-sandbox--turn-set :emacs-vouched (plist-get vouch :emacs)))
               (when (require 'efrit-review-confidence nil t)
                 (dotimes (i (length content))
                   (when-let* ((use (efrit-content-item-as-tool-use (aref content i))))

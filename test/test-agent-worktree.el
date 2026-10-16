@@ -90,6 +90,36 @@ instead of opening a buffer elsewhere; relocate fixes the record."
     (efrit-repl-session-meta-put s :folder nil)
     (should (null (efrit-repl-session-meta s)))))
 
+(ert-deftest test-wt-bound-agent-reports-its-own-project ()
+  "The editor-context snapshot of a turn names the session's directory as
+the project, not the directory of the buffer the user was looking at."
+  (require 'efrit-repl-loop)
+  (require 'efrit-context-sources)
+  (let* ((agent-dir (file-name-as-directory (make-temp-file "efrit-bound-" t)))
+         (other-dir (file-name-as-directory (make-temp-file "efrit-other-" t)))
+         (efrit-agent-auto-show nil)
+         (efrit-context-sources '(buffer project))
+         (seen nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'efrit-agent-display) (lambda (b &rest _) b)))
+          (let* ((buf (efrit-agent-new-instance agent-dir "bound"))
+                 (session (buffer-local-value 'efrit-agent--repl-session buf)))
+            (should (equal agent-dir (buffer-local-value 'default-directory buf)))
+            (should (equal agent-dir (efrit-repl-session-project-root session)))
+            ;; the user's buffer is somewhere else
+            (with-temp-buffer
+              (setq default-directory other-dir)
+              (rename-buffer " *user-elsewhere*" t)
+              (let ((user (current-buffer)))
+                (cl-letf (((symbol-function 'efrit-context-target-buffer) (lambda (&rest _) user)))
+                  (setq seen (efrit-repl-loop--with-session
+                              session (lambda () (efrit-context-wrap-user-input "hi")))))))
+            (should (string-match-p (concat "Project root: " (regexp-quote (abbreviate-file-name agent-dir))) seen))
+            (should-not (string-match-p (concat "Project root: " (regexp-quote (abbreviate-file-name other-dir))) seen))
+            (kill-buffer buf)))
+      (ignore-errors (delete-directory agent-dir t))
+      (ignore-errors (delete-directory other-dir t)))))
+
 (provide 'test-agent-worktree)
 
 ;;; test-agent-worktree.el ends here

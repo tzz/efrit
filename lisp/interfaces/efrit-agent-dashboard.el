@@ -52,6 +52,7 @@
 (declare-function efrit-agent-display "efrit-agent-core")
 (declare-function efrit-agent-diagnose "efrit-agent-diagnose")
 (declare-function efrit-agent-new-worktree-instance "efrit-agent-instances")
+(declare-function efrit-agent-new-instance "efrit-agent-instances")
 (declare-function efrit-agent-tab-line-label-default "efrit-agent-tab-line")
 (declare-function efrit-agent-relocate-session "efrit-agent-instances")
 (declare-function eshell "eshell")
@@ -188,13 +189,23 @@ Nothing moves on disk; the dashboard groups by it."
          (default-directory (with-current-buffer buf default-directory)))
     (eshell t)))
 
+(defun efrit-agent-dashboard-new (&optional worktree)
+  "Make a new agent, asking for its directory (default: the project at point).
+With WORKTREE (a prefix argument, or `N'), a fresh Git worktree of that
+project instead."
+  (interactive "P")
+  (let* ((buf (efrit-agent-dashboard--buffer-at-point))
+         (default-directory (if buf (with-current-buffer buf default-directory) default-directory)))
+    (if worktree
+        (call-interactively #'efrit-agent-new-worktree-instance)
+      (call-interactively #'efrit-agent-new-instance))
+    (when (buffer-live-p (get-buffer efrit-agent-dashboard-buffer))
+      (with-current-buffer efrit-agent-dashboard-buffer (revert-buffer)))))
+
 (defun efrit-agent-dashboard-new-worktree ()
   "Make a new agent in a fresh worktree of the project at point."
   (interactive)
-  (let* ((buf (efrit-agent-dashboard--buffer-at-point))
-         (default-directory (if buf (with-current-buffer buf default-directory) default-directory)))
-    (call-interactively #'efrit-agent-new-worktree-instance)
-    (revert-buffer)))
+  (efrit-agent-dashboard-new t))
 
 (defun efrit-agent-dashboard-relocate ()
   "Point a saved session at a checkout that replaced its worktree."
@@ -246,7 +257,8 @@ Machina's z, 2026-10-14)."
     (define-key map (kbd "i") #'efrit-agent-dashboard-diagnose)
     (define-key map (kbd "F") #'efrit-agent-dashboard-set-folder)
     (define-key map (kbd "e") #'efrit-agent-dashboard-eshell)
-    (define-key map (kbd "n") #'efrit-agent-dashboard-new-worktree)
+    (define-key map (kbd "n") #'efrit-agent-dashboard-new)
+    (define-key map (kbd "N") #'efrit-agent-dashboard-new-worktree)
     (define-key map (kbd "W") #'efrit-agent-dashboard-relocate)
     (define-key map (kbd "z") #'efrit-agent-dashboard-focus)
     (define-key map (kbd "]") #'efrit-agent-next-attention)
