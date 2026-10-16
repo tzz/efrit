@@ -314,17 +314,22 @@ no cp\"), so it changes course instead of stopping (tzz, 2026-10-16:
 \"the permissions prompt also should have an option to tell efrit
 what it's doing wrong\").  An empty line is a plain no."
   (interactive)
-  (let* ((req efrit-sandbox-ui--request)
-         (words (condition-case nil
-                    (read-string "Refuse, and tell the model: ")
-                  (quit nil))))
+  ;; Only the choice is recorded here.  Reading the line inside the
+  ;; suffix put a minibuffer under transient's post-command processing,
+  ;; which saw the answer still pending and reopened the menu over the
+  ;; prompt (2026-10-16).  `efrit-sandbox-ui--ask-with-menu' reads the
+  ;; words once the menu's recursive edit has ended.
+  (efrit-sandbox-ui--choose 'words))
+
+(defun efrit-sandbox-ui--read-refusal-words (req)
+  "Ask for the user's words after a `w' and store them in REQ.  Returns nil."
+  (let ((words (condition-case nil
+                   (read-string "Refuse, and tell the model: ")
+                 (quit nil))))
     (when (and (stringp words) (not (string-empty-p (string-trim words))))
       (setf (efrit-sandbox-request-feedback req) (string-trim words))
       (efrit-log 'info "sandbox: refused with words: %s" (string-trim words)))
-    (efrit-sandbox-ui--choose nil)
-    ;; `read-string' ran its own recursive edit, like the editor in
-    ;; `efrit-sandbox-ui-edit-then-allow': release the menu's wait here
-    (efrit-sandbox-ui--exit-recursive-edit)))
+    nil))
 
 (defun efrit-sandbox-ui--exit-recursive-edit ()
   "Leave the recursive edit that waits on the menu, if we are in it.
@@ -421,7 +426,11 @@ reopens; the user can walk away and find the question still there."
       (remove-hook 'transient-post-exit-hook #'efrit-sandbox-ui--exit-recursive-edit)
       (efrit-sandbox-ui--hide-details)
       (setq efrit-sandbox-ui--request nil)))
-  (if (eq efrit-sandbox-ui--answer 'pending) nil efrit-sandbox-ui--answer))
+  (pcase efrit-sandbox-ui--answer
+    ('pending nil)
+    ;; `w': the menu is gone, now ask for the words
+    ('words (efrit-sandbox-ui--read-refusal-words req))
+    (answer answer)))
 
 (defun efrit-sandbox-ui--ask-in-echo-area (req)
   "Fallback prompt in the echo area when no menu can be shown."

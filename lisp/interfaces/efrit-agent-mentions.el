@@ -48,6 +48,7 @@
 (declare-function efrit-agent--in-input-region-p "efrit-agent-core")
 (declare-function efrit-agent--get-input "efrit-agent-core")
 (declare-function efrit-agent--clear-input "efrit-agent-core")
+(declare-function efrit-agent-set-directory "efrit-agent-instances")
 (declare-function efrit-agent-new-conversation "efrit-agent-input")
 (declare-function efrit-agent-regenerate "efrit-agent-input")
 (declare-function efrit-preset-apply "efrit-presets")

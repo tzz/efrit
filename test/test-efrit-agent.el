@@ -167,6 +167,34 @@ folds back what it opened unless point is there."
         (should (eq isearch-filter-predicate #'efrit-agent--isearch-filter))
         (should (memq 'efrit-tool-body buffer-invisibility-spec))))))
 
+(ert-deftest test-efrit-agent-prompt-region-survives-tool-rerenders-and-folds ()
+  "A tool row's region never reaches past the conversation end, so a
+re-render (display hint, result update) cannot delete the separator,
+the prompt or typed input; and a stray `invisible' property on the tail
+is removed by the next render (2026-10-16: the bottom of the buffer went
+blank until the next send)."
+  (with-efrit-agent-test-buffer
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions)
+    (let* ((efrit-agent-display-mode 'minimal)
+           (id (efrit-agent--add-tool-call "eval_sexp" '(("expr" . "(+ 1 1)")))))
+      (test-efrit-agent--type "half-typed question")
+      ;; the last row in the buffer: without the clamp its region would
+      ;; run to point-max
+      (let ((region (efrit-agent--find-tool-region id)))
+        (should (<= (cdr region) (marker-position efrit-agent--conversation-end))))
+      (efrit-agent--update-tool-result id "two" t 0.1)
+      (should (equal "half-typed question" (efrit-agent--get-input-raw)))
+      (should (save-excursion (goto-char efrit-agent--input-start)
+                              (looking-back "> " (- (point) 2))))
+      (should (text-property-any (point-min) (point-max) 'efrit-agent-separator t))
+      ;; invisibility that leaks onto the tail is uncovered by a render
+      (let ((inhibit-read-only t))
+        (put-text-property efrit-agent--conversation-end (point-max) 'invisible 'efrit-tool-body))
+      (efrit-agent--append-to-conversation "note\n")
+      (should-not (text-property-not-all efrit-agent--conversation-end (point-max) 'invisible nil))
+      (should (equal "half-typed question" (efrit-agent--get-input-raw))))))
+
 (ert-deftest test-efrit-agent-copy-last-output-and-restart ()
   "Copy-last-output takes the newest answer wherever point is; restart
 gives a fresh session in the same windows and drops the queue."

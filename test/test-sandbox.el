@@ -24,7 +24,11 @@
           ;; the tests of those rules bind the lists back themselves
           (efrit-sandbox-expected-read-roots nil)
           (efrit-sandbox-expected-write-roots nil)
-          (efrit-sandbox-expected-shell-commands nil))
+          (efrit-sandbox-expected-shell-commands nil)
+          ;; grant mechanics are tested with plain lines (git log | head,
+          ;; rm x); the Emacs-does-it refusal has its own test, which binds
+          ;; this back on
+          (efrit-sandbox-shell-refuse-emacs-equivalents nil))
      (unwind-protect (progn ,@body)
        (delete-directory root t))))
 
@@ -1283,7 +1287,7 @@ not for/do/done/eval (2026-10-16: a grant was asked for \"for, do, eval\")."
   (should (equal '("echo") (efrit-sandbox-shell-commands "for v in a b c; do echo \"== $v\"; done")))
   (should (equal '("tmux" "sleep") (efrit-sandbox-shell-commands "eval tmux -L t display-menu x; sleep 0.3")))
   (should (equal '("ls") (efrit-sandbox-shell-commands "if [ -d x ]; then ls x; fi")))
-  (should (equal '("make") (efrit-sandbox-shell-commands "while true; do make; done"))))
+  (should (equal '("true" "make") (efrit-sandbox-shell-commands "while true; do make; done"))))
 
 (ert-deftest test-sb-shell-line-emacs-does-is-refused-with-the-lisp-named ()
   "A shell_exec line made only of commands Emacs does (date; cp; grep -c) is
@@ -1293,6 +1297,7 @@ about as before.  Asking for the shell by name in the request lifts the
 refusal.  The option turns it off."
   (test-sb--in-project
     (let* ((asked nil)
+           (efrit-sandbox-shell-refuse-emacs-equivalents t)
            (efrit-sandbox-request-function (lambda (req) (push (efrit-sandbox-request-target req) asked) nil))
            (line "date \"+%Y-%m-%d\"; cp /tmp/a.conf /tmp/a.conf.tested; grep -c . /tmp/a.conf"))
       (efrit-sandbox-begin-turn "review my tmux.conf")

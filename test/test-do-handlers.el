@@ -219,7 +219,7 @@ program is an error result, not a signal."
           (should (string-match-p "\\[Exit: 3\\]" result))
           (should (string-match-p "from-stdin" result))
           ;; the argv literal `$HOME' reached sh as the text, printed unexpanded
-          (should (string-match-p "^\\$HOME" result))
+          (should (string-match-p "\n\\$HOME\n" result))
           (should (equal '((shell "sh")) asked)))
         ;; second call: the grant covers sh, no new prompt
         (setq asked nil)
