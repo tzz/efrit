@@ -226,6 +226,31 @@ directory must be a Git tree; you confirm the change."
     (rename-buffer (efrit-agent-instance-buffer-name root name) t)
     (force-mode-line-update)))
 
+;;;###autoload
+(defun efrit-agent-set-directory (directory)
+  "Make DIRECTORY this agent's root: project root, working directory, buffer name.
+Every turn runs there (tools, shell, the sandbox's project grants).
+Set it when the agent came up in the wrong place (2026-10-16: an agent
+rooted in a Google Drive folder reviewing ~/.tmux.conf; every grant
+was saved against the wrong project).  Also `/cd DIR' in the input."
+  (interactive (list (read-directory-name "Agent directory: " nil nil t)))
+  (unless (derived-mode-p 'efrit-agent-mode) (user-error "Not an agent buffer"))
+  (let ((root (file-name-as-directory (expand-file-name directory))))
+    (unless (file-directory-p root) (user-error "Not a directory: %s" root))
+    (setq default-directory root)
+    (when efrit-agent--repl-session
+      (setf (efrit-repl-session-project-root efrit-agent--repl-session) root))
+    (let ((old (plist-get efrit-agent--instance :project)))
+      (setq efrit-agent--instance (plist-put (or efrit-agent--instance (list :number 1)) :project root))
+      (unless (member root efrit-agent--projects)
+        (setq efrit-agent--projects (append efrit-agent--projects (list root))))
+      (when (and old (not (equal old root)) (null (efrit-agent-instances old)))
+        (setq efrit-agent--projects (delete old efrit-agent--projects))))
+    (rename-buffer (efrit-agent-instance-buffer-name root (plist-get efrit-agent--instance :name)) t)
+    (force-mode-line-update)
+    (message "efrit: this agent now works in %s" (abbreviate-file-name root))
+    root))
+
 ;;;; Layout: side windows in slots
 
 (defun efrit-agent--slot (buffer)

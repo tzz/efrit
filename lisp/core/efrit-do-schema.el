@@ -124,14 +124,32 @@ NEVER call synchronous user-input functions (read-string, y-or-n-p, yes-or-no-p,
   ("properties" . (("expr" . (("type" . "string")
   ("description" . "The Elisp expression to evaluate")))))
   ("required" . ["expr"]))))
-   (("name" . "shell_exec")
-   ("description" . "Execute a shell command and return the result. ONLY use when user explicitly requests shell/terminal operations or external tools. NOT for searching, listing or reading files: use search_content, project_files, file_info, read_file (no permission prompt; a shell line asks the user).
+   (("name" . "run_program")
+    ("description" . "Run ONE external program with an argument array, no shell. Prefer this over shell_exec for any single command: the user is asked about the program name alone, so a grant on it covers every later call, and there is no quoting, redirection or substitution to get wrong. Output (stdout and stderr) and the exit code come back; do the filtering, counting and looping yourself or in eval_sexp. Use stdin to feed input instead of `echo X | prog'. Give a longer timeout for slow programs.
 
 EXAMPLES:
-- File system info: \"ls -la ~/Documents\"
-- Process management: \"ps aux | grep emacs\"
-- System commands: \"git status\" or \"make build\"
-- External tools: \"curl -s https://api.example.com\"
+- {\"program\": \"tmux\", \"args\": [\"-L\", \"t\", \"list-keys\", \"-T\", \"prefix\"]}
+- {\"program\": \"git\", \"args\": [\"status\", \"--short\"]}
+- {\"program\": \"python3\", \"args\": [\"-\"], \"stdin\": \"print(2+2)\"}
+
+NOT for searching, listing or reading files: use search_content, project_files, file_info, read_file (no permission prompt). NOT for Emacs operations: use eval_sexp.")
+    ("input_schema" . (("type" . "object")
+                       ("properties" . (("program" . (("type" . "string")
+                                                      ("description" . "Executable name (looked up in PATH) or path")))
+                                       ("args" . (("type" . "array")
+                                                  ("items" . (("type" . "string")))
+                                                  ("description" . "Arguments, one array element each, unquoted")))
+                                       ("stdin" . (("type" . "string")
+                                                   ("description" . "Text written to the program's standard input")))
+                                       ("timeout" . (("type" . "integer")
+                                                     ("description" . "Seconds before the program is killed (default 10, max 120)")))))
+                       ("required" . ["program"]))))
+   (("name" . "shell_exec")
+   ("description" . "Execute a shell command line and return the result. ONLY when the user asked for the shell, or the line needs the shell itself (a pipeline between two programs the model cannot replace, a glob the program must receive expanded). For one program, use run_program: it asks the user less. NOT for searching, listing or reading files: use search_content, project_files, file_info, read_file (no permission prompt; a shell line asks the user). Avoid redirection, substitution, loops and `eval': each makes the line one the user must read and approve by hand.
+
+EXAMPLES:
+- Pipelines between programs: \"ps aux | grep emacs\"
+- Build systems that want a shell: \"make build\"
 
 DO NOT USE for Emacs operations like opening files - use eval_sexp instead.")
      ("input_schema" . (("type" . "object")

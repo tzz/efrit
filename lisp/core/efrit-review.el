@@ -332,6 +332,8 @@ by the REPL is stripped so the reviewer reads what the user typed."
 (declare-function efrit-review-confidence-describe "efrit-review-confidence")
 (declare-function efrit-review-confidence-remember-grant "efrit-review-confidence")
 (declare-function efrit-sandbox-shell-commands "efrit-sandbox")
+(declare-function efrit-sandbox-shell-emacs-equivalents "efrit-sandbox")
+(declare-function efrit-sandbox-shell-emacs-does-it-p "efrit-sandbox")
 
 (defconst efrit-review--search-shell-commands
   '("rg" "grep" "egrep" "fgrep" "ag" "find" "fd" "ls" "cat" "head" "tail" "wc" "sort" "uniq"
@@ -361,6 +363,23 @@ effects), see efrit-review-flags."
            (when (and (equal (nth 1 use) "shell_exec") (hash-table-p input)
                       (efrit-review--shell-is-a-search-p (gethash "command" input)))
              (list "[FLAG shell: this line only searches, lists or reads files (rg/grep/find/ls/cat). The agent has search_content, project_files, file_info and read_file for that; they run without asking the user, the shell line asks. Reject and name the tool to use instead, unless the user asked for the shell.]"))
+           (when (and (member (nth 1 use) '("shell_exec" "run_program")) (hash-table-p input)
+                      (fboundp 'efrit-sandbox-shell-emacs-equivalents))
+             (let* ((line (if (equal (nth 1 use) "run_program")
+                              (mapconcat #'shell-quote-argument
+                                         (cons (gethash "program" input "")
+                                               (append (gethash "args" input) nil))
+                                         " ")
+                            (gethash "command" input)))
+                    (pairs (and (stringp line) (ignore-errors (efrit-sandbox-shell-emacs-equivalents line))))
+                    (all (and pairs (ignore-errors (efrit-sandbox-shell-emacs-does-it-p line)))))
+               (when (and pairs (not (efrit-review--shell-is-a-search-p line)))
+                 (list (format "[FLAG shell: Emacs does %s natively: %s. %s]"
+                               (if all "this whole line" "part of this line")
+                               (mapconcat (lambda (p) (format "%s -> %s" (car p) (cdr p))) pairs ", ")
+                               (if all
+                                   "The sandbox will refuse the line without asking the user; reject now and name the facilities, so the agent does not waste the call."
+                                 "The other program is the reason for the shell; approve on its merits, but tell the agent in your reason to drop the Emacs-replaceable parts next time."))))))
            (when (and (equal (nth 1 use) "shell_exec") (hash-table-p input)
                       (fboundp 'efrit-sandbox-shell-starts-emacs-p)
                       (efrit-sandbox-shell-starts-emacs-p (gethash "command" input)))

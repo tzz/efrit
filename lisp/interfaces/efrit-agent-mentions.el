@@ -448,6 +448,12 @@ typo should not cost a turn."
                                         (setq efrit-default-model args)
                                         (message "Model: %s" args))))
   (efrit-agent-define-slash-command "mode" "Cycle the tool display mode" (lambda (_) (efrit-agent-cycle-display-mode)))
+  (efrit-agent-define-slash-command "cd" "Work in another directory (/cd DIR, or choose)"
+                                    (lambda (args)
+                                      (require 'efrit-agent-instances)
+                                      (if (string-empty-p args)
+                                          (call-interactively #'efrit-agent-set-directory)
+                                        (efrit-agent-set-directory args))))
   (efrit-agent-define-slash-command "preset" "Apply a preset (/preset NAME, or choose)"
                                     (lambda (args)
                                       (require 'efrit-presets)

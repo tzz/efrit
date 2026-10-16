@@ -139,6 +139,12 @@ requests come from running it."
      ((equal name "shell_exec")
       (let ((line (funcall get "command")))
         (and (stringp line) (list (cons 'shell (string-trim line))))))
+     ((equal name "run_program")
+      (let ((program (funcall get "program")) (args (funcall get "args")))
+        (and (stringp program)
+             (list (cons 'shell (mapconcat #'shell-quote-argument
+                                           (cons program (and (or (vectorp args) (listp args)) (append args nil)))
+                                           " "))))))
      ((member name '("fetch_url" "web_search"))
       (when-let* ((host (efrit-review-confidence--url-host (or (funcall get "url") ""))))
         (list (cons 'net (cons 'host host)))))

@@ -253,6 +253,10 @@ Quoted text may hold separators (git commit -m \"a; b\"); `2>&1' holds
 an ampersand.  Escaped quotes are not understood: a line that still
 confuses the split asks for more than it needs, never less."
   (let ((s line))
+    ;; a backslash-escaped character is text: `\;' does not end a
+    ;; command and `\"' does not open a string (run_program lines are
+    ;; built with `shell-quote-argument', all backslashes)
+    (setq s (replace-regexp-in-string "\\\\." "_" s))
     (setq s (replace-regexp-in-string "\"[^\"]*\"" "\"\"" s))
     (setq s (replace-regexp-in-string "'[^']*'" "''" s))
     (setq s (replace-regexp-in-string "[0-9]*>&[0-9-]+" "" s))
@@ -265,13 +269,19 @@ confuses the split asks for more than it needs, never less."
   "Commands whose first non-option argument is itself a command to run.
 Both names are reported: the wrapper needs a grant too.")
 
+(defconst efrit-sandbox-shell--keywords
+  '("for" "in" "do" "done" "if" "then" "elif" "else" "fi" "while" "until" "case" "esac"
+    "select" "function" "{" "}" "!" "[" "[[" "]]" "eval")
+  "Words that are shell syntax, not programs.  `eval' runs the rest of
+its arguments as a line: the commands on it are already in the split.")
+
 (defun efrit-sandbox-shell--word-command (word)
   "WORD stripped of quotes and directory, or nil if it is not a command word."
   (let ((w (replace-regexp-in-string "\\`[\"']+\\|[\"']+\\'" "" word)))
     (cond
      ((string-empty-p w) nil)
      ((string-match-p "\\`[A-Za-z_][A-Za-z0-9_]*=" w) nil)   ; VAR=value
-     ((string-match-p "\\`[!\\[]\\'" w) nil)                 ; ! and [ are syntax
+     ((member w efrit-sandbox-shell--keywords) nil)
      (t (file-name-nondirectory w)))))
 
 (defun efrit-sandbox-shell--segment-commands (segment)
@@ -281,6 +291,11 @@ Both names are reported: the wrapper needs a grant too.")
       (let* ((word (pop words))
              (name (efrit-sandbox-shell--word-command word)))
         (cond
+         ;; `for v in a b', `case x in', `select v in': the rest of the
+         ;; segment is words, not a command
+         ((member word '("for" "case" "select")) (setq want-command nil))
+         ;; `[ -d x ]' and `[[ … ]]': operands follow, not a command
+         ((member word '("[" "[[")) (setq want-command nil))
          ((null name))                              ; assignment/redirect: keep looking
          ((string-prefix-p "-" name)                ; an option of a wrapper: skip
           nil)
@@ -378,7 +393,10 @@ the default is noise in the user's repository (tzz, 2026-10-07)."
   cap target tool detail
   ;; set by the prompt when the user edited the shell line or form
   ;; before allowing it; the tool runs the edited text instead
-  edited)
+  edited
+  ;; set by the prompt when the user refused with a reason: the words
+  ;; go to the model in the denial, so it learns what was wrong
+  feedback)
 
 ;;; Per-turn state, per session
 ;;
@@ -1047,6 +1065,21 @@ weighs this (`efrit-review-confidence'), the sandbox itself does not."
                              (string-match-p (concat "\\b" (regexp-quote name) "\\b") text))
                            (efrit-sandbox-shell-grant-names line)))))
 
+(defun efrit-sandbox--mentioned-shell-p (line)
+  "Non-nil when this turn's user text asked for shell LINE itself.
+Either the line appears verbatim, or every command on it is a word
+of the text (\"run date and ls for me\"): the user chose the shell,
+and the Emacs-does-it refusal does not apply."
+  (let ((text (efrit-sandbox--turn-get :user-text))
+        (case-fold-search t))
+    (and (stringp text)
+         (or (string-search (string-trim line) text)
+             (let ((names (efrit-sandbox-shell-commands line)))
+               (and names
+                    (cl-every (lambda (name)
+                                (string-match-p (concat "\\b" (regexp-quote name) "\\b") text))
+                              names)))))))
+
 (defun efrit-sandbox-shell-granted-commands (line root)
   "The grant-needing commands on LINE that a standing shell grant for ROOT covers."
   (let ((granted nil) (any nil))
@@ -1117,6 +1150,79 @@ temporary directory would also cover any checkout living under it."
                              (:face . shadow) (:kind . sandbox))))
     t))
 
+;;; Shell lines Emacs does natively
+;;
+;; tzz, 2026-10-16, after eight prompts in one tmux.conf review: "If
+;; Emacs can do a task, efrit should use Emacs for the task.  Shelling
+;; out is an anti-pattern."  Said many times before, in the system
+;; prompt and the tool descriptions, and the model kept running `cp',
+;; `date', `grep -c', `sleep'.  Words did not work; the sandbox now
+;; refuses such lines outright, before any prompt, and the denial
+;; names the primitive to use.  A line keeps the shell only when some
+;; command on it has no Emacs equivalent (tmux, make, python3): that
+;; program is the reason for the shell, and the user is asked about it
+;; as before.
+
+(defcustom efrit-sandbox-shell-emacs-equivalents
+  '(("cp" . "copy-file") ("mv" . "rename-file") ("rm" . "delete-file / delete-directory")
+    ("mkdir" . "make-directory") ("rmdir" . "delete-directory") ("ln" . "make-symbolic-link")
+    ("touch" . "set-file-times, or write-region with an empty string")
+    ("chmod" . "set-file-modes") ("date" . "format-time-string") ("sleep" . "sleep-for, or a timer")
+    ("echo" . "a string") ("printf" . "format") ("cat" . "read_file / insert-file-contents")
+    ("head" . "read_file, or seq-take on lines") ("tail" . "read_file, or last on lines")
+    ("wc" . "count-lines / length") ("grep" . "search_content, or string-match-p over lines")
+    ("rg" . "search_content") ("egrep" . "search_content") ("fgrep" . "search_content")
+    ("sed" . "edit_file, or replace-regexp-in-string") ("awk" . "split-string and a loop")
+    ("cut" . "split-string") ("tr" . "replace-regexp-in-string") ("sort" . "sort")
+    ("uniq" . "delete-dups / seq-uniq") ("diff" . "vcs_diff, or diff-no-select")
+    ("tee" . "write-region") ("basename" . "file-name-nondirectory") ("dirname" . "file-name-directory")
+    ("realpath" . "file-truename") ("readlink" . "file-symlink-p / file-truename")
+    ("pwd" . "default-directory") ("which" . "executable-find") ("env" . "getenv / process-environment")
+    ("test" . "file-exists-p, file-directory-p, file-readable-p") ("true" . "t") ("false" . "nil")
+    ("ls" . "project_files / file_info / directory-files") ("find" . "project_files / directory-files-recursively")
+    ("fd" . "project_files") ("stat" . "file-attributes") ("du" . "file-attributes over a tree")
+    ("df" . "file-system-info") ("cd" . "default-directory") ("seq" . "number-sequence")
+    ("xargs" . "mapc") ("yes" . "a loop") ("column" . "format with widths") ("nl" . "line numbers in a loop")
+    ("rev" . "reverse") ("tac" . "reverse on lines") ("expr" . "arithmetic") ("bc" . "arithmetic / calc")
+    ("hostname" . "system-name") ("whoami" . "user-login-name") ("uname" . "system-type / system-configuration")
+    ("open" . "browse-url / find-file") ("xdg-open" . "browse-url / find-file") ("pbcopy" . "kill-new")
+    ("pbpaste" . "current-kill") ("xclip" . "kill-new / current-kill") ("curl" . "fetch_url / url-retrieve")
+    ("wget" . "fetch_url / url-retrieve"))
+  "Shell commands and the Emacs facility that replaces each.
+A shell line made only of these is refused without a prompt: the
+model is told the facilities to use instead.  A line that also runs
+a program absent from this list is a real shell job and is asked
+about as usual.  Remove an entry to let that command through to the
+prompt again; add entries for tools you never want run from efrit."
+  :type '(alist :key-type string :value-type string)
+  :group 'efrit-sandbox)
+
+(defcustom efrit-sandbox-shell-refuse-emacs-equivalents t
+  "When non-nil, a shell line Emacs does natively is refused, not asked about.
+Nil keeps the old behaviour: such a line is asked about like any
+other, and the reviewer only sees the equivalents as a FLAG."
+  :type 'boolean
+  :group 'efrit-sandbox)
+
+(defun efrit-sandbox-shell-emacs-equivalents (line)
+  "The (COMMAND . FACILITY) pairs for the commands on shell LINE that Emacs does."
+  (delq nil (mapcar (lambda (n) (assoc n efrit-sandbox-shell-emacs-equivalents))
+                    (efrit-sandbox-shell-commands line))))
+
+(defun efrit-sandbox-shell-emacs-does-it-p (line)
+  "Non-nil when every command on shell LINE has an Emacs equivalent.
+Such a line has no reason to leave Emacs.  Nil for an empty line."
+  (and (stringp line)
+       (let ((names (efrit-sandbox-shell-commands line)))
+         (and names
+              (cl-every (lambda (n) (assoc n efrit-sandbox-shell-emacs-equivalents)) names)))))
+
+(defun efrit-sandbox-shell-emacs-refusal (line)
+  "The denial text for shell LINE that Emacs does natively."
+  (format "the shell is not needed for this: %s. Shelling out for what Emacs does is refused in this Emacs; do it with the tools or in eval_sexp, under the grants you already have."
+          (mapconcat (lambda (p) (format "%s -> %s" (car p) (cdr p)))
+                     (efrit-sandbox-shell-emacs-equivalents line) "; ")))
+
 (defun efrit-sandbox-shell-starts-emacs-p (line)
   "Non-nil when shell LINE runs an emacs binary (not emacsclient).
 A second Emacs is sometimes the right tool (a clean-Emacs test, a
@@ -1153,6 +1259,25 @@ With `efrit-sandbox-enabled' nil this is a no-op that returns t."
                 (list (efrit-sandbox-request-create
                        :cap cap :target ctarget :tool tool
                        :detail "the user asked a question this turn: answer it; do not change, run or evaluate anything"))))
+       ;; a shell line Emacs does natively (cp, date, grep, sed…) is
+       ;; refused before any grant or prompt: the denial names the
+       ;; facilities.  Only for shell_exec and run_program; a
+       ;; subprocess from eval_sexp is already Lisp calling a program
+       ((and (eq cap 'shell) efrit-sandbox-shell-refuse-emacs-equivalents
+             (member tool '("shell_exec" "run_program"))
+             (stringp ctarget)
+             (not (efrit-sandbox--mentioned-shell-p ctarget))
+             (efrit-sandbox-shell-emacs-does-it-p ctarget))
+        (efrit-log 'info "sandbox: shell line refused, Emacs does it: %s" ctarget)
+        (when (fboundp 'efrit-publish)
+          (efrit-publish 'note `((:text . ,(format "⛨ %s: refused, Emacs does this (%s)" tool
+                                                    (mapconcat #'car (efrit-sandbox-shell-emacs-equivalents ctarget) ", ")))
+                                 (:face . shadow) (:kind . sandbox)))
+          (efrit-publish 'sandbox-denied `((:cap . ,cap) (:target . ,ctarget) (:tool . ,tool))))
+        (signal 'efrit-sandbox-denied
+                (list (efrit-sandbox-request-create
+                       :cap cap :target ctarget :tool tool
+                       :detail (efrit-sandbox-shell-emacs-refusal ctarget)))))
        ((and (not (eq cap 'shell)) (efrit-sandbox--always-denied-p ctarget))
         (efrit-log 'warn "sandbox: %s on %s is always denied" cap ctarget)
         (signal 'efrit-sandbox-denied
@@ -1350,12 +1475,19 @@ render the row as a denial rather than a tool failure.")
 (defun efrit-sandbox-denied-tool-result (req)
   "The tool_result text (after `efrit-sandbox-denied-prefix') for a denied REQ.
 Says what was refused.  The turn continues: the model is told to go
-on without that access, not to retry it or route around it."
-  (format "%s%s. The user declined. Do not retry this or work around it (no other tool, no other path). Continue the task without it if you can; otherwise say what access you need and why, and stop."
-          (efrit-sandbox-describe-request req)
-          (if (efrit-sandbox-request-detail req)
-              (format " (%s)" (efrit-sandbox-request-detail req))
-            "")))
+on without that access, not to retry it or route around it.  When the
+user refused with words (the prompt's `w'), those words are the
+instruction: the model follows them instead of giving up."
+  (let ((feedback (efrit-sandbox-request-feedback req)))
+    (format "%s%s. The user declined%s"
+            (efrit-sandbox-describe-request req)
+            (if (efrit-sandbox-request-detail req)
+                (format " (%s)" (efrit-sandbox-request-detail req))
+              "")
+            (if (and (stringp feedback) (not (string-empty-p feedback)))
+                (format " and said: \"%s\". Follow that: do what they say instead, with the tools and Emacs facilities you have; do not retry this request as it was."
+                        feedback)
+              ". Do not retry this or work around it (no other tool, no other path). Continue the task without it if you can; otherwise say what access you need and why, and stop."))))
 
 (provide 'efrit-sandbox)
 

@@ -96,6 +96,7 @@
   '(;; Core execution tools
     ("eval_sexp"          . (efrit-do--handle-eval-sexp . :input-str))
     ("shell_exec"         . (efrit-do--handle-shell-exec . :input-str))
+    ("run_program"        . (efrit-do--handle-run-program . :tool-input))
     ;; TODO management tool
     ("todo_write" . (efrit-do--handle-todo-write . :tool-input))
     ;; Buffer and display tools

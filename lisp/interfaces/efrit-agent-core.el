@@ -364,6 +364,7 @@ input region as one insertion (see the commentary above)."
              (buffer-undo-list t)
              (inhibit-modification-hooks nil))
          (save-excursion ,@body))
+     (efrit-agent--uncover-tail)
      (efrit-agent--reset-undo-history)))
 
 (defun efrit-agent--reset-undo-history ()
@@ -376,6 +377,18 @@ A no-op when undo is disabled in the buffer."
                    (< efrit-agent--input-start (point-max)))
               (list (cons (marker-position efrit-agent--input-start) (point-max)))
             nil))))
+
+(defun efrit-agent--uncover-tail ()
+  "Make sure nothing from the conversation end onward is `invisible'.
+The separator, the prompt and the input are never folded text; a fold
+property that reached them hid the bottom of the buffer until the next
+send rewrote the prompt (2026-10-16).  Cheap, called after renders."
+  (when (and efrit-agent--conversation-end
+             (marker-position efrit-agent--conversation-end)
+             (text-property-not-all efrit-agent--conversation-end (point-max) 'invisible nil))
+    (let ((inhibit-read-only t) (buffer-undo-list t))
+      (efrit-log 'warn "agent: invisible text reached the prompt region; uncovered")
+      (remove-list-of-text-properties efrit-agent--conversation-end (point-max) '(invisible)))))
 
 (defun efrit-agent--seal-rendered (start end)
   "Mark START..END as rendered output: read-only, in the output field,

@@ -496,9 +496,19 @@ Returns (START . END) or nil if not found."
             (goto-char (or (next-single-property-change (point) 'efrit-id)
                            (point-max))))))
       (when start
-        ;; Find where this tool's properties end
+        ;; Find where this tool's properties end.  Never past the
+        ;; conversation end: a re-render deletes START..END, and a row
+        ;; whose end fell through to `point-max' would take the
+        ;; separator, the prompt and the user's typed input with it
+        ;; (2026-10-16: the bottom of an agent buffer vanished until
+        ;; the next send redrew the prompt)
         (setq end (or (next-single-property-change start 'efrit-id)
                       (point-max)))
+        (when (and efrit-agent--conversation-end
+                   (marker-position efrit-agent--conversation-end)
+                   (> end efrit-agent--conversation-end)
+                   (< start efrit-agent--conversation-end))
+          (setq end (marker-position efrit-agent--conversation-end)))
         (cons start end)))))
 
 (defun efrit-agent--compute-auto-expand (success-p result user-override)

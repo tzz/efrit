@@ -120,6 +120,29 @@ the project, not the directory of the buffer the user was looking at."
       (ignore-errors (delete-directory agent-dir t))
       (ignore-errors (delete-directory other-dir t)))))
 
+(ert-deftest test-wt-set-directory-moves-root-cwd-and-name ()
+  "`/cd DIR' (efrit-agent-set-directory) changes the agent's project root,
+its default-directory and its buffer name together."
+  (require 'efrit-agent-mentions)
+  (let* ((a (file-name-as-directory (make-temp-file "efrit-cd-a-" t)))
+         (b (file-name-as-directory (make-temp-file "efrit-cd-b-" t)))
+         (efrit-agent-auto-show nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'efrit-agent-display) (lambda (buf &rest _) buf)))
+          (let ((buf (efrit-agent-new-instance a "mover")))
+            (with-current-buffer buf
+              (should (string-match-p (regexp-quote (file-name-nondirectory (directory-file-name a))) (buffer-name)))
+              (efrit-agent-slash-run (format "/cd %s" b))
+              (should (equal b default-directory))
+              (should (equal b (efrit-repl-session-project-root efrit-agent--repl-session)))
+              (should (equal b (plist-get efrit-agent--instance :project)))
+              (should (string-match-p (regexp-quote (file-name-nondirectory (directory-file-name b))) (buffer-name)))
+              (should (string-match-p "mover" (buffer-name)))
+              (should-error (efrit-agent-set-directory "/nonexistent/efrit-cd") :type 'user-error))
+            (kill-buffer buf)))
+      (ignore-errors (delete-directory a t))
+      (ignore-errors (delete-directory b t)))))
+
 (provide 'test-agent-worktree)
 
 ;;; test-agent-worktree.el ends here

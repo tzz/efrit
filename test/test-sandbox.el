@@ -1277,6 +1277,64 @@ always-ask line still need every command covered or an exact grant."
     (efrit-sandbox-begin-turn "<editor-context>\npython3 things\n</editor-context>\nhello")
     (should-not (efrit-sandbox-shell-named-commands "python3 x.py"))))
 
+(ert-deftest test-sb-shell-split-skips-keywords-and-eval ()
+  "`for v in a b; do echo $v; done' and `eval tmux …' name echo and tmux,
+not for/do/done/eval (2026-10-16: a grant was asked for \"for, do, eval\")."
+  (should (equal '("echo") (efrit-sandbox-shell-commands "for v in a b c; do echo \"== $v\"; done")))
+  (should (equal '("tmux" "sleep") (efrit-sandbox-shell-commands "eval tmux -L t display-menu x; sleep 0.3")))
+  (should (equal '("ls") (efrit-sandbox-shell-commands "if [ -d x ]; then ls x; fi")))
+  (should (equal '("make") (efrit-sandbox-shell-commands "while true; do make; done"))))
+
+(ert-deftest test-sb-shell-line-emacs-does-is-refused-with-the-lisp-named ()
+  "A shell_exec line made only of commands Emacs does (date; cp; grep -c) is
+refused before any prompt, the denial names the facilities, and the
+user is not asked.  A line with a real program (tmux) on it is asked
+about as before.  Asking for the shell by name in the request lifts the
+refusal.  The option turns it off."
+  (test-sb--in-project
+    (let* ((asked nil)
+           (efrit-sandbox-request-function (lambda (req) (push (efrit-sandbox-request-target req) asked) nil))
+           (line "date \"+%Y-%m-%d\"; cp /tmp/a.conf /tmp/a.conf.tested; grep -c . /tmp/a.conf"))
+      (efrit-sandbox-begin-turn "review my tmux.conf")
+      (should (efrit-sandbox-shell-emacs-does-it-p line))
+      (should-not (efrit-sandbox-shell-emacs-does-it-p "tmux ls | grep x"))
+      (let ((err (should-error (efrit-sandbox-check 'shell line "shell_exec" line) :type 'efrit-sandbox-denied)))
+        (should (null asked))
+        (let ((text (efrit-sandbox-denied-tool-result (cadr err))))
+          (should (string-match-p "cp -> copy-file" text))
+          (should (string-match-p "date -> format-time-string" text))
+          (should (string-match-p "grep -> search_content" text))))
+      ;; eval_sexp's own subprocesses are not refused this way: Lisp
+      ;; calling a program is the recommended path
+      (should-error (efrit-sandbox-check 'shell "date +%F" "eval_sexp" "subprocess") :type 'efrit-sandbox-denied)
+      (should (equal 1 (length asked)))
+      ;; a real program on the line: asked, not refused
+      (setq asked nil)
+      (should-error (efrit-sandbox-check 'shell "tmux ls | grep x" "shell_exec" "tmux ls | grep x") :type 'efrit-sandbox-denied)
+      (should (equal '((shell "tmux" "grep")) asked))
+      ;; the user asked for the shell by name
+      (setq asked nil)
+      (efrit-sandbox-begin-turn "run `date +%F` for me please")
+      (should-error (efrit-sandbox-check 'shell "date +%F" "shell_exec" "date +%F") :type 'efrit-sandbox-denied)
+      (should asked)
+      ;; off: asked like any other line
+      (setq asked nil)
+      (efrit-sandbox-begin-turn "something")
+      (let ((efrit-sandbox-shell-refuse-emacs-equivalents nil))
+        (should-error (efrit-sandbox-check 'shell line "shell_exec" line) :type 'efrit-sandbox-denied)
+        (should asked)))))
+
+(ert-deftest test-sb-refusal-with-words-reaches-the-model ()
+  "The user's words at the prompt ride in the denial text as the instruction."
+  (let ((req (efrit-sandbox-request-create :cap 'shell :target '(shell "cp") :tool "shell_exec"
+                                           :detail "cp a b")))
+    (should (string-match-p "Do not retry this" (efrit-sandbox-denied-tool-result req)))
+    (setf (efrit-sandbox-request-feedback req) "use copy-file, not cp")
+    (let ((text (efrit-sandbox-denied-tool-result req)))
+      (should (string-match-p "said: \"use copy-file, not cp\"" text))
+      (should (string-match-p "Follow that" text))
+      (should-not (string-match-p "Do not retry this or work around it" text)))))
+
 (ert-deftest test-sb-mentioned-targets-are-expected-this-turn ()
   "Hosts and paths named in the user's own input are the work: fetching
 the article's URL, or its API on the same host, and reading the file
