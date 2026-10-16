@@ -725,6 +725,34 @@ nothing on another host."
     ;; the advice is inert outside a sandboxed eval
     (should (equal "ok\n" (shell-command-to-string "echo ok")))))
 
+(ert-deftest test-sb-eval-jka-compr-helper-is-not-the-model ()
+  "Reading a .gz file in the project from an eval runs gzip through
+jka-compr; that process is Emacs's, not a shell request of the model's
+\(2026-10-16: \"why the heck is it trying to do a shell decompress\").
+A gzip the form runs itself still asks."
+  (skip-unless (executable-find "gzip"))
+  (test-sb--in-project
+    (require 'jka-compr)
+    (let* ((plain (expand-file-name "notes.txt" root))
+           (gz (concat plain ".gz"))
+           ;; jka-compr's temp files are scratch writes (the macro binds
+           ;; the expected roots away; the default lists the temp dir)
+           (efrit-sandbox-expected-write-roots (eval (car (get 'efrit-sandbox-expected-write-roots 'standard-value)) t))
+           (asked nil)
+           (efrit-sandbox-request-function (lambda (req) (push (efrit-sandbox-request-target req) asked) nil)))
+      (with-temp-file plain (insert "compressed hello\n"))
+      (call-process "gzip" nil nil nil "-f" plain)
+      (should (file-exists-p gz))
+      (efrit-sandbox-grant 'elisp t 'session)
+      (auto-compression-mode 1)
+      (should (equal "compressed hello\n"
+                     (efrit-sandbox-eval-form
+                      `(with-temp-buffer (insert-file-contents ,gz) (buffer-string)))))
+      (should (null asked))
+      (should-error (efrit-sandbox-eval-form `(call-process "gzip" nil nil nil "-l" ,gz))
+                    :type 'efrit-sandbox-denied)
+      (should asked))))
+
 (ert-deftest test-sb-eval-native-compiler-is-not-the-model ()
   "A batch Emacs started from under `comp-trampoline-compile' (Emacs compiling
 a trampoline for an advised primitive) runs without a shell grant; the same

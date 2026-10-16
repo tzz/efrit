@@ -4,7 +4,7 @@
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
 ;; Maintainer: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.12.21
+;; Version: 0.12.22
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai, assistant, claude
 ;; URL: https://github.com/steveyegge/efrit

@@ -201,6 +201,32 @@ recognised and allowed regardless."
     comp--subr-trampoline-install comp-trampoline-search)
   "Functions on the stack when Emacs's native compiler is doing its own work.")
 
+(defconst efrit-sandbox-eval--emacs-helper-frames
+  '(jka-compr-call-process jka-compr-insert-file-contents jka-compr-write-region
+    jka-compr-file-local-copy jka-compr-load
+    epa-file-insert-file-contents epa-file-write-region epg--start
+    tramp-sh-handle-file-local-copy tramp-sh-handle-insert-file-contents
+    archive-extract archive-extract-by-stdout
+    auto-compression-mode
+    ;; packages that save alongside the file, through jka-compr
+    undo-fu-session--save-impl undo-fu-session-save undo-fu-session--save-safe
+    undo-fu-session--recover-impl undo-fu-session-recover undo-fu-session--recover-safe
+    basic-save-buffer save-buffer)
+  "Frames of Emacs file machinery that spawns a helper on the user's behalf.
+Visiting `notes.org.gz' runs `sh -c gzip -c -q' (jka-compr); a `.gpg'
+file runs gpg; a remote file over TRAMP runs ssh.  Those are how Emacs
+reads the file the model asked for, and the file itself already went
+through the file-name handler and its grant.  Asking about the helper
+told the user efrit wanted \"a shell decompress\" (tzz, 2026-10-16).")
+
+(defun efrit-sandbox-eval--emacs-helper-p ()
+  "The Emacs file-machinery frame on the stack, or nil."
+  (let ((frame nil))
+    (mapbacktrace (lambda (_evald func _args _flags)
+                    (when (and (not frame) (memq func efrit-sandbox-eval--emacs-helper-frames))
+                      (setq frame func))))
+    frame))
+
 (defun efrit-sandbox-eval--native-comp-p (&optional command)
   "Non-nil when the current operation is Emacs's native compiler, not the model.
 Calling any not-yet-compiled primitive-advised function makes Emacs
@@ -361,6 +387,12 @@ it decides how the argv is read out of ARGS."
          ((efrit-sandbox-eval--native-comp-p command)
           (efrit-log 'debug "sandbox: native compiler (%s) starts a batch Emacs; not the model's doing, allowed"
                      (efrit-sandbox-eval--native-comp-p command)))
+         ;; jka-compr, epa, TRAMP, archive-mode reading a file for the
+         ;; model: the file was checked; its helper process is Emacs's
+         ((efrit-sandbox-eval--emacs-helper-p)
+          (efrit-log 'debug "sandbox: %s runs %s for a file read/write; Emacs's doing, allowed"
+                     (efrit-sandbox-eval--emacs-helper-p)
+                     (if (stringp line) (truncate-string-to-width line 80 nil nil "…") "a process")))
          ;; The model starting another Emacs is never the right tool:
          ;; everything it needs is in this one.  Refused outright, no
          ;; prompt (tzz, 2026-10-15: "running an external emacs almost
