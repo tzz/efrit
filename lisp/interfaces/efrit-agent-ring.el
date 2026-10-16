@@ -477,10 +477,20 @@ NOW (a float time) is for tests."
           (efrit-agent-ring--reset-dwell)
           (efrit-agent-mark-read buf))))))
 
-(defun efrit-agent-ring--view-changed (&rest _)
-  (efrit-agent-ring-check-dwell))
-
 (defvar efrit-agent-ring--heartbeat nil)
+
+(defun efrit-agent-ring--view-changed (&rest _)
+  "Advance the dwell clock when the view changed.  On `post-command-hook'
+for every command in Emacs, so it must cost nothing when there is
+nothing to do: no agent buffer is unread, or the selected buffer is
+not an agent one and nothing is pinned (2026-10-16: a buffer-list walk
+plus `window-end' per keystroke made typing stutter)."
+  (when (or (buffer-local-value 'efrit-agent--unread (window-buffer (selected-window)))
+            efrit-agent-ring--dwell
+            (and efrit-agent-ring--heartbeat
+                 (cl-some (lambda (b) (buffer-local-value 'efrit-agent--unread-pinned b))
+                          (efrit-agent-buffers))))
+    (efrit-agent-ring-check-dwell)))
 
 (defun efrit-agent-ring--heartbeat-tick ()
   "Advance the dwell clock while an unread buffer is on screen and the user is still."

@@ -63,6 +63,8 @@
 (declare-function efrit-sandbox-host-under-p "efrit-sandbox")
 (declare-function efrit-review-flags-for-use "efrit-review-flags")
 (declare-function efrit-resolve-path-simple "efrit-tool-utils")
+(declare-function efrit-sandbox-symbolic-instructed "efrit-sandbox-symbolic")
+(declare-function efrit-sandbox-symbolic-path "efrit-sandbox-symbolic")
 (declare-function efrit-publish "efrit-events")
 (defvar efrit-sandbox-enabled)
 
@@ -89,6 +91,7 @@ yeses -- all recent.  Sixty days later each is worth half."
     (history-some . 0.35)       ; net > 0, below that
     (history-mixed . 0.10)      ; granted more than denied, but denied too
     (mentioned . 0.45)          ; the request names the target
+    (instructed . 1.20)         ; the user's instruction files name the path as a template; clears the line even for a write
     (read-only-shell . 0.35)    ; every command is in the read-only set
     (granted-commands . 0.25)   ; some grant-needing commands already have a shell grant
     (task-commands . 0.45)      ; every grant-needing command is named in the user's request
@@ -195,7 +198,11 @@ A fact named `blocked' means no score may grant this."
       (when (> no yes)
         (fact 'blocked (format "the user's refusals outweigh their grants (%.1f against %.1f, decayed)" no yes)))
       (when (and (eq cap 'write) (stringp target)
-                 (not (efrit-review-confidence--granted-repo-p target)))
+                 (not (efrit-review-confidence--granted-repo-p target))
+                 ;; a path the user's instruction files name is asked
+                 ;; for in writing: not an unknown place
+                 (not (and (require 'efrit-sandbox-symbolic nil t)
+                           (ignore-errors (efrit-sandbox-symbolic-instructed target)))))
         (fact 'blocked "a write outside every repository the user has granted before"))
       (when (and use (equal (nth 1 use) "eval_sexp"))
         (fact 'blocked "eval_sexp requests arise while it runs"))
@@ -214,6 +221,12 @@ A fact named `blocked' means no score may grant this."
              (fact 'history-mixed (efrit-review-confidence--history-words st))))
       (when (ignore-errors (efrit-sandbox--mentioned-p cap target))
         (fact 'mentioned "named in the user's request"))
+      ;; the user's instruction files name this path as a template:
+      ;; asked for in writing (efrit-sandbox-symbolic)
+      (when (and (memq cap '(read write buffer)) (stringp target))
+        (when-let* ((hit (and (require 'efrit-sandbox-symbolic nil t)
+                              (ignore-errors (efrit-sandbox-symbolic-instructed target)))))
+          (fact 'instructed (format "%s in %s" (car hit) (abbreviate-file-name (cdr hit))))))
       (when (and (eq cap 'shell) (ignore-errors (efrit-sandbox--expected-shell-line-p target)))
         (fact 'read-only-shell (format "only %s" (string-join (efrit-sandbox-shell-commands target) ", "))))
       ;; a shell line in context: which of its grant-needing commands
@@ -289,11 +302,19 @@ Only requests nothing covers are described: covered ones never prompt."
           (unless (ignore-errors (efrit-sandbox-allowed-p cap target))
             (let* ((facts (efrit-review-confidence-facts cap target use))
                    (score (efrit-review-confidence-score facts)))
-              (push (format "[SANDBOX would ask: %s %s | computed confidence %.2f | %s]"
+              (push (format "[SANDBOX would ask: %s %s%s | computed confidence %.2f | %s]"
                             cap
                             (cond ((stringp target) (efrit-sandbox-abbreviate target))
                                   ((consp target) (cdr target))
                                   (t target))
+                            ;; the pattern beside the literal, when they differ:
+                            ;; the reviewer judges "today's work log", the
+                            ;; sandbox grants the file (efrit-sandbox-symbolic)
+                            (or (and (stringp target) (require 'efrit-sandbox-symbolic nil t)
+                                     (let ((sym (ignore-errors (efrit-sandbox-symbolic-path target))))
+                                       (and sym (not (equal sym (efrit-sandbox-abbreviate target)))
+                                            (format " (pattern %s)" sym))))
+                                "")
                             score
                             (if facts
                                 (mapconcat (lambda (f) (if (cdr f) (format "%s: %s" (car f) (cdr f)) (symbol-name (car f))))

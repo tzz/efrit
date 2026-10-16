@@ -443,7 +443,10 @@ the target, whether the shell line is read-only, whether the path is in a reposi
 granted before; for a shell line, which commands the user already granted this session,
 which their request names (a request about tmux.conf makes tmux expected), and which are
 new.  Read the facts against the task: a command the task is about is not suspicious because
-it is outside the read-only set.  You may vouch for the user: add \"confidence\": C (0..1), how sure you are
+it is outside the read-only set.  A path may carry \"(pattern …)\": its generated parts (dates,
+ids) shown as placeholders, so ~/work/<date>/claude.org is one thing across days; judge the
+pattern.  The fact `instructed' means the user's own instruction files name that pattern: the
+user asked for the write before the session began.  You may vouch for the user: add \"confidence\": C (0..1), how sure you are
 the user would say yes, and \"grant\": \"once\" or \"session\".  C may not exceed S; S already
 counts the facts, you only lower it when the request itself gives reason (an odd target for
 the task, a command whose output the task does not need).  At or above the user's threshold

@@ -283,14 +283,26 @@ the model streams (copilot-chat's following-windows rule)."
                  (point-max))))
     (cl-remove-if-not
      (lambda (w)
-       (<= (count-lines (min (window-point w) end) end)
-           efrit-agent-follow-threshold))
+       ;; count at most threshold+1 lines back from the end, not the
+       ;; whole distance (a 100k transcript made this a visible pause)
+       (let ((from (min (window-point w) end)))
+         (and (>= from (save-excursion
+                         (goto-char end)
+                         (forward-line (- (1+ efrit-agent-follow-threshold)))
+                         (point)))
+              (<= (count-lines from end) efrit-agent-follow-threshold))))
      (get-buffer-window-list (current-buffer) nil t))))
 
-(defun efrit-agent--note-followers ()
+(defun efrit-agent--note-followers (&optional beg _end)
   "Record which windows are following, before text is inserted.
-Called from `before-change-functions' for this buffer."
-  (setq efrit-agent--follow-windows (efrit-agent--following-windows)))
+Called from `before-change-functions' for this buffer.  Only a change
+in the conversation counts: a keystroke in the input region is a
+change too, and counting lines over the whole transcript on every
+typed character made typing stutter (tzz, 2026-10-16)."
+  (when (and efrit-agent--conversation-end
+             (marker-position efrit-agent--conversation-end)
+             (or (null beg) (<= beg (marker-position efrit-agent--conversation-end))))
+    (setq efrit-agent--follow-windows (efrit-agent--following-windows))))
 
 (defun efrit-agent--scroll-to-bottom ()
   "Scroll only the windows that were already following the output.

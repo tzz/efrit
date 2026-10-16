@@ -706,6 +706,36 @@ an explicit grant (checked by `efrit-sandbox-check-buffer')."
 
 ;;; Granting
 
+(defcustom efrit-sandbox-dated-directory-regexps
+  '("\\`[0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}\\'"     ; 2026-10-16
+    "\\`[0-9]\\{4\\}-[0-9]\\{2\\}\\'"                 ; 2026-10
+    "\\`[0-9]\\{4\\}-W[0-9]\\{2\\}\\'"                ; 2026-W42
+    "\\`[0-9]\\{4\\}\\'"                              ; 2026
+    "\\`[0-9]\\{2\\}\\'"                              ; 10 (a month or day under a year)
+    "\\`[0-9]\\{8\\}\\'")                             ; 20261016
+  "Directory names that are dates: a slot, not a place.
+A grant suggested for a file under one covers the parent instead, so
+`~/work/2026-10-16/claude.org' asks once for `~/work/' and tomorrow's
+folder is covered (tzz, 2026-10-16: \"the permission I have to grant
+changes every day\").  Grant history is keyed the same way."
+  :type '(repeat regexp)
+  :group 'efrit-sandbox)
+
+(defun efrit-sandbox-dated-parent (directory)
+  "DIRECTORY with trailing date components removed, or DIRECTORY itself.
+`~/work/2026/10/16/' becomes `~/work/'.  Never above the home directory
+or the root; a dated name at the top of a path stays."
+  (let ((dir (file-name-as-directory directory))
+        (home (file-name-as-directory (expand-file-name "~"))))
+    (while (let ((name (file-name-nondirectory (directory-file-name dir)))
+                 (parent (file-name-directory (directory-file-name dir))))
+             (and parent
+                  (not (string= dir home)) (not (string= dir "/"))
+                  (not (string= parent "/"))
+                  (cl-some (lambda (re) (string-match-p re name)) efrit-sandbox-dated-directory-regexps)
+                  (setq dir parent))))
+    dir))
+
 (defun efrit-sandbox--suggest-target (cap target root)
   "The target a grant should carry for CAP on TARGET: narrow, not wide.
 For a path outside the root, suggest its directory (so the next file
@@ -746,7 +776,8 @@ write."
          ;; meant, and asking per subdirectory trained them to say yes
          ;; without looking.  Never above $HOME.
          ((efrit-sandbox-repo-of target))
-         (t dir))))))
+         ;; a dated folder: its parent, so the grant outlives the day
+         (t (efrit-sandbox-dated-parent dir)))))))
 
 (declare-function efrit-review-confidence-take-grant "efrit-review-confidence")
 (declare-function efrit-grant-history-record "efrit-grant-history")
@@ -954,6 +985,7 @@ the variable to nil to mean \"deny without asking\": no fallback there."
            #'efrit-sandbox-ui-prompt)))
 
 (declare-function efrit-sandbox-ui-prompt "efrit-sandbox-ui")
+(declare-function efrit-sandbox-symbolic-instructed "efrit-sandbox-symbolic")
 
 ;;; Expected requests
 ;;
@@ -1102,6 +1134,14 @@ The reason is a short string for the transcript note."
      ((and (stringp target) (efrit-sandbox-remote-p target)) nil)
      ;; the user named it in this turn's input: it is the work
      ((efrit-sandbox--mentioned-p cap target) "named in your request")
+     ;; the user's instruction files name it as a template
+     ;; (~/work/YYYY-MM-DD/claude.org): asked for in writing, before
+     ;; the session began (efrit-sandbox-symbolic, 2026-10-16)
+     ((when-let* ((hit (and (memq cap '(read write buffer)) (stringp target)
+                            (not (efrit-sandbox--always-denied-p target))
+                            (require 'efrit-sandbox-symbolic nil t)
+                            (efrit-sandbox-symbolic-instructed target root))))
+        (format "%s in your instructions (%s)" (car hit) (abbreviate-file-name (cdr hit)))))
      ;; the project's own files are the project's business, never scratch
      ((and (memq cap '(read write)) (stringp target) (efrit-sandbox--under-p target root)) nil)
      ((and (eq cap 'read) (stringp target)

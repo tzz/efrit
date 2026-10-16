@@ -132,11 +132,18 @@ it still shows an agent."
         (when (efrit-agent-tab-line-agent-p (window-buffer window))
           (set-window-dedicated-p window was-dedicated))))))
 
+(defvar efrit-agent-tab-line--generation 0
+  "Bumped whenever an agent's state, name or existence changes.
+Part of the tab-line cache key.  The key function runs at every
+redisplay of every window; walking the buffer list and asking each
+agent its state there made typing stutter (2026-10-16).")
+
 (defun efrit-agent-tab-line--cache-key (keys)
-  "KEYS plus the agents' states, so a state change redraws."
-  (append keys (list (mapcar (lambda (b) (cons b (efrit-agent-tab-line-state b))) (efrit-agent-ring)))))
+  "KEYS plus the agents' generation, so a state change redraws."
+  (append keys (list efrit-agent-tab-line--generation)))
 
 (defun efrit-agent-tab-line--refresh (&rest _)
+  (cl-incf efrit-agent-tab-line--generation)
   (when (fboundp 'tab-line-force-update)
     (tab-line-force-update t)))
 

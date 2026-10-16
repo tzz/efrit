@@ -5,6 +5,7 @@
 (require 'ert)
 (require 'efrit-sandbox)
 (require 'efrit-sandbox-store)
+(require 'efrit-grant-history)
 (require 'efrit-sandbox-eval)
 
 (defmacro test-sb--in-project (&rest body)
@@ -1339,6 +1340,34 @@ refusal.  The option turns it off."
       (should (string-match-p "said: \"use copy-file, not cp\"" text))
       (should (string-match-p "Follow that" text))
       (should-not (string-match-p "Do not retry this or work around it" text)))))
+
+(ert-deftest test-sb-dated-folders-grant-and-remember-the-parent ()
+  "A file under ~/work/2026-10-16/ asks for ~/work/; the grant covers
+tomorrow's folder; the history key is the parent too.  A date at the
+top of a path, or $HOME itself, is left alone."
+  (let* ((home (file-name-as-directory (expand-file-name "~")))
+         (work (expand-file-name "work/" home)))
+    (should (equal work (efrit-sandbox-dated-parent (expand-file-name "2026-10-16/" work))))
+    (should (equal work (efrit-sandbox-dated-parent (expand-file-name "2026/10/16/" work))))
+    (should (equal work (efrit-sandbox-dated-parent (expand-file-name "2026-W42/" work))))
+    (should (equal (expand-file-name "notes/" work) (efrit-sandbox-dated-parent (expand-file-name "notes/" work))))
+    (should (equal home (efrit-sandbox-dated-parent home)))
+    (should (equal "/2026/" (efrit-sandbox-dated-parent "/2026/"))))
+  (test-sb--in-project
+    (let* ((base (file-name-as-directory (make-temp-file "efrit-dated-" t)))
+           (today (expand-file-name "2026-10-16/" base))
+           (tomorrow (expand-file-name "2026-10-17/" base))
+           (seen nil)
+           (efrit-sandbox-request-function (lambda (req) (setq seen (efrit-sandbox-request-target req)) 'session)))
+      (make-directory today) (make-directory tomorrow)
+      (unwind-protect
+          (progn
+            (should (efrit-sandbox-check 'write (expand-file-name "claude.org" today) "edit_file"))
+            (should (equal (efrit-sandbox-canonical base) seen))
+            (should (efrit-sandbox-allowed-p 'write (expand-file-name "claude.org" tomorrow)))
+            (should (equal (efrit-grant-history-pattern 'write (expand-file-name "x" today))
+                           (efrit-grant-history-pattern 'write (expand-file-name "x" tomorrow)))))
+        (delete-directory base t)))))
 
 (ert-deftest test-sb-mentioned-targets-are-expected-this-turn ()
   "Hosts and paths named in the user's own input are the work: fetching
