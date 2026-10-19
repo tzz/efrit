@@ -163,5 +163,52 @@ the handler is on `dnd-protocol-alist' of the agent buffer."
       (should-error (efrit-agent-dnd-handle (list (concat "file://" root)) 'copy) :type 'user-error)
       (kill-buffer))))
 
+(ert-deftest test-mentions-paste-image-from-clipboard ()
+  "A pasted image (the `yank-media' handler) is written under .efrit/dropped
+and mentioned with a preview; the handler is registered in the agent
+buffer; C-y in the input falls back to `yank' when the clipboard holds no
+image; the API block for the mention carries the bytes."
+  (skip-unless (fboundp 'yank-media-handler))
+  (test-mentions--with-project
+    (with-current-buffer (efrit-agent--get-buffer)
+      (let ((inhibit-read-only t)) (erase-buffer))
+      (efrit-agent-mode)
+      (efrit-agent--init-regions)
+      (efrit-agent--setup-regions)
+      (should (assoc "image/.*" yank-media--registered-handlers))
+      ;; no paste keys of efrit's own: `yank' is advised instead
+      (should-not (lookup-key efrit-agent-input-mode-map (kbd "C-y")))
+      (should (advice-member-p #'efrit-agent-paste--around-yank 'yank))
+      ;; a tiny real PNG (1x1), unibyte
+      (let* ((png (string-to-unibyte
+                   (base64-decode-string "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")))
+             (file (efrit-agent-paste-image png 'image/png)))
+        (should (file-exists-p file))
+        (should (string-match-p "/\\.efrit/dropped/paste-[0-9]+-[0-9]+-[0-9a-f]+\\.png\\'" file))
+        (should (string-match-p "@\\.efrit/dropped/paste-" (efrit-agent--get-input)))
+        ;; the API block needs an image-capable Emacs (`image-supported-file-p');
+        ;; the batch build here has none, so only check it where it can work
+        (when (image-type-available-p 'png)
+          (let ((blocks (efrit-agent-mentions-content-blocks (efrit-agent--get-input))))
+            (should (= 1 (length blocks)))
+            (should (equal "image/png" (alist-get 'media_type (alist-get 'source (car blocks))))))))
+      ;; an image on the clipboard: any `yank' in the input pastes it
+      (cl-letf (((symbol-function 'efrit-agent-paste--clipboard-has-image-p) (lambda () t))
+                ((symbol-function 'yank-media) (lambda (&rest _) (insert "MEDIA"))))
+        (goto-char (point-max))
+        (let ((current-prefix-arg nil)) (yank)))
+      (should (string-match-p "MEDIA" (efrit-agent--get-input)))
+      ;; none: the ordinary yank
+      (kill-new "YANKED")
+      (cl-letf (((symbol-function 'efrit-agent-paste--clipboard-has-image-p) (lambda () nil)))
+        (goto-char (point-max))
+        (let ((current-prefix-arg nil)) (yank)))
+      (should (string-match-p "YANKED" (efrit-agent--get-input)))
+      ;; outside the input region yank is untouched even with an image
+      (cl-letf (((symbol-function 'efrit-agent-paste--clipboard-has-image-p) (lambda () t))
+                ((symbol-function 'yank-media) (lambda (&rest _) (error "must not"))))
+        (with-temp-buffer (kill-new "plain") (yank) (should (equal "plain" (buffer-string)))))
+      (kill-buffer))))
+
 (provide 'test-agent-mentions)
 ;;; test-agent-mentions.el ends here

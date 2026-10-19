@@ -39,6 +39,9 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'dnd)
+(require 'image)
+(declare-function image-convert "image-converter")
+(declare-function image-convert-p "image-converter")
 (require 'efrit-log)
 (require 'efrit-tool-utils)
 (require 'efrit-vcs)
@@ -48,6 +51,7 @@
 (declare-function efrit-agent--in-input-region-p "efrit-agent-core")
 (declare-function efrit-agent--get-input "efrit-agent-core")
 (declare-function efrit-agent--clear-input "efrit-agent-core")
+(declare-function efrit-agent--in-input-region-p "efrit-agent-core")
 (declare-function efrit-agent-set-directory "efrit-agent-instances")
 (declare-function efrit-agent-new-conversation "efrit-agent-input")
 (declare-function efrit-agent-regenerate "efrit-agent-input")
@@ -467,6 +471,7 @@ typo should not cost a turn."
   (efrit-agent-define-slash-command "collapse" "Collapse every tool row" (lambda (_) (efrit-agent-collapse-all)))
   (efrit-agent-define-slash-command "prompts" "The prompt library" (lambda (_) (efrit-prompts-manage)))
   (efrit-agent-define-slash-command "permissions" "Sandbox grants, review, limits" (lambda (_) (efrit-permissions)))
+  (efrit-agent-define-slash-command "paste" "Paste the clipboard image as a mention" (lambda (_) (efrit-agent-paste-dwim)))
   (efrit-agent-define-slash-command "menu" "The efrit menu" (lambda (_) (efrit-menu)))
   (efrit-agent-define-slash-command "doctor" "Check the setup" (lambda (_) (efrit-doctor))))
 
@@ -535,6 +540,113 @@ The OS deletes a dragged screenshot soon after the drop."
                         ("^file:[^/]" . efrit-agent-dnd-handle))
                       (cl-remove 'efrit-agent-dnd-handle dnd-protocol-alist :key #'cdr))))
 
+;;;; Pasting images
+;;
+;; A screenshot in the clipboard (Cmd-Ctrl-Shift-4 on macOS, a snip
+;; tool on Linux) is `image/png' on X and PGTK, `image/png' or
+;; `image/tiff' on NS (Emacs 29+ `yank-media').  The bytes go to a
+;; file under `<project>/.efrit/dropped/', the same place a dragged
+;; screenshot is kept, and the file becomes an image mention with a
+;; preview, exactly as a drop does.  C-y in the input tries the
+;; clipboard's media first and falls back to the ordinary yank, so
+;; one key pastes text or picture (tzz, 2026-10-19).
+
+(defcustom efrit-agent-paste-image-format 'png
+  "Format pasted images are stored in.  TIFF from the macOS clipboard is
+converted with `image-convert' when the image library can; otherwise it
+is kept as TIFF, which the API does not accept, and the mention says so."
+  :type '(choice (const png) (const jpeg))
+  :group 'efrit-agent-mentions)
+
+(defun efrit-agent-paste--dropped-dir ()
+  "The directory pasted and dropped files are kept in."
+  (let ((root (or (ignore-errors (efrit-tool--get-project-root)) default-directory)))
+    (expand-file-name ".efrit/dropped/" root)))
+
+(defun efrit-agent-paste--write-image (data mime)
+  "Write image DATA (a unibyte string of MIME type) to a new file; return its path.
+TIFF is converted to `efrit-agent-paste-image-format' when
+`image-convert' is available (ImageMagick or GraphicsMagick)."
+  (let* ((dir (efrit-agent-paste--dropped-dir))
+         (ext (pcase mime
+                ("image/png" "png") ("image/jpeg" "jpg") ("image/gif" "gif")
+                ("image/webp" "webp") ("image/tiff" "tiff") ("image/bmp" "bmp")
+                (_ "img")))
+         (stamp (format "%s-%s" (format-time-string "%Y%m%d-%H%M%S") (substring (md5 data) 0 6)))
+         (path (expand-file-name (format "paste-%s.%s" stamp ext) dir)))
+    (make-directory dir t)
+    (let ((coding-system-for-write 'binary))
+      (with-temp-file path (set-buffer-multibyte nil) (insert data)))
+    ;; the API takes png/jpeg/gif/webp; convert the rest when we can
+    (if (and (member ext '("tiff" "bmp" "img"))
+             (fboundp 'image-convert-p)
+             (ignore-errors (image-convert-p path efrit-agent-paste-image-format)))
+        (let* ((converted (ignore-errors (image-convert path efrit-agent-paste-image-format)))
+               (dest (concat (file-name-sans-extension path) "." (if (eq efrit-agent-paste-image-format 'jpeg) "jpg" "png"))))
+          (if (and converted (image-property converted :data))
+              (progn
+                (let ((coding-system-for-write 'binary))
+                  (with-temp-file dest (set-buffer-multibyte nil) (insert (image-property converted :data))))
+                (delete-file path)
+                dest)
+            path))
+      path)))
+
+(defun efrit-agent-paste-image (data mime)
+  "`yank-media' handler: keep the image DATA of MIME under the project, mention it."
+  (let ((file (efrit-agent-paste--write-image data (if (symbolp mime) (symbol-name mime) mime))))
+    (unless (efrit-agent--in-input-region-p)
+      (goto-char (point-max)))
+    (efrit-agent-dnd--insert-mention file)
+    (when (member (file-name-extension file) '("tiff" "bmp" "img"))
+      (message "efrit: pasted as %s; the model accepts png/jpeg/gif/webp, install ImageMagick for conversion"
+               (file-name-extension file)))
+    file))
+
+(defun efrit-agent-paste-dwim ()
+  "Paste: an image from the clipboard when there is one, else the ordinary `yank'.
+`/paste' and M-x; the keys need nothing: `yank' itself does this in the
+input (`efrit-agent-paste--around-yank')."
+  (interactive)
+  (if (efrit-agent-paste--clipboard-has-image-p)
+      (yank-media)
+    (call-interactively #'yank)))
+
+(defun efrit-agent-paste--around-yank (orig &rest args)
+  "Around `yank': in an agent input with an image on the clipboard, paste the image.
+Every paste key the user has reaches `yank' in the end (C-y,
+`cua-paste' on C-v / S-insert / Command-v, `mouse-yank-primary',
+`clipboard-yank'), so this is the one place to look, and efrit binds
+no paste keys of its own (tzz, 2026-10-19: \"Efrit shouldn't need
+special code if I already have that as paste\").  A prefix argument
+means the plain yank, with its own meaning kept."
+  (if (and (null current-prefix-arg)
+           (derived-mode-p 'efrit-agent-mode)
+           (efrit-agent--in-input-region-p)
+           (efrit-agent-paste--clipboard-has-image-p))
+      (yank-media)
+    (apply orig args)))
+
+(advice-add 'yank :around #'efrit-agent-paste--around-yank)
+
+(defun efrit-agent-paste--clipboard-has-image-p ()
+  "Non-nil when the clipboard offers an image type Emacs can read."
+  (and (display-graphic-p)
+       (fboundp 'yank-media)
+       (ignore-errors
+    (cl-some (lambda (type)
+               (let ((name (symbol-name type)))
+                 (and (string-prefix-p "image/" name)
+                      (image-type-available-p
+                       (intern (let ((sub (substring name 6)))
+                                 (if (string= sub "svg+xml") "svg" sub)))))))
+             (gui-get-selection 'CLIPBOARD 'TARGETS)))))
+
+(defun efrit-agent-paste-enable ()
+  "Register the image handler for `yank-media' in this buffer."
+  (when (fboundp 'yank-media-handler)
+    (yank-media-handler "image/.*" #'efrit-agent-paste-image)))
+
 ;;;; Wiring
 
 (defun efrit-agent-mentions-setup ()
@@ -544,7 +656,8 @@ The OS deletes a dragged screenshot soon after the drop."
   ;; stops at "#"
   (add-hook 'completion-at-point-functions #'efrit-agent-mention-symbol-completion-at-point -6 t)
   (add-hook 'completion-at-point-functions #'efrit-agent-mention-completion-at-point -5 t)
-  (efrit-agent-dnd-enable))
+  (efrit-agent-dnd-enable)
+  (efrit-agent-paste-enable))
 
 (provide 'efrit-agent-mentions)
 
