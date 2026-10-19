@@ -69,6 +69,30 @@ If nil, use `M-x efrit-agent' to open the buffer manually."
                  (const :tag "Verbose" verbose))
   :group 'efrit-agent)
 
+(defcustom efrit-agent-max-line-length 1000
+  "Longest line, in characters, rendered from a tool input or result.
+Longer lines are cut and end in a dim marker with the number of
+characters dropped; `w' on the row still copies the full output.
+A single line above `long-line-threshold' (50000) makes Emacs switch
+the whole agent buffer to long-line display shortcuts, which clip the
+left edge of every row; a 213069-character fetch_url result did that
+on 2026-10-19.  Lines in the low thousands only wrap into unreadable
+blocks.  Raise this if you read minified or JSON results in place."
+  :type 'natnum
+  :group 'efrit-agent)
+
+(defun efrit-agent--clip-line (line)
+  "LINE cut to `efrit-agent-max-line-length' characters, or LINE unchanged.
+The cut line ends in a dim marker with the number of characters dropped.
+Text properties of LINE are kept; callers apply their face first."
+  (let ((max efrit-agent-max-line-length))
+    (if (<= (length line) max)
+        line
+      (concat (substring line 0 max)
+              (propertize (format " … +%d chars" (- (length line) max))
+                          'face 'shadow
+                          'help-echo "Line cut at `efrit-agent-max-line-length'; `w' copies the full output")))))
+
 (defcustom efrit-agent-display-style 'unicode
   "Display style for the agent buffer.
 - unicode: Use Unicode box-drawing characters and symbols

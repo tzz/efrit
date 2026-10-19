@@ -809,6 +809,45 @@ animate.  thinking-stop clears both."
             (setq has-diff-face t)))
         (should-not has-diff-face)))))
 
+(ert-deftest test-efrit-agent-clip-line ()
+  "A line over `efrit-agent-max-line-length' is cut and ends in a count marker.
+Short lines come back as they are, with their properties."
+  (let ((efrit-agent-max-line-length 20))
+    (let ((short (propertize "abc" 'face 'bold)))
+      (should (eq short (efrit-agent--clip-line short))))
+    (should (equal "" (efrit-agent--clip-line "")))
+    (let* ((long (propertize (make-string 100 ?x) 'face 'bold))
+           (cut (efrit-agent--clip-line long)))
+      (message "clip-line: %d chars -> %S" (length long) cut)
+      (should (string-prefix-p (make-string 20 ?x) cut))
+      (should (string-suffix-p "+80 chars" cut))
+      (should (< (length cut) 40))
+      ;; the kept text keeps the caller's face, the marker is dim
+      (should (eq (get-text-property 0 'face cut) 'bold))
+      (should (eq (get-text-property (1- (length cut)) 'face cut) 'shadow)))))
+
+(ert-deftest test-efrit-agent-expansion-clips-long-single-line-result ()
+  "A 100k single-line result stays under `long-line-threshold' when rendered.
+A fetch_url result of 213069 characters on one line put the whole
+agent buffer into long-line display mode (2026-10-19)."
+  (let* ((efrit-agent-verbosity 'normal)
+         (efrit-agent-show-diff t)
+         (result (concat "{\"content\":\"" (make-string 100000 ?a) "\"}"))
+         (expansion (efrit-agent--format-tool-expansion nil result t))
+         (longest (apply #'max (mapcar #'length (split-string expansion "\n")))))
+    (message "expansion: longest line %d, max %d" longest efrit-agent-max-line-length)
+    (should (< longest (+ efrit-agent-max-line-length 40)))
+    (should (string-match-p "\\+[0-9]+ chars" expansion))))
+
+(ert-deftest test-efrit-agent-diff-lines-are-clipped ()
+  "Diff lines go through the same cap; the face survives the cut."
+  (let* ((efrit-agent-max-line-length 30)
+         (line (concat "+" (make-string 200 ?y)))
+         (out (efrit-agent--format-diff-line line "")))
+    (should (< (length out) 70))
+    (should (string-match-p "\\+170 chars" out))
+    (should (eq (get-text-property 2 'face out) 'efrit-agent-diff-added))))
+
 (ert-deftest test-efrit-agent-prompt-cannot-be-deleted ()
   "Backspace at the start of the input, or a kill over the prompt, is refused.
 The prompt text is read-only with front-sticky read-only, both at

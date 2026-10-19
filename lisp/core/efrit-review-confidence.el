@@ -119,7 +119,7 @@ read-only pulls the line down."
 ;;;; The request a tool call would make
 
 (defconst efrit-review-confidence--path-tools
-  '(("read_file" read "path") ("file_info" read "paths") ("search_content" read "path")
+  '(("read_file" read "path") ("read_file" read "paths") ("project_outline" read "path") ("file_info" read "paths") ("search_content" read "path")
     ("project_files" read "path") ("edit_file" write "path") ("create_file" write "path")
     ("format_file" write "path") ("undo_edit" write "path") ("show_location" read "file")
     ("imenu_symbols" read "file") ("xref_references" read "file") ("xref_apropos" read "file")
@@ -154,7 +154,9 @@ requests come from running it."
      ((member name '("edit_buffer" "editor_state")) nil)
      ((equal name "eval_sexp") nil)
      (t
-      (when-let* ((spec (assoc name efrit-review-confidence--path-tools)))
+      (when-let* ((spec (or (and (equal name "read_file") (funcall get "paths")
+                                 '("read_file" read "paths"))
+                            (assoc name efrit-review-confidence--path-tools))))
         (let* ((cap (nth 1 spec)) (key (nth 2 spec)) (v (funcall get key))
                (paths (cond ((stringp v) (list v))
                             ((vectorp v) (append v nil))

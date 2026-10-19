@@ -237,6 +237,14 @@ evals by the effects of the form; shell lines by what they start."
                                                    (efrit-review-flags--own-prefixes path)))))
             ("eval_sexp"
              (efrit-review-flags--text-effects (or (funcall get "expr") "") nil))
+            ;; loading a file runs its top level: judged like an eval
+            ;; of its contents, with its own prefix as its own
+            ("load_project_file"
+             (let ((path (funcall get "path")))
+               (when (and (stringp path) (file-readable-p (expand-file-name path)))
+                 (efrit-review-flags--text-effects
+                  (with-temp-buffer (insert-file-contents (expand-file-name path)) (buffer-string))
+                  (efrit-review-flags--own-prefixes path)))))
             (_ nil))))
     (let ((lines (mapcar (lambda (e) (format "[FLAG %s: %s]" (car e) (cdr e))) (delete-dups effects))))
       (if (> (length lines) efrit-review-flags-max)

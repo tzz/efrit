@@ -70,6 +70,10 @@
 (declare-function efrit-tool-project-files "efrit-tool-project-files")
 (declare-function efrit-tool-search-content "efrit-tool-search-content")
 (declare-function efrit-tool-read-file "efrit-tool-read-file")
+(declare-function efrit-tool-read-files "efrit-tool-outline")
+(declare-function efrit-tool-project-outline "efrit-tool-outline")
+(declare-function efrit-tool-load-project-file "efrit-tool-lisp-dev")
+(declare-function efrit-tool-run-ert "efrit-tool-lisp-dev")
 (declare-function efrit-tool-undo-edit "efrit-tool-undo-edit")
 (declare-function efrit-tool-edit-file "efrit-tool-edit-file")
 (declare-function efrit-tool-create-file "efrit-tool-create-file")
@@ -858,12 +862,45 @@ Returns JSON-encoded list of checkpoint metadata."
   :fn efrit-tool-search-content
   :label "Search Content Result")
 
-(efrit-define-simple-tool-handler efrit-do--handle-read-file "read_file"
+(efrit-define-simple-tool-handler efrit-do--handle-read-file-1 "read_file"
   :require efrit-tool-read-file
   :required ("path")
   :fields ("path" "start_line" "end_line" "encoding" "max_size")
   :fn efrit-tool-read-file
   :label "Read File Result")
+
+(efrit-define-optional-input-handler efrit-do--handle-read-files "read_file"
+  :require efrit-tool-outline
+  :fields ("paths" "budget")
+  :fn efrit-tool-read-files
+  :label "Read Files Result")
+
+(defun efrit-do--handle-read-file (tool-input)
+  "read_file: one path with an optional range, or several paths whole (efrit-tool-outline)."
+  (if (and (hash-table-p tool-input)
+           (let ((paths (gethash "paths" tool-input)))
+             (and paths (> (length paths) 0))))
+      (efrit-do--handle-read-files tool-input)
+    (efrit-do--handle-read-file-1 tool-input)))
+
+(efrit-define-simple-tool-handler efrit-do--handle-load-project-file "load_project_file"
+  :require efrit-tool-lisp-dev
+  :required ("path")
+  :fields ("path")
+  :fn efrit-tool-load-project-file
+  :label "Load Result")
+
+(efrit-define-optional-input-handler efrit-do--handle-run-ert "run_ert"
+  :require efrit-tool-lisp-dev
+  :fields ("selector")
+  :fn efrit-tool-run-ert
+  :label "ERT Result")
+
+(efrit-define-optional-input-handler efrit-do--handle-project-outline "project_outline"
+  :require efrit-tool-outline
+  :fields ("path" "pattern" "max_files")
+  :fn efrit-tool-project-outline
+  :label "Project Outline")
 
 (efrit-define-simple-tool-handler efrit-do--handle-undo-edit "undo_edit"
   :require efrit-tool-undo-edit

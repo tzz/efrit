@@ -132,7 +132,7 @@ Expands macros first so nothing hides behind a macro."
          (bad (cl-remove-duplicates
                (cl-remove-if-not #'efrit-sandbox-eval--forbidden-p (car acc)))))
     (when bad
-      (format "the form references %s, which the sandbox never permits from eval_sexp. Use the dedicated tools (read_file, edit_file, shell_exec) or ask the user."
+      (format "the form references %s, which the sandbox never permits from eval_sexp. Use the dedicated tools instead: read_file, edit_file, run_program; load_project_file to load a project .el file; run_ert to run tests. Or ask the user."
               (mapconcat (lambda (s) (format "`%s'" s)) bad ", ")))))
 
 ;;; 2. Dynamic enforcement

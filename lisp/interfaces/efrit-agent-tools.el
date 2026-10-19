@@ -738,14 +738,17 @@ shown bare since that IS the call."
    (t (pp-to-string input))))
 
 (defun efrit-agent--format-indented-lines (text indent max-lines)
-  "Format TEXT with INDENT prefix, limiting to MAX-LINES."
+  "Format TEXT with INDENT prefix, limiting to MAX-LINES.
+Each line is cut at `efrit-agent-max-line-length'."
   (let* ((lines (split-string text "\n" t))
          (truncated (> (length lines) max-lines))
          (display-lines (seq-take lines max-lines))
          (result ""))
     (dolist (line display-lines)
       (setq result (concat result indent "  "
-                           (propertize line 'face 'efrit-agent-session-id) "\n")))
+                           (efrit-agent--clip-line
+                            (propertize line 'face 'efrit-agent-session-id))
+                           "\n")))
     (when truncated
       (setq result (concat result indent "  "
                            (propertize (format "... (%d more lines)"
@@ -872,8 +875,7 @@ Returns the absolute or relative path, or nil if not a file header."
   "Format a single diff LINE with appropriate face and INDENT prefix.
 Returns the formatted line string with text properties.
 File header lines are clickable to open the file."
-  (let* ((line-content (concat indent "  " line "\n"))
-         (filepath (efrit-agent--extract-diff-filepath line))
+  (let* ((filepath (efrit-agent--extract-diff-filepath line))
          (face (cond
                 ;; File headers
                 ((string-match-p "^diff --git\\|^---\\|^\\+\\+\\+" line)
@@ -890,7 +892,9 @@ File header lines are clickable to open the file."
                 ;; Context lines (including empty lines and lines starting with space)
                 (t
                  'efrit-agent-diff-context)))
-         (result (propertize line-content 'face face)))
+         (result (concat (propertize (concat indent "  ") 'face face)
+                         (efrit-agent--clip-line (propertize line 'face face))
+                         (propertize "\n" 'face face))))
     ;; Make file headers clickable
     (when filepath
       (let ((map (make-sparse-keymap))

@@ -383,7 +383,7 @@ effects), see efrit-review-flags."
            (when (and (equal (nth 1 use) "shell_exec") (hash-table-p input)
                       (fboundp 'efrit-sandbox-shell-starts-emacs-p)
                       (efrit-sandbox-shell-starts-emacs-p (gethash "command" input)))
-             (list "[FLAG shell: starts another Emacs from the shell. The agent must have said why this cannot be done in the running Emacs with eval_sexp; stubbing the user's own macros or libraries to make the batch run is not a reason. Without a stated reason, reject and say so.]"))
+             (list "[FLAG shell: starts another Emacs from the shell. Loading a project file and running ERT are done in THIS Emacs with load_project_file and run_ert; byte-compiling is (byte-compile-file …) in eval_sexp. A separate Emacs is for one thing only: a test that must run in a clean emacs -Q with the user's configuration absent. The agent must have said so in AGENT SAID THIS TURN in these words: \"This needs a separate Emacs because …\". Stubbing the user's own macros or libraries to make a batch run work is not a reason. Without that sentence, reject and tell the agent to use load_project_file + run_ert, or to write that sentence if a clean Emacs is truly needed.]"))
            (when (require 'efrit-review-flags nil t)
              (ignore-errors (efrit-review-flags-for-use use))))))
     (and lines (mapconcat #'identity lines "\n   "))))
@@ -459,13 +459,15 @@ A call with no SANDBOX line needs no confidence.
 
 Starting another Emacs (a [FLAG shell: starts another Emacs] line, or an eval_sexp whose form
 runs emacs --batch) is refused by efrit without asking the user: everything the agent needs is
-in the running Emacs.  The one exception is testing: a package must be loaded in a clean
-emacs -Q, or a byte-compile/ERT run must not disturb the live session, and the agent said so
-and no in-process way exists.  When you are confident of that, add \"emacs\": \"testing\" and
+in the running Emacs: load_project_file, run_ert and (byte-compile-file …) in eval_sexp cover
+loading, testing and compiling.  The one exception: a test that must run in a clean emacs -Q
+with the user's configuration absent, and the agent wrote \"This needs a separate Emacs
+because …\" in its text.  When you are confident of that, add \"emacs\": \"testing\" and
 \"emacs_reason\": \"<why, one sentence>\" beside your confidence; at or above the user's threshold
 efrit then asks the user instead of refusing.  Never add it for a task the running Emacs can do.
 
-Answer with one JSON object and nothing else -- no prose before it, no code fence:
+Answer with one JSON object and nothing else -- no prose before it, no code fence.  Write the
+object FIRST; a reply that runs out of room before the object counts as no verdict:
 {\"verdict\": \"approve\"}, {\"verdict\": \"approve\", \"confidence\": 0.97, \"grant\": \"session\"},
 {\"verdict\": \"approve\", \"confidence\": 0.98, \"emacs\": \"testing\", \"emacs_reason\": \"ERT run of the package in a clean emacs -Q, as the user asked\"},
 or {\"verdict\": \"reject\", \"reason\": \"<one or two sentences, addressed to the agent, saying what to change>\"}"
@@ -506,7 +508,10 @@ every turn, because it only saw the request of the moment."
 (defun efrit-review--request-data (intent proposer-text batch)
   "The API request for one review.  No tools: the reviewer only answers."
   `(("model" . ,(or efrit-review-model efrit-default-model))
-    ("max_tokens" . 1024)
+    ;; 1024 was hit twice on 2026-10-20 with no text at all (the model
+    ;; thinks before it answers); an empty reply was a "malformed
+    ;; verdict" rejection that counted toward the escalation
+    ("max_tokens" . 4096)
     ("system" . ,(efrit-api-cacheable-system efrit-review--system-prompt))
     ("messages" . [(("role" . "user")
                     ("content" . ,(efrit-review--user-message intent proposer-text batch)))])))
@@ -641,9 +646,14 @@ request).  CALLBACK is called with (VERDICT . REASON), VERDICT being
                                      (truncate-string-to-width text 400 nil nil "…"))
                           (or (efrit-review-parse-verdict text)
                               (progn
-                                (efrit-log 'warn "review %s: not a verdict: %s" session-id
+                                (efrit-log 'warn "review %s: not a verdict (stop %s, %d chars): %s" session-id
+                                           (efrit-response-stop-reason response) (length text)
                                            (truncate-string-to-width text 400 nil nil "…"))
-                                (efrit-review--failure-verdict "malformed verdict" classes))))))))
+                                (efrit-review--failure-verdict
+                                 (if (equal (efrit-response-stop-reason response) "max_tokens")
+                                     "the reviewer ran out of tokens before answering"
+                                   "malformed verdict")
+                                 classes))))))))
          (lambda (error-msg)
            (funcall finish (efrit-review--failure-verdict error-msg classes)))))
       (error

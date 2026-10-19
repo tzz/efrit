@@ -1237,7 +1237,7 @@ CONTENT can be a string or a complex object (will be pretty-printed)."
          (display-lines (seq-take lines max-lines)))
     (dolist (line display-lines)
       (insert indent)
-      (insert (propertize line 'face 'efrit-agent-session-id))
+      (insert (efrit-agent--clip-line (propertize line 'face 'efrit-agent-session-id)))
       (insert "\n"))
     (when truncated
       (insert indent)

@@ -518,18 +518,39 @@ Returns: Matches with file path, line number, column, content, and context lines
                                       ("offset" . (("type" . "number")
                                                    ("description" . "Pagination offset (default: 0)")))))
                       ("required" . ["pattern"]))))
+   (("name" . "load_project_file")
+    ("description" . "Load one Emacs Lisp source file of THIS project into the running Emacs (the source, never a stale .elc). Use it after editing a .el file so the new definitions are live, and before run_ert for a test file. This is the in-process route: eval_sexp refuses `load', and a separate `emacs --batch' is refused too. Returns the features provided.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("path" . (("type" . "string") ("description" . "A .el file under the project root")))))
+                      ("required" . ["path"]))))
+   (("name" . "run_ert")
+    ("description" . "Run ERT tests in the running Emacs and return counts plus the failing tests' messages. selector is a regexp on test names (default: every loaded test) or a list of names. Load the test file first with load_project_file. Prefer this over any emacs --batch: it runs here, now, with the user's libraries.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("selector" . (("type" . "string") ("description" . "Regexp on test names, or \"t\" for all")))))
+                      ("required" . []))))
+   (("name" . "project_outline")
+    ("description" . "Every top-level definition in the project's source files, by file, with line numbers (imenu). A few thousand tokens for a typical project; cached, so repeating it is free. Call it FIRST when a task spans files you have not read: it answers 'where is X' in one call, then read the two or three files whole. Read-only.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("path" . (("type" . "string") ("description" . "Directory (default: the project root)")))
+                                      ("pattern" . (("type" . "string") ("description" . "Glob to keep only some files, e.g. *.el or lisp/interfaces/*")))
+                                      ("max_files" . (("type" . "integer") ("description" . "Default 400")))))
+                      ("required" . []))))
    (("name" . "read_file")
-    ("description" . "Read a file and return its contents with metadata. Supports line ranges for large files.
+    ("description" . "Read files and return their contents with metadata. READ WHOLE FILES, SEVERAL AT ONCE: pass paths=[...] for every file the task touches in ONE call; the result holds them all under a token budget (default 40k), and a file that does not fit comes back as its outline (definitions with line numbers) so you read a range of it next. Do not read a file in 60-line windows: nine range reads of one file cost nine round trips where one whole read costs one.
 
 EXAMPLES:
-- Full file: read_file path=\"lisp/efrit.el\"
-- Line range: read_file path=\"init.el\" start_line=100 end_line=150
-- With encoding: read_file path=\"data.txt\" encoding=\"latin-1\"
+- The files of a feature, whole: read_file paths=[\"lisp/a.el\", \"lisp/b.el\", \"test/test-a.el\"]
+- One file, whole: read_file path=\"lisp/efrit.el\"
+- A range of a big file (after its outline): read_file path=\"init.el\" start_line=100 end_line=150
 
-Returns: File content, encoding, size, line counts. Binary files return metadata only.")
+Returns: per file, content, size, line count; or the outline when over budget. Binary files return metadata only.")
     ("input_schema" . (("type" . "object")
                       ("properties" . (("path" . (("type" . "string")
-                                                  ("description" . "File path to read (required)")))
+                                                  ("description" . "One file to read (or use paths)")))
+                                      ("paths" . (("type" . "array") ("items" . (("type" . "string")))
+                                                  ("description" . "Several files, whole, in one result")))
+                                      ("budget" . (("type" . "integer")
+                                                   ("description" . "Token budget for a paths read (default 40000)")))
                                       ("start_line" . (("type" . "number")
                                                        ("description" . "Start line (1-indexed, optional)")))
                                       ("end_line" . (("type" . "number")
@@ -538,7 +559,7 @@ Returns: File content, encoding, size, line counts. Binary files return metadata
                                                      ("description" . "Encoding override (optional)")))
                                       ("max_size" . (("type" . "number")
                                                      ("description" . "Max bytes to read (default: 100000)")))))
-                      ("required" . ["path"]))))
+                      ("required" . []))))
    (("name" . "undo_edit")
      ("description" . "Undo the most recent edit to a specific file. Complementary to checkpoint/restore (which work at session level).
 
