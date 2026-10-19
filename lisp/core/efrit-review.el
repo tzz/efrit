@@ -421,7 +421,11 @@ evaluates does, read statically: key = binds a key; hook / advice = changes what
 code runs; core-var = sets a variable that changes how Emacs behaves; vc = a use-package
 :vc block (a remote repository, branch or revision the config will fetch and run); shadow =
 defines a name that belongs to another library; load = loads code; effect = deletes,
-writes, or starts a process; shell = starts another Emacs.  A flag is not a verdict: weigh
+writes, or starts a process; shell = starts another Emacs or runs a shell line Emacs does
+natively; tool = the Lisp reads, searches or writes a file by hand where an efrit tool
+\(read_file, search_content, edit_file, project_files, vcs_*) does the same under the project's
+grant, with line numbers and truncation, and is reviewed as a read.  For a `tool' flag on an eval
+whose purpose is that read or search, reject and name the tool.  A flag is not a verdict: weigh
 it against the request.  A change the user asked for that rebinds a key is fine; a :vc
 block pointing at a new remote, a shadowed macro, or an advice on a core function that the
 request did not call for is not, and a flagged batch-Emacs line needs the agent's stated

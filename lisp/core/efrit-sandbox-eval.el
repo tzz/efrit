@@ -211,7 +211,16 @@ recognised and allowed regardless."
     ;; packages that save alongside the file, through jka-compr
     undo-fu-session--save-impl undo-fu-session-save undo-fu-session--save-safe
     undo-fu-session--recover-impl undo-fu-session-recover undo-fu-session--recover-safe
-    basic-save-buffer save-buffer)
+    basic-save-buffer save-buffer
+    ;; VC asking the backend about a file Emacs just visited or saved:
+    ;; `git ls-files' under `vc-git-registered' (2026-10-19, from a
+    ;; `save-buffer' in the form; the user: "could have been resolved
+    ;; with VC mode").  VC is Emacs's; `efrit-vcs' routes the model's
+    ;; own version-control work through it on purpose
+    vc-git-registered vc-git--out-ok vc-git--call vc-git-command vc-git-state vc-git-root
+    vc-registered vc-backend vc-state vc-refresh-state vc-find-file-hook vc-after-save
+    vc-call-backend vc-responsible-backend vc-git-mode-line-string vc-mode-line
+    after-find-file find-file-noselect find-file-noselect-1)
   "Frames of Emacs file machinery that spawns a helper on the user's behalf.
 Visiting `notes.org.gz' runs `sh -c gzip -c -q' (jka-compr); a `.gpg'
 file runs gpg; a remote file over TRAMP runs ssh.  Those are how Emacs
@@ -374,10 +383,17 @@ it decides how the argv is read out of ARGS."
   (when (and efrit-sandbox-eval--active (not efrit-sandbox-eval--in-guard))
     (let ((efrit-sandbox-eval--in-guard t))
       (let* ((command (efrit-sandbox-eval--process-argv name args))
-             (line (cond ((and (listp command) command (cl-every #'stringp command))
-                          (mapconcat #'shell-quote-argument command " "))
-                         ((stringp command) command)
-                         (t t))))
+             (line (cond
+                    ;; the shell wrappers take the line itself; quoting
+                    ;; it made "git status x" one command word and the
+                    ;; prompt read "run x" (2026-10-19)
+                    ((and (memq name '(shell-command shell-command-to-string async-shell-command))
+                          (stringp (car args)))
+                     (car args))
+                    ((and (listp command) command (cl-every #'stringp command))
+                     (mapconcat #'shell-quote-argument command " "))
+                    ((stringp command) command)
+                    (t t))))
         ;; a process with a known argv is checked like a shell line, so
         ;; a grant for "git" covers (call-process "git" ...) as well.
         ;; The detail names the primitive, so the prompt reads
@@ -408,6 +424,24 @@ it decides how the argv is read out of ARGS."
           (signal 'efrit-sandbox-denied
                   (list (format "eval_sexp must not start another Emacs (%s). Do the work in this Emacs: evaluate the form here, use the tools, or run a shell command that is not Emacs."
                                 (truncate-string-to-width (if (stringp line) line "process") 120 nil nil "…")))))
+         ;; a shell line Emacs does natively (git status, cp, grep…)
+         ;; from Lisp is refused the way shell_exec's is, with the
+         ;; facility named; `git' included here, efrit-vcs and the
+         ;; vcs_* tools exist for it (2026-10-19: an eval ran four
+         ;; shell-command-to-string "git …" and asked the user)
+         ((and efrit-sandbox-shell-refuse-emacs-equivalents
+               (stringp line)
+               (let ((efrit-sandbox-shell-emacs-equivalents
+                      (cons '("git" . "vcs_status, vcs_diff, vcs_log, vcs_blame, or vc-* / efrit-vcs")
+                            efrit-sandbox-shell-emacs-equivalents)))
+                 (and (efrit-sandbox-shell-emacs-does-it-p line)
+                      (not (efrit-sandbox--mentioned-shell-p line))
+                      (progn
+                        (efrit-log 'info "sandbox: eval subprocess refused, Emacs does it: %s" line)
+                        (signal 'efrit-sandbox-denied
+                                (list (efrit-sandbox-request-create
+                                       :cap 'shell :target line :tool "eval_sexp"
+                                       :detail (efrit-sandbox-shell-emacs-refusal line)))))))))
          (t
           (efrit-sandbox-check 'shell line "eval_sexp"
                                (format "subprocess via %s: %s%s"
@@ -439,6 +473,14 @@ it decides how the argv is read out of ARGS."
 ;; buffers are checked: fileless buffers (`with-temp-buffer', output
 ;; buffers) are the model's own scratch space and must pass freely, or
 ;; every eval that formats output would prompt.
+(defvar efrit-sandbox-eval--denied nil
+  "The first request refused during the running eval, or nil.
+Set by `efrit-sandbox-eval--note-denial'; the second refusal in one
+eval is not asked about, the stored one is re-signalled.")
+
+(defvar efrit-sandbox-eval--sweep-allowed nil
+  "Non-nil once the user allowed a buffer-list walk in the running eval.")
+
 (defvar efrit-sandbox-eval--loading nil
   "Non-nil during a `require' or `load' issued inside a sandboxed eval.
 What runs then is Emacs and the user's configuration (the library's
@@ -507,6 +549,22 @@ handler still guards what they read.  Only efrit's frames count: a
              (setq found t done t)))))))
     found))
 
+(defun efrit-sandbox-eval--emacs-file-hooks-p ()
+  "Non-nil when a buffer switch happens inside Emacs's own find/save machinery.
+`save-buffer' and `find-file-noselect' run the user's hooks
+\(`after-save-hook', `find-file-hook', mode hooks), which walk the
+buffer list or update other buffers; a form that saved one file was
+asked for the user's unrelated `tzz.md' that way (2026-10-19)."
+  (let ((found nil))
+    (mapbacktrace (lambda (_evald func _args _flags)
+                    (when (and (not found)
+                               (memq func '(basic-save-buffer save-buffer save-some-buffers
+                                            find-file-noselect find-file-noselect-1 after-find-file
+                                            normal-mode set-auto-mode revert-buffer
+                                            run-hooks run-hook-with-args run-hook-with-args-until-success)))
+                      (setq found func))))
+    found))
+
 (defun efrit-sandbox-eval--check-buffer (buffer-or-name op)
   "Check BUFFER-OR-NAME for the `buffer' capability if it visits a file.
 OP names the operation for the prompt.  Fileless or missing buffers
@@ -519,12 +577,44 @@ a switch made inside one of efrit's own functions passes
                (not efrit-sandbox-eval--loading)
                (buffer-local-value 'buffer-file-name buffer)
                (not (efrit-sandbox-buffer-allowed-p buffer))
-               (not (efrit-sandbox-eval--switched-by-efrit-p)))
-      (let ((callers (efrit-sandbox-eval--caller-summary)))
+               (not (efrit-sandbox-eval--switched-by-efrit-p))
+               (not (efrit-sandbox-eval--emacs-file-hooks-p))
+               (not efrit-sandbox-eval--sweep-allowed))
+      (let* ((callers (efrit-sandbox-eval--caller-summary))
+             ;; a form walking `buffer-list' meets every out-of-project
+             ;; buffer in turn; asking per buffer is useless (the user
+             ;; cannot say yes to the sweep).  Say how many there are
+             ;; and ask once; `o'/`s' then covers them all this eval
+             ;; (2026-10-19: hrt.md, then tzz.md, for a minor-mode sweep)
+             (others (cl-remove-if-not
+                      (lambda (b) (and (not (eq b buffer))
+                                       (buffer-local-value 'buffer-file-name b)
+                                       (not (efrit-sandbox-buffer-allowed-p b))))
+                      (buffer-list)))
+             (sweep (and others (efrit-sandbox-eval--sweep-p callers))))
         (efrit-log 'info "sandbox: %s on buffer %s from: %s" op (buffer-name buffer) callers)
-        (efrit-sandbox-check-buffer buffer "eval_sexp"
-                                    (format "%s on %s, called from: %s" op (buffer-name buffer)
-                                            (if (string-empty-p callers) "the form itself" callers)))))))
+        (if (not sweep)
+            (efrit-sandbox-check-buffer buffer "eval_sexp"
+                                        (format "%s on %s, called from: %s" op (buffer-name buffer)
+                                                (if (string-empty-p callers) "the form itself" callers)))
+          (efrit-sandbox-check-buffer buffer "eval_sexp"
+                                      (format "%s on %s and %d more file buffer(s) outside the project (a walk over the buffer list; one answer covers the walk)%s"
+                                              op (buffer-name buffer) (length others)
+                                              (if (string-empty-p callers) "" (format ", called from: %s" callers))))
+          ;; allowed: the rest of the walk passes for this eval
+          (setq efrit-sandbox-eval--sweep-allowed t))))))
+
+(defun efrit-sandbox-eval--sweep-p (callers)
+  "Non-nil when the switch comes straight from the form: no named function between.
+CALLERS is the caller summary.  Every entry a special form, a macro
+or a sequence function means the model's own loop made the switch;
+a named function (`efrit-agent-buffers', `ibuffer-update') would be
+that function's business."
+  (cl-every (lambda (name)
+              (let ((sym (intern-soft name)))
+                (or (null sym) (special-form-p sym) (macrop sym)
+                    (memq sym '(mapc mapcar mapcan seq-do seq-filter seq-map cl-loop funcall apply)))))
+            (split-string callers " < " t)))
 
 (defun efrit-sandbox-eval--guard-set-buffer (orig &rest args)
   (when (and efrit-sandbox-eval--active (not efrit-sandbox-eval--in-guard))
@@ -613,9 +703,38 @@ instead of `eval' (the caller's timeout/input-blocking wrapper)."
                                                 :detail why))))
   (efrit-sandbox-eval--install-advice)
   (let ((efrit-sandbox-eval--active t)
+        (efrit-sandbox-eval--denied nil)
+        (efrit-sandbox-eval--sweep-allowed nil)
         (file-name-handler-alist (cons efrit-sandbox-eval--handler-entry
                                        file-name-handler-alist)))
-    (if evaluator (funcall evaluator form) (eval form t))))
+    (prog1 (if evaluator (funcall evaluator form) (eval form t))
+      ;; The form caught the denial (`ignore-errors', a `condition-case'
+      ;; on `error', a hook runner) and went on.  The user's no is
+      ;; final: the eval fails with it, whatever the form returned
+      ;; (2026-10-19: a save hook's `git ls-files' was refused, the
+      ;; form carried on and asked for a second buffer, then hung).
+      (when efrit-sandbox-eval--denied
+        (signal 'efrit-sandbox-denied (list efrit-sandbox-eval--denied))))))
+
+(defun efrit-sandbox-eval--note-denial (orig &rest args)
+  "Around `efrit-sandbox-check' and `efrit-sandbox-check-buffer' inside an eval.
+Remembers a denial so `efrit-sandbox-eval-form' can re-raise it, and
+refuses further requests of the same eval without a prompt once one
+was denied: the user already said no to this form."
+  (if (not efrit-sandbox-eval--active)
+      (apply orig args)
+    (when efrit-sandbox-eval--denied
+      (efrit-log 'info "sandbox: a request of this eval was already refused; refusing %s without asking" (car args))
+      (signal 'efrit-sandbox-denied (list efrit-sandbox-eval--denied)))
+    (condition-case err
+        (apply orig args)
+      (efrit-sandbox-denied
+       (setq efrit-sandbox-eval--denied (cadr err))
+       (signal (car err) (cdr err))))))
+
+(dolist (fn '(efrit-sandbox-check efrit-sandbox-check-buffer))
+  (unless (advice-member-p #'efrit-sandbox-eval--note-denial fn)
+    (advice-add fn :around #'efrit-sandbox-eval--note-denial)))
 
 (provide 'efrit-sandbox-eval)
 

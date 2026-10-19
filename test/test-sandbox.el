@@ -725,6 +725,76 @@ nothing on another host."
     ;; the advice is inert outside a sandboxed eval
     (should (equal "ok\n" (shell-command-to-string "echo ok")))))
 
+(ert-deftest test-sb-denial-is-not-an-error-the-form-can-swallow ()
+  "A denial inside `ignore-errors' or an `error' handler still ends the
+eval: the user's no is final, and no second prompt follows (2026-10-19:
+`run git' refused inside a save hook, then the same eval asked for
+another buffer, then hung)."
+  (test-sb--in-project
+    (efrit-sandbox-grant 'elisp t 'session)
+    (let* ((asked 0)
+           (efrit-sandbox-request-function (lambda (_req) (cl-incf asked) nil)))
+      (should-error (efrit-sandbox-eval-form
+                     '(progn (ignore-errors (call-process "true"))
+                             (condition-case nil (call-process "false") (error 'swallowed))
+                             'reached-the-end))
+                    :type 'efrit-sandbox-denied)
+      ;; one prompt, not two: the second request was refused on the spot
+      (should (= 1 asked))
+      ;; and efrit's own handlers still catch it by name
+      (should (eq 'denied (condition-case nil (efrit-sandbox-check 'shell "ls -R /" "t")
+                            (efrit-sandbox-denied 'denied)))))))
+
+(ert-deftest test-sb-eval-shell-line-emacs-does-is-refused-without-a-prompt ()
+  "An eval that shells out to git/cp/grep is refused the way shell_exec is,
+naming the facility; a real program still asks (2026-10-19: four
+shell-command-to-string \"git …\" in one eval reached the prompt)."
+  (test-sb--in-project
+    (efrit-sandbox-grant 'elisp t 'session)
+    (let* ((asked 0)
+           (efrit-sandbox-shell-refuse-emacs-equivalents t)
+           (efrit-sandbox-expected-shell-commands (eval (car (get 'efrit-sandbox-expected-shell-commands 'standard-value)) t))
+           (efrit-sandbox-request-function (lambda (_req) (cl-incf asked) nil)))
+      (efrit-sandbox-begin-turn "what changed in the config?")
+      (let ((err (should-error (efrit-sandbox-eval-form '(shell-command-to-string "git status --short x.el"))
+                               :type 'efrit-sandbox-denied)))
+        (should (= 0 asked))
+        (should (string-match-p "git -> vcs_status" (efrit-sandbox-denied-tool-result (cadr err)))))
+      (should-error (efrit-sandbox-eval-form '(call-process "tmux" nil nil nil "ls")) :type 'efrit-sandbox-denied)
+      (should (= 1 asked)))))
+
+(ert-deftest test-sb-eval-buffer-sweep-asks-once-for-the-walk ()
+  "A form walking `buffer-list' with `with-current-buffer' meets several
+out-of-project file buffers: one prompt names the count, and a yes covers
+the rest of the walk; a no ends the eval (2026-10-19: hrt.md then tzz.md)."
+  (test-sb--in-project
+    (test-sb--with-buffers
+      (let* ((outside (make-temp-file "efrit-sb-sweep-" t))
+             (a (test-sb--file-buffer (expand-file-name "a.txt" outside) "A"))
+             (b (test-sb--file-buffer (expand-file-name "b.txt" outside) "B"))
+             (details nil)
+             (answer 'once)
+             (efrit-sandbox-request-function (lambda (req) (push (efrit-sandbox-request-detail req) details) answer)))
+        (unwind-protect
+            (progn
+              (efrit-sandbox-grant 'elisp t 'session)
+              (let ((seen (efrit-sandbox-eval-form
+                           '(let (n) (dolist (buf (buffer-list))
+                                       (with-current-buffer buf (when buffer-file-name (push (buffer-name) n))))
+                                 n))))
+                (should (member (buffer-name a) seen))
+                (should (member (buffer-name b) seen)))
+              (should (= 1 (length details)))
+              (should (string-match-p "and [0-9]+ more file buffer" (car details)))
+              ;; a refusal ends the walk
+              (setq details nil answer nil)
+              (should-error (efrit-sandbox-eval-form
+                             '(dolist (buf (buffer-list)) (with-current-buffer buf (ignore buffer-file-name))))
+                            :type 'efrit-sandbox-denied)
+              (should (= 1 (length details))))
+          (kill-buffer a) (kill-buffer b)
+          (delete-directory outside t))))))
+
 (ert-deftest test-sb-eval-jka-compr-helper-is-not-the-model ()
   "Reading a .gz file in the project from an eval runs gzip through
 jka-compr; that process is Emacs's, not a shell request of the model's
