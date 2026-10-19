@@ -182,7 +182,7 @@ image; the API block for the mention carries the bytes."
       ;; a tiny real PNG (1x1), unibyte
       (let* ((png (string-to-unibyte
                    (base64-decode-string "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")))
-             (file (efrit-agent-paste-image png 'image/png)))
+             (file (efrit-agent-paste-image 'image/png png)))
         (should (file-exists-p file))
         (should (string-match-p "/\\.efrit/dropped/paste-[0-9]+-[0-9]+-[0-9a-f]+\\.png\\'" file))
         (should (string-match-p "@\\.efrit/dropped/paste-" (efrit-agent--get-input)))

@@ -592,9 +592,13 @@ TIFF is converted to `efrit-agent-paste-image-format' when
             path))
       path)))
 
-(defun efrit-agent-paste-image (data mime)
-  "`yank-media' handler: keep the image DATA of MIME under the project, mention it."
-  (let ((file (efrit-agent-paste--write-image data (if (symbolp mime) (symbol-name mime) mime))))
+(defun efrit-agent-paste-image (mime data)
+  "`yank-media' handler: keep the image DATA of MIME under the project, mention it.
+MIME is the type symbol (`image/png'), DATA the bytes, in that order
+\(`yank-media-handler'); 0.12.27 to 0.12.30 had them swapped and
+failed with \"Invalid object argument: image/png\"."
+  (let ((file (efrit-agent-paste--write-image (if (multibyte-string-p data) (encode-coding-string data 'binary) data)
+                                              (if (symbolp mime) (symbol-name mime) mime))))
     (unless (efrit-agent--in-input-region-p)
       (goto-char (point-max)))
     (efrit-agent-dnd--insert-mention file)
@@ -624,7 +628,7 @@ means the plain yank, with its own meaning kept."
            (derived-mode-p 'efrit-agent-mode)
            (efrit-agent--in-input-region-p)
            (efrit-agent-paste--clipboard-has-image-p))
-      (yank-media)
+      (progn (efrit-agent-paste-enable) (yank-media))
     (apply orig args)))
 
 (advice-add 'yank :around #'efrit-agent-paste--around-yank)
@@ -646,6 +650,19 @@ means the plain yank, with its own meaning kept."
   "Register the image handler for `yank-media' in this buffer."
   (when (fboundp 'yank-media-handler)
     (yank-media-handler "image/.*" #'efrit-agent-paste-image)))
+
+;; The handler table is buffer-local and set by the mode function; a
+;; reload does not re-run the mode in live agent buffers, which then
+;; said "hasn't registered any handlers" (tzz, 2026-10-19).  Also guard
+;; the advice: when no handler is registered yet, register now.
+(defun efrit-agent-paste-enable-everywhere ()
+  "Register the paste handler in every live agent buffer."
+  (dolist (b (buffer-list))
+    (with-current-buffer b
+      (when (derived-mode-p 'efrit-agent-mode)
+        (efrit-agent-paste-enable)))))
+
+(efrit-agent-paste-enable-everywhere)
 
 ;;;; Wiring
 
