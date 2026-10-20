@@ -1056,6 +1056,30 @@ Each test opts into a target buffer by binding the functions itself."
               (should (efrit-sandbox-check-buffer buf "read_buffer")))
           (kill-buffer buf))))))
 
+(ert-deftest test-sb-buffer-covered-by-a-read-or-write-grant-on-its-directory ()
+  "A file the model may already read or write needs no separate buffer
+grant: read+write grants for autodist/ stood and a with-current-buffer
+on a file under it still asked (2026-10-20)."
+  (test-sb--in-project
+    (test-sb--with-buffers
+      (let* ((outside (file-name-as-directory (make-temp-file "efrit-sb-out-" t)))
+             (path (expand-file-name "lib/config.el" outside))
+             (buf (progn (make-directory (file-name-directory path) t)
+                         (test-sb--file-buffer path ";; x"))))
+        (unwind-protect
+            (progn
+              (should-not (efrit-sandbox-buffer-allowed-p buf))
+              (efrit-sandbox-grant 'read (efrit-sandbox-canonical outside) 'session root)
+              (should (efrit-sandbox-buffer-allowed-p buf))
+              (should (efrit-sandbox-check-buffer buf "eval_sexp"))
+              ;; a write grant alone is enough too
+              (clrhash efrit-sandbox--session-grants)
+              (should-not (efrit-sandbox-buffer-allowed-p buf))
+              (efrit-sandbox-grant 'write (efrit-sandbox-canonical outside) 'session root)
+              (should (efrit-sandbox-buffer-allowed-p buf)))
+          (kill-buffer buf)
+          (delete-directory outside t))))))
+
 (ert-deftest test-sb-buffer-outside-denied-then-grantable ()
   (test-sb--in-project
     (test-sb--with-buffers

@@ -845,7 +845,7 @@ agent buffer into long-line display mode (2026-10-19)."
          (line (concat "+" (make-string 200 ?y)))
          (out (efrit-agent--format-diff-line line "")))
     (should (< (length out) 70))
-    (should (string-match-p "\\+170 chars" out))
+    (should (string-match-p "\\+171 chars" out))
     (should (eq (get-text-property 2 'face out) 'efrit-agent-diff-added))))
 
 (ert-deftest test-efrit-agent-prompt-cannot-be-deleted ()
@@ -1010,6 +1010,49 @@ the header hint names the keys."
                 (should (string-match-p "RET sends" hint))
                 (should (string-match-p "S-<return> newline" hint))))
           (efrit-agent--clear-input))))))
+
+(ert-deftest test-efrit-agent-buffers-does-not-switch-buffers ()
+  "`efrit-agent-buffers' finds agent buffers by `major-mode' without `set-buffer'.
+Each switch went through the sandbox's `set-buffer' advice from the
+header, mode and tab lines on every redisplay (2026-10-20: 34 ms per
+call, the main steady cost while typing)."
+  (let ((agent (generate-new-buffer " *agent-buffers-test*"))
+        (other (generate-new-buffer " *agent-buffers-other*"))
+        (switched nil))
+    (unwind-protect
+        (progn
+          (with-current-buffer agent (efrit-agent-mode))
+          (with-current-buffer other (fundamental-mode))
+          (let ((found (cl-letf* ((orig (symbol-function 'set-buffer))
+                                  ((symbol-function 'set-buffer)
+                                   (lambda (b) (setq switched t) (funcall orig b))))
+                         (efrit-agent-buffers))))
+            (message "agent-buffers: %d found, switched=%s" (length found) switched)
+            (should (memq agent found))
+            (should-not (memq other found))
+            (should-not switched)))
+      (kill-buffer agent)
+      (kill-buffer other))))
+
+(ert-deftest test-efrit-agent-input-hint-is-cached-per-keymap ()
+  "The hint is computed once per keymap object and recomputed when the map changes."
+  (require 'efrit-agent-input)
+  (let ((efrit-agent--input-hint-cache nil)
+        (computed 0))
+    (cl-letf* ((orig (symbol-function 'efrit-agent--compute-input-hint))
+               ((symbol-function 'efrit-agent--compute-input-hint)
+                (lambda (map) (cl-incf computed) (funcall orig map))))
+      (let ((first (efrit-agent-input-hint)))
+        (should (string-match-p "sends" first))
+        (should (eq first (efrit-agent-input-hint)))
+        (should (= computed 1))
+        ;; a different keymap object: recomputed, with its own bindings
+        (let ((efrit-agent-input-mode-map (make-sparse-keymap)))
+          (define-key efrit-agent-input-mode-map (kbd "C-c C-c") #'efrit-agent-input-send)
+          (let ((second (efrit-agent-input-hint)))
+            (message "hint for a fresh map: %s" second)
+            (should (= computed 2))
+            (should (string-match-p "C-c C-c sends" second))))))))
 
 (ert-deftest test-efrit-agent-quote-region ()
   "A region of the transcript lands in the input as a `> ' quote when

@@ -469,14 +469,28 @@ Shows: status │ elapsed │ mode │ verbosity │ tool count │ hints"
                                 'face 'efrit-agent-timestamp)))
        (_ "")))))
 
+(defvar efrit-agent--input-hint-cache nil
+  "(MAP . HINT): the hint last computed and the keymap it was computed from.
+The header line asks for the hint on every redisplay and the five
+`where-is-internal' lookups cost about 0.6 ms each time (profiled
+2026-10-20, 8% of a typing session).  The keymap object changes only
+on reload, when `efrit-agent-input-mode-map' is rebound.")
+
 (defun efrit-agent-input-hint ()
   "The one-line key hint for the input: how to send and how to break a line.
 Chat clients (Slack, the Claude app) use RET to send and S-RET for a
 newline; efrit does the same, and says so, because an Emacs user
 expects RET to insert a newline.  Bindings are looked up, so a user
-who rebinds them sees their own keys."
-  (let* ((map (and (boundp 'efrit-agent-input-mode-map) efrit-agent-input-mode-map))
-         (key (lambda (cmd fallback)
+who rebinds them sees their own keys; the result is cached per keymap."
+  (let ((map (and (boundp 'efrit-agent-input-mode-map) efrit-agent-input-mode-map)))
+    (if (and efrit-agent--input-hint-cache (eq (car efrit-agent--input-hint-cache) map))
+        (cdr efrit-agent--input-hint-cache)
+      (cdr (setq efrit-agent--input-hint-cache
+                 (cons map (efrit-agent--compute-input-hint map)))))))
+
+(defun efrit-agent--compute-input-hint (map)
+  "The input hint text from the bindings in keymap MAP (see `efrit-agent-input-hint')."
+  (let* ((key (lambda (cmd fallback)
                 ;; prefer the shifted/chorded key when several are bound:
                 ;; "S-RET" is what a chat user looks for, "C-j" is not
                 (let* ((keys (and map (where-is-internal cmd map)))

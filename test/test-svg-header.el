@@ -84,11 +84,10 @@ raster cache never hits: the elapsed time is coarse (every
         ;; runs are pinned to Emacs's measured width
         (should (dom-attr label 'textLength)))
       (should-not (string-match-p "waiting for Claude" xml))
-      ;; canvas never exceeds the window width (in batch the frame is
-      ;; 80 "pixels" wide, so shrinking cannot be observed; on a real
-      ;; display the canvas ends just past the last glyph)
-      (should (<= (string-to-number (format "%s" (dom-attr svg 'width)))
-                  (alist-get :width model))))))
+      ;; the canvas is the window's width: the border reaches the edge
+      ;; and the rasteriser's wider text is not cut (2026-10-20)
+      (should (= (string-to-number (format "%s" (dom-attr svg 'width)))
+                 (alist-get :width model))))))
 
 (ert-deftest test-svg-header-cache-hits-on-identical-model ()
   (test-svg--in-agent-buffer

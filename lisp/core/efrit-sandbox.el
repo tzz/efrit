@@ -702,7 +702,15 @@ an explicit grant (checked by `efrit-sandbox-check-buffer')."
                 (eq (efrit-sandbox-remote-policy target 'read) 'allow)
               (efrit-sandbox--under-p target root))))
      ;; an explicit buffer grant covering it
-     (efrit-sandbox-allowed-p 'buffer (efrit-sandbox-buffer-target buffer) root))))
+     (efrit-sandbox-allowed-p 'buffer (efrit-sandbox-buffer-target buffer) root)
+     ;; a file the model may already read or write: switching to its
+     ;; buffer grants nothing more.  2026-10-20: read+write grants for
+     ;; autodist/ stood, and a `with-current-buffer' on a file under it
+     ;; still asked, then saved a redundant per-file buffer grant.
+     (let ((target (efrit-sandbox-buffer-target buffer)))
+       (and (stringp target)
+            (or (efrit-sandbox-allowed-p 'write target root)
+                (efrit-sandbox-allowed-p 'read target root)))))))
 
 ;;; Granting
 

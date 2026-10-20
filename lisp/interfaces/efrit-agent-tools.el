@@ -209,19 +209,23 @@ Returns nil if no annotations or unknown kind."
   (efrit-do-completion-message (format "%s" (or result ""))))
 
 (defun efrit-agent--turn-has-streamed-text-p ()
-  "Non-nil if the assistant streamed prose in this turn, before point.
-Walks back over tool rows and blank lines to the start of the turn (the
-user's message); any `claude-message' on the way means the answer is
-already on screen."
+  "Non-nil if the prose right before point is the turn's answer.
+Walks back over blank lines and notes only: a `claude-message' there
+means the model wrote its answer and then called session_complete, so
+the message would repeat it.  A tool row in between means the prose
+was narration (\"Now apply it live…\") and the final message is the
+only answer on screen (2026-10-20: a turn ended in a bare rule, and
+the user: \"no clear indication the work was finished\")."
   (save-excursion
     (let ((found nil) (done nil))
       (while (and (not found) (not done) (> (point) (point-min)))
         (let ((type (get-text-property (1- (point)) 'efrit-type)))
           (cond
            ((eq type 'claude-message) (setq found t))
-           ((eq type 'user-message) (setq done t))
-           (t (goto-char (or (previous-single-property-change (point) 'efrit-type)
-                             (point-min)))))))
+           ((memq type '(nil steer-note review-note error-message thinking-indicator))
+            (goto-char (or (previous-single-property-change (point) 'efrit-type)
+                           (point-min))))
+           (t (setq done t)))))
       found)))
 
 (defun efrit-agent--render-tool-call (tv)
