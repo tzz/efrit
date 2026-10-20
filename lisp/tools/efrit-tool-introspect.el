@@ -30,6 +30,14 @@
 ;;                    every buffer whose name matches, under the
 ;;                    sandbox's buffer check.  Replaces hand-rolled
 ;;                    `re-search-backward' loops in eval_sexp.
+;; `buffer_list'      the live buffers with name, file, size, mode,
+;;                    modified, shown, and whether the file is REMOTE.
+;;                    Nothing is entered.  The user's rule for remote
+;;                    buffers (2026-10-20): look at local buffers
+;;                    first, then at the NAMES of remote ones, and only
+;;                    when one is very likely useful ask to use it.  A
+;;                    walk that `set-buffer's into seven TRAMP buffers
+;;                    to search them asked for a grant on each.
 
 ;;; Code:
 
@@ -344,6 +352,57 @@ line shares."
               (with-current-buffer (window-buffer (selected-window))
                 (efrit-tool-introspect--construct-pieces mode-line-misc-info)))))))))
 
+;;;; buffer_list
+
+(defun efrit-tool-introspect--buffer-remote-p (buf)
+  "Non-nil when BUF visits a remote file or its directory is remote."
+  (let ((file (buffer-file-name buf))
+        (dir (buffer-local-value 'default-directory buf)))
+    (or (and file (file-remote-p file))
+        (and (not file) dir (file-remote-p dir)))))
+
+(defun efrit-tool-buffer-list (args)
+  "The live buffers, described, without entering any of them.
+ARGS: pattern (regexp on buffer names and file names, optional);
+include_hidden (names starting with a space; default false);
+max (default 200).  Each entry: name, file, remote (the TRAMP host
+part, or false), size, major_mode, modified, shown (in some window).
+Remote buffers are listed by name and file only; reading them is a
+separate decision (see the description).  Local entries come first."
+  (efrit-tool-execute buffer_list args
+    (let* ((pattern (alist-get 'pattern args))
+           (hidden (let ((v (alist-get 'include_hidden args))) (and v (not (eq v :json-false)))))
+           (max (or (alist-get 'max args) 200))
+           (entries nil))
+      (dolist (b (buffer-list))
+        (let* ((name (buffer-name b))
+               (file (buffer-file-name b)))
+          (when (and (or hidden (not (string-prefix-p " " name)))
+                     (or (null pattern) (string-empty-p pattern)
+                         (string-match-p pattern name)
+                         (and file (string-match-p pattern file))))
+            (let ((remote (efrit-tool-introspect--buffer-remote-p b)))
+              (push `((name . ,name)
+                      (file . ,(and file (abbreviate-file-name file)))
+                      (remote . ,(or remote :json-false))
+                      (size . ,(buffer-size b))
+                      (major_mode . ,(symbol-name (buffer-local-value 'major-mode b)))
+                      (modified . ,(if (buffer-modified-p b) t :json-false))
+                      (shown . ,(if (get-buffer-window b t) t :json-false)))
+                    entries)))))
+      (setq entries (nreverse entries))
+      ;; local first, then remote: the order the user wants them considered
+      (setq entries (append (cl-remove-if (lambda (e) (not (eq (alist-get 'remote e) :json-false))) entries)
+                            (cl-remove-if (lambda (e) (eq (alist-get 'remote e) :json-false)) entries)))
+      (let ((shown (seq-take entries max)))
+        (efrit-tool-success
+         `((count . ,(length entries))
+           (local . ,(cl-count-if (lambda (e) (eq (alist-get 'remote e) :json-false)) entries))
+           (remote . ,(cl-count-if (lambda (e) (not (eq (alist-get 'remote e) :json-false))) entries))
+           (buffers . ,(vconcat shown)))
+         (and (> (length entries) max)
+              (list (format "%d more not shown (max %d); pass pattern to narrow" (- (length entries) max) max))))))))
+
 ;;;; buffer_scan
 
 (defun efrit-tool-introspect--scan-one (buf regexp context max from-end)
@@ -383,20 +442,28 @@ ARGS: pattern (regexp, required); buffer (a name, default the target
 buffer); buffer_regexp (scan every live buffer whose name matches,
 instead of `buffer'); context (lines each side, default 2); max
 \(matches in all, default `efrit-tool-buffer-scan-max-matches'); from_end
-\(newest first: the last matches of a log buffer).  Hidden buffers
-\(names starting with a space) are skipped under a pattern.  Each
-buffer passes the sandbox's buffer check."
+\(newest first: the last matches of a log buffer); include_remote
+\(under buffer_regexp, also scan buffers visiting remote files;
+default false: they are listed as skipped, by name, so the model can
+ask about one).  Hidden buffers (names starting with a space) are
+skipped under a pattern.  Each buffer passes the sandbox's buffer check."
   (efrit-tool-execute buffer_scan args
     (let* ((regexp (or (alist-get 'pattern args) ""))
            (context (or (alist-get 'context args) 2))
            (max (min (or (alist-get 'max args) efrit-tool-buffer-scan-max-matches)
                      efrit-tool-buffer-scan-max-matches))
            (from-end (let ((v (alist-get 'from_end args))) (and v (not (eq v :json-false)))))
+           (include-remote (let ((v (alist-get 'include_remote args))) (and v (not (eq v :json-false)))))
            (name-re (alist-get 'buffer_regexp args))
+           (remote-skipped nil)
            (buffers (if (and name-re (not (string-empty-p name-re)))
                         (seq-take (cl-remove-if-not
-                                   (lambda (b) (and (not (string-prefix-p " " (buffer-name b)))
-                                                    (string-match-p name-re (buffer-name b))))
+                                   (lambda (b)
+                                     (and (not (string-prefix-p " " (buffer-name b)))
+                                          (string-match-p name-re (buffer-name b))
+                                          (or include-remote
+                                              (not (efrit-tool-introspect--buffer-remote-p b))
+                                              (progn (push (buffer-name b) remote-skipped) nil))))
                                    (buffer-list))
                                   efrit-tool-buffer-scan-max-buffers)
                       (list (efrit-tool-introspect--buffer (alist-get 'buffer args) "buffer_scan"))))
@@ -423,7 +490,11 @@ buffer passes the sandbox's buffer check."
          (total_matches . ,(- max left))
          (truncated . ,(if (<= left 0) t :json-false))
          (results . ,(vconcat (nreverse results))))
-       (and skipped (list (format "not scanned (no buffer grant): %s" (string-join (nreverse skipped) ", "))))))))
+       (delq nil
+             (list (and skipped (format "not scanned (no buffer grant): %s" (string-join (nreverse skipped) ", ")))
+                   (and remote-skipped
+                        (format "remote buffers not scanned (name them with buffer= or pass include_remote=true if one is clearly the right place): %s"
+                                (string-join (nreverse remote-skipped) ", ")))))))))
 
 (provide 'efrit-tool-introspect)
 

@@ -79,6 +79,7 @@
 (declare-function efrit-tool-live-state "efrit-tool-introspect")
 (declare-function efrit-tool-mode-line-report "efrit-tool-introspect")
 (declare-function efrit-tool-buffer-scan "efrit-tool-introspect")
+(declare-function efrit-tool-buffer-list "efrit-tool-introspect")
 (declare-function efrit-tool-undo-edit "efrit-tool-undo-edit")
 (declare-function efrit-tool-edit-file "efrit-tool-edit-file")
 (declare-function efrit-tool-create-file "efrit-tool-create-file")
@@ -709,15 +710,17 @@ Includes safety limits to prevent hanging on large directories."
           (error
            (format "\n[Error finding files: %s]" (error-message-string err))))))))))
 
-(defun efrit-do--waiting-for-user-marker (question options)
+(defun efrit-do--waiting-for-user-marker (question options &optional multi)
   "Format the [WAITING-FOR-USER] tool result for QUESTION with OPTIONS.
 The executor and the REPL loop both recognize this marker and pause
-the turn until the user responds."
-  (format "\n[WAITING-FOR-USER]\nQuestion: %s%s\n\nSession paused. User response required before continuing."
+the turn until the user responds.  MULTI says the answer may name
+several options."
+  (format "\n[WAITING-FOR-USER]\nQuestion: %s%s%s\n\nSession paused. User response required before continuing."
           question
           (if options
               (format "\nOptions: %s" (mapconcat #'identity options ", "))
-            "")))
+            "")
+          (if multi "\n(multi-select: the answer lists the chosen options, separated by \"; \", or says none)" "")))
 
 (defun efrit-do--handle-request-user-input (tool-input)
   "Handle request_user_input tool to pause and ask user a question.
@@ -733,6 +736,7 @@ session whose tool call is executing (ef-dcn)."
         (format "\n[Error: %s]" (cdr validation))
       (let* ((question (efrit-request-user-input-input-get-question input))
              (options (efrit-request-user-input-input-get-options input))
+             (multi (let ((v (gethash "multi" tool-input))) (and v (not (eq v :json-false)))))
              (repl-session (bound-and-true-p efrit-repl-loop--tool-session))
              (session (and (not repl-session) (efrit-session-active))))
         (cond
@@ -740,11 +744,11 @@ session whose tool call is executing (ef-dcn)."
          ;; pauses on the marker and the next user input is the answer.
          (repl-session
           (setf (efrit-repl-session-pending-question repl-session)
-                (list question options (current-time)))
+                (list question options (current-time) (and multi (list :multi t))))
           (when (fboundp 'efrit-agent-show-question)
             (efrit-agent-show-question question options
-                                       (efrit-repl-session-buffer repl-session)))
-          (efrit-do--waiting-for-user-marker question options))
+                                       (efrit-repl-session-buffer repl-session) multi))
+          (efrit-do--waiting-for-user-marker question options multi))
 
          ((not session)
           "\n[Error: request_user_input requires an active session]")
@@ -927,10 +931,16 @@ Returns JSON-encoded list of checkpoint metadata."
   :fn efrit-tool-mode-line-report
   :label "Mode Line Report")
 
+(efrit-define-optional-input-handler efrit-do--handle-buffer-list "buffer_list"
+  :require efrit-tool-introspect
+  :fields ("pattern" "include_hidden" "max")
+  :fn efrit-tool-buffer-list
+  :label "Buffer List")
+
 (efrit-define-simple-tool-handler efrit-do--handle-buffer-scan "buffer_scan"
   :require efrit-tool-introspect
   :required ("pattern")
-  :fields ("pattern" "buffer" "buffer_regexp" "context" "max" "from_end")
+  :fields ("pattern" "buffer" "buffer_regexp" "context" "max" "from_end" "include_remote")
   :fn efrit-tool-buffer-scan
   :label "Buffer Scan")
 

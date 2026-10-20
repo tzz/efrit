@@ -150,6 +150,40 @@ ones and those the sandbox refuses; caps the total; rejects a bad regexp."
         (kill-buffer a) (kill-buffer b) (kill-buffer hidden)
         (delete-directory root t)))))
 
+(ert-deftest test-introspect-buffer-list-local-first-remote-flagged ()
+  "buffer_list describes buffers without entering them, local ones
+first, remote ones flagged with their host; buffer_scan under a name
+pattern skips remote buffers and names them unless include_remote."
+  (let ((local (generate-new-buffer "*bl-local*"))
+        (remote (generate-new-buffer "bl-remote.py"))
+        (efrit-sandbox-enabled nil))
+    (unwind-protect
+        (progn
+          (with-current-buffer local (insert "needle here\n"))
+          (with-current-buffer remote
+            (insert "needle too\n")
+            (setq buffer-file-name "/ssh:host.invalid:/home/u/bl-remote.py")
+            (set-buffer-modified-p nil))
+          (let* ((r (efrit-tool-buffer-list '((pattern . "bl-"))))
+                 (res (alist-get 'result r))
+                 (bufs (append (alist-get 'buffers res) nil)))
+            (should (eq t (alist-get 'success r)))
+            (should (= 1 (alist-get 'local res)))
+            (should (= 1 (alist-get 'remote res)))
+            (should (equal "*bl-local*" (alist-get 'name (nth 0 bufs))))
+            (should (eq :json-false (alist-get 'remote (nth 0 bufs))))
+            (should (equal "/ssh:host.invalid:" (alist-get 'remote (nth 1 bufs)))))
+          (let* ((r (efrit-tool-buffer-scan '((pattern . "needle") (buffer_regexp . "bl-"))))
+                 (res (alist-get 'result r)))
+            (should (= 1 (alist-get 'buffers_scanned res)))
+            (should (cl-some (lambda (w) (string-match-p "remote buffers not scanned.*bl-remote" w))
+                             (alist-get 'warnings r))))
+          ;; opting in scans it (no sandbox here; live it would ask)
+          (let* ((r (efrit-tool-buffer-scan '((pattern . "needle") (buffer_regexp . "bl-") (include_remote . t)))))
+            (should (= 2 (alist-get 'buffers_scanned (alist-get 'result r))))))
+      (with-current-buffer remote (setq buffer-file-name nil) (set-buffer-modified-p nil))
+      (kill-buffer local) (kill-buffer remote))))
+
 (provide 'test-tool-introspect)
 
 ;;; test-tool-introspect.el ends here

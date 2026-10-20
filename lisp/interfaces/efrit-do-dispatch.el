@@ -143,6 +143,7 @@
     ("live_state"         . (efrit-do--handle-live-state . :tool-input))
     ("mode_line_report"   . (efrit-do--handle-mode-line-report . :tool-input))
     ("buffer_scan"        . (efrit-do--handle-buffer-scan . :tool-input))
+    ("buffer_list"        . (efrit-do--handle-buffer-list . :tool-input))
     ("load_project_file"  . (efrit-do--handle-load-project-file . :tool-input))
     ("run_ert"            . (efrit-do--handle-run-ert . :tool-input))
     ("treesit_info"       . (efrit-do--handle-treesit-info . :tool-input))

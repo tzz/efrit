@@ -795,6 +795,39 @@ the rest of the walk; a no ends the eval (2026-10-19: hrt.md then tzz.md)."
           (kill-buffer a) (kill-buffer b)
           (delete-directory outside t))))))
 
+(ert-deftest test-sb-eval-buffer-sweep-over-remote-buffers-is-refused ()
+  "A buffer-list walk that would enter a remote (TRAMP) buffer is refused
+without a prompt; the denial names buffer_list and the one-at-a-time way
+\(tzz, 2026-10-20: local first, remote by name, ask before reading one)."
+  (test-sb--in-project
+    (test-sb--with-buffers
+      (let* ((outside (make-temp-file "efrit-sb-sweep-" t))
+             (a (test-sb--file-buffer (expand-file-name "a.txt" outside) "A"))
+             (remote (generate-new-buffer "remote.py"))
+             (asked nil)
+             (efrit-sandbox-request-function (lambda (req) (push req asked) 'once)))
+        (with-current-buffer remote
+          ;; a remote file name without a connection: `file-remote-p'
+          ;; reads the string only
+          (setq buffer-file-name "/ssh:host.invalid:/home/u/remote.py"))
+        (unwind-protect
+            (progn
+              (efrit-sandbox-grant 'elisp t 'session)
+              (condition-case err
+                  (progn
+                    (efrit-sandbox-eval-form
+                     '(dolist (buf (buffer-list)) (with-current-buffer buf (ignore buffer-file-name))))
+                    (should nil))
+                (efrit-sandbox-denied
+                 (let ((req (cadr err)))
+                   (should (string-match-p "remote (TRAMP) buffer" (efrit-sandbox-request-detail req)))
+                   (should (string-match-p "buffer_list" (efrit-sandbox-request-detail req))))))
+              ;; nobody was asked
+              (should-not asked))
+          (with-current-buffer remote (setq buffer-file-name nil) (set-buffer-modified-p nil))
+          (kill-buffer remote) (kill-buffer a)
+          (delete-directory outside t))))))
+
 (ert-deftest test-sb-eval-jka-compr-helper-is-not-the-model ()
   "Reading a .gz file in the project from an eval runs gzip through
 jka-compr; that process is Emacs's, not a shell request of the model's

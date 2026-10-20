@@ -1034,6 +1034,9 @@ Returns t if toggled, nil if no tool at point."
        ((not hidden) (isearch-filter-visible beg end))
        ((null search-invisible) nil)
        ((eq search-invisible 'open)
+        ;; a folded turn first (its rows are under it), then the row
+        (when (fboundp 'efrit-agent-fold-open-containing)
+          (efrit-agent-fold-open-containing beg))
         (let ((id (get-text-property beg 'efrit-id)))
           (when (and id (efrit-agent--set-tool-expanded id t))
             (push id efrit-agent--isearch-opened))
