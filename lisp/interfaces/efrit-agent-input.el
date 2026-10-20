@@ -27,6 +27,7 @@
 (require 'efrit-repl-session)
 (require 'efrit-repl-loop)
 (require 'efrit-agent-mentions)
+(require 'efrit-agent-screenshot)   ; /shot and show_ui_element
 (require 'efrit-brief)
 
 ;; Forward declarations
@@ -528,20 +529,27 @@ list ends.  Idea from agent-shell's list-edit mode."
 ;; while the model works.  Two things can be meant: "after this, do
 ;; that" (queue: the text starts its own turn when this one ends) or
 ;; "while you are at it" (steer: the text goes to the model with the
-;; next tool results, inside this turn).  RET does the first by
-;; default and M-RET the second; both are customizable.
+;; next tool results, inside this turn).  RET steers by default and
+;; M-RET queues; both are customizable.  Steer is the default because
+;; what the user types during a turn is nearly always a correction to
+;; it ("keep the one in the buffer", "drop just the right-hand one"),
+;; and a queued correction is read only after the turn has gone the
+;; wrong way and asked its questions (2026-10-20).  A steer that
+;; finds no tool round is queued anyway, so it is never the worse
+;; choice.
 
-(defcustom efrit-agent-busy-submit-default-function #'efrit-agent-busy-submit-queue
+(defcustom efrit-agent-busy-submit-default-function #'efrit-agent-busy-submit-steer
   "What RET does with the input while a turn runs.
 A function of one argument, the input text, in the agent buffer.
-`efrit-agent-busy-submit-queue' starts a new turn with it when this one
-ends; `efrit-agent-busy-submit-steer' hands it to the running turn."
+`efrit-agent-busy-submit-steer' hands it to the running turn, which
+reads it with its next tool results; `efrit-agent-busy-submit-queue'
+starts a new turn with it when this one ends."
   :type '(choice (const :tag "Queue for the next turn" efrit-agent-busy-submit-queue)
                  (const :tag "Steer the running turn" efrit-agent-busy-submit-steer)
                  function)
   :group 'efrit-agent)
 
-(defcustom efrit-agent-busy-submit-override-function #'efrit-agent-busy-submit-steer
+(defcustom efrit-agent-busy-submit-override-function #'efrit-agent-busy-submit-queue
   "What M-RET (or C-u RET) does with the input while a turn runs.
 See `efrit-agent-busy-submit-default-function'."
   :type '(choice (const :tag "Queue for the next turn" efrit-agent-busy-submit-queue)
@@ -594,9 +602,9 @@ Conversation context accumulates across inputs - Claude remembers
 what was discussed previously.
 
 If the REPL session is idle, a new turn starts with the input.  If it
-is working, `efrit-agent-busy-submit-default-function' decides (queue
+is working, `efrit-agent-busy-submit-default-function' decides (steer
 by default); with OVERRIDE, `efrit-agent-busy-submit-override-function'
-\(steer by default).  If no REPL session exists, one is created.
+\(queue by default).  If no REPL session exists, one is created.
 Idle, a prefix argument (OVERRIDE) means \"grill me\": the model asks
 its clarifying questions before acting (`efrit-grill-me')."
   (interactive "P")

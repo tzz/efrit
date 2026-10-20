@@ -414,6 +414,12 @@ IMPORTANT: Session PAUSES until user responds.")
                                       ("line" . (("type" . "integer") ("description" . "1-based, when no start_text")))
                                       ("end_line" . (("type" . "integer")))))
                       ("required" . ["file"]))))
+   (("name" . "show_ui_element")
+    ("description" . "Point at a piece of the user's screen: flash the mode line, header line or tab line of a window (by buffer name) for two seconds and return where it is in frame pixels. Use it instead of describing a location in words (\"the arc on row 2 next to the status word\"), and when a user's screenshot shows a window line, to confirm which one you mean before acting. A screenshot the user attaches with /shot comes with a LAYOUT block: window rectangles and the constructs of each line; read it before asking which element they meant.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("buffer" . (("type" . "string") ("description" . "Name of the buffer whose window line to flash")))
+                                      ("element" . (("type" . "string") ("enum" . ["mode-line" "header-line" "tab-line"]) ("description" . "Default mode-line")))))
+                      ("required" . ["buffer"]))))
    (("name" . "get_last_error")
     ("description" . "The user's recent command errors in this Emacs (message, condition, command, buffer, backtrace frame summary), newest first. Use this when the user asks why something just failed, before reproducing anything. Read-only.")
     ("input_schema" . (("type" . "object")
@@ -535,6 +541,49 @@ Returns: Matches with file path, line number, column, content, and context lines
                                       ("pattern" . (("type" . "string") ("description" . "Glob to keep only some files, e.g. *.el or lisp/interfaces/*")))
                                       ("max_files" . (("type" . "integer") ("description" . "Default 400")))))
                       ("required" . []))))
+   (("name" . "symbol_info")
+    ("description" . "Everything about one Emacs Lisp symbol in ONE call: kinds (function/command/macro/variable/user-option/face), signature, docstring, defining file and line, the definition's source text, the current value (in a buffer you name), default and standard values, advice, whether it is compiled, and (optionally) its callers. Read-only, not reviewed. Use this instead of search_content + read_file + eval_sexp probes of symbol-file/fboundp/describe-*.
+
+EXAMPLES:
+- symbol_info symbol=\"efrit-agent-spinner-mode-line-string\"
+- symbol_info symbol=\"global-mode-string\" buffer=\"*scratch*\"
+- symbol_info symbol=\"efrit-agent-buffers\" include_callers=true")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("symbol" . (("type" . "string") ("description" . "The symbol's name")))
+                                      ("buffer" . (("type" . "string") ("description" . "Buffer whose binding of a variable is read (default: the user's buffer)")))
+                                      ("include_source" . (("type" . "boolean") ("description" . "Include the definition's text (default true)")))
+                                      ("include_callers" . (("type" . "boolean") ("description" . "Walk xref for callers (default false; slower)")))))
+                      ("required" . ["symbol"]))))
+   (("name" . "live_state")
+    ("description" . "Current values of named variables and the bound/fbound state of names, in one buffer. Names only: nothing is evaluated or called, so it is read-only and not reviewed. Use it for every 'what is X right now' instead of an eval_sexp of (list x y z).
+
+EXAMPLE: live_state names=[\"global-mode-string\", \"header-line-format\", \"efrit-agent--thinking-label\"] buffer=\"*efrit-agent*\"")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("names" . (("type" . "array") ("items" . (("type" . "string"))) ("description" . "Symbol names")))
+                                      ("buffer" . (("type" . "string") ("description" . "Buffer whose bindings are read (default: the user's buffer)")))))
+                      ("required" . ["names"]))))
+   (("name" . "mode_line_report")
+    ("description" . "Every window's mode line, header line and tab line as rendered text, taken apart into the constructs they are made of, each named by the variable or (:eval FUNCTION) it came from; plus global-mode-string and mode-line-misc-info. Answers 'what is that thing in the mode line / header' by name in one call. Read-only.
+
+EXAMPLE: mode_line_report buffer=\"*efrit-agent*\"")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("frame" . (("type" . "string") ("enum" . ["selected" "all"]) ("description" . "Windows of the selected frame (default) or all frames")))
+                                      ("buffer" . (("type" . "string") ("description" . "Only windows showing this buffer")))))
+                      ("required" . []))))
+   (("name" . "buffer_scan")
+    ("description" . "Regexp matches with surrounding lines in one buffer, or in every live buffer whose name matches buffer_regexp. Read-only; each buffer passes the sandbox's buffer check. Use it instead of re-search-forward loops in eval_sexp: logs (*efrit-log*, *Messages*), the agent transcript, any buffer.
+
+EXAMPLES:
+- buffer_scan buffer=\"*efrit-log*\" pattern=\"sandbox: denied\" from_end=true max=5
+- buffer_scan buffer_regexp=\"^\\\\*efrit\" pattern=\"kill.ring\" context=3")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("pattern" . (("type" . "string") ("description" . "Emacs regexp")))
+                                      ("buffer" . (("type" . "string") ("description" . "Buffer name (default: the user's buffer)")))
+                                      ("buffer_regexp" . (("type" . "string") ("description" . "Scan every live buffer whose name matches, instead of buffer")))
+                                      ("context" . (("type" . "integer") ("description" . "Lines of context each side (default 2)")))
+                                      ("max" . (("type" . "integer") ("description" . "Most matches returned (default 200)")))
+                                      ("from_end" . (("type" . "boolean") ("description" . "Newest first: search from the end")))))
+                      ("required" . ["pattern"]))))
    (("name" . "read_file")
     ("description" . "Read files and return their contents with metadata. READ WHOLE FILES, SEVERAL AT ONCE: pass paths=[...] for every file the task touches in ONE call; the result holds them all under a token budget (default 40k), and a file that does not fit comes back as its outline (definitions with line numbers) so you read a range of it next. Do not read a file in 60-line windows: nine range reads of one file cost nine round trips where one whole read costs one.
 

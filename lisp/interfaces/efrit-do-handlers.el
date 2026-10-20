@@ -74,6 +74,11 @@
 (declare-function efrit-tool-project-outline "efrit-tool-outline")
 (declare-function efrit-tool-load-project-file "efrit-tool-lisp-dev")
 (declare-function efrit-tool-run-ert "efrit-tool-lisp-dev")
+(declare-function efrit-tool-symbol-info "efrit-tool-introspect")
+(declare-function efrit-tool-show-ui-element "efrit-agent-screenshot")
+(declare-function efrit-tool-live-state "efrit-tool-introspect")
+(declare-function efrit-tool-mode-line-report "efrit-tool-introspect")
+(declare-function efrit-tool-buffer-scan "efrit-tool-introspect")
 (declare-function efrit-tool-undo-edit "efrit-tool-undo-edit")
 (declare-function efrit-tool-edit-file "efrit-tool-edit-file")
 (declare-function efrit-tool-create-file "efrit-tool-create-file")
@@ -902,6 +907,33 @@ Returns JSON-encoded list of checkpoint metadata."
   :fn efrit-tool-project-outline
   :label "Project Outline")
 
+(efrit-define-simple-tool-handler efrit-do--handle-symbol-info "symbol_info"
+  :require efrit-tool-introspect
+  :required ("symbol")
+  :fields ("symbol" "buffer" "include_source" "include_callers")
+  :fn efrit-tool-symbol-info
+  :label "Symbol Info")
+
+(efrit-define-simple-tool-handler efrit-do--handle-live-state "live_state"
+  :require efrit-tool-introspect
+  :required ("names")
+  :fields (("names" . efrit-do--vector-to-list) "buffer")
+  :fn efrit-tool-live-state
+  :label "Live State")
+
+(efrit-define-optional-input-handler efrit-do--handle-mode-line-report "mode_line_report"
+  :require efrit-tool-introspect
+  :fields ("frame" "buffer")
+  :fn efrit-tool-mode-line-report
+  :label "Mode Line Report")
+
+(efrit-define-simple-tool-handler efrit-do--handle-buffer-scan "buffer_scan"
+  :require efrit-tool-introspect
+  :required ("pattern")
+  :fields ("pattern" "buffer" "buffer_regexp" "context" "max" "from_end")
+  :fn efrit-tool-buffer-scan
+  :label "Buffer Scan")
+
 (efrit-define-simple-tool-handler efrit-do--handle-undo-edit "undo_edit"
   :require efrit-tool-undo-edit
   :required ("path")
@@ -1029,6 +1061,13 @@ call it, so answer clearly instead of silently obeying."
   :fields ("file" "line" "depth")
   :fn efrit-tool-surrounding-context
   :label "Context")
+
+(efrit-define-simple-tool-handler efrit-do--handle-show-ui-element "show_ui_element"
+  :require efrit-agent-screenshot
+  :required ("buffer")
+  :fields ("buffer" "element")
+  :fn efrit-tool-show-ui-element
+  :label "UI Element")
 
 (efrit-define-simple-tool-handler efrit-do--handle-show-location "show_location"
   :require efrit-tool-navigate

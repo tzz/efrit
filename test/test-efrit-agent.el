@@ -51,8 +51,8 @@
   (goto-char (point-max))
   (insert text))
 
-(ert-deftest test-efrit-agent-busy-submit-queues-then-steers ()
-  "RET on a busy session queues, M-RET steers, both show the line at once
+(ert-deftest test-efrit-agent-busy-submit-steers-then-queues ()
+  "RET on a busy session steers, M-RET queues, both show the line at once
 with their own prefix; the queue drains in order when the turn ends,
 turning the waiting mark into a sent one, and keeps the user's draft;
 a failed turn holds the queue.  `efrit-submit' from Lisp returns nil
@@ -72,17 +72,18 @@ on a busy session without drawing anything."
         (unwind-protect
             (progn
               (efrit-repl-loop-hold session)
-              ;; RET: queued, drawn with the waiting prefix, input cleared
+              ;; M-RET: queued, drawn with the waiting prefix, input cleared
               (test-efrit-agent--type "second thing")
-              (efrit-agent-input-send)
+              (efrit-agent-input-send-override)
               (should (equal '("second thing") (efrit-repl-session-queue session)))
               (should (equal "" (efrit-agent--get-input)))
               (should (efrit-agent--find-user-message "second thing" 'queued))
               (should (equal '(queued . "second thing") (car events)))
               (should-not sent)
-              ;; M-RET: steer event, drawn as a steer line
+              ;; RET: steer event, drawn as a steer line (the default
+              ;; since 2026-10-20: mid-turn input is a correction)
               (test-efrit-agent--type "and be brief")
-              (efrit-agent-input-send-override)
+              (efrit-agent-input-send)
               (should (equal '(steer . "and be brief") (car events)))
               (should (efrit-agent--find-user-message "and be brief" 'steer))
               (should-not sent)
@@ -91,7 +92,7 @@ on a busy session without drawing anything."
               (should-not (efrit-agent--find-user-message "from lisp" nil))
               ;; Another queued one, then a draft the user is typing
               (test-efrit-agent--type "third thing")
-              (efrit-agent-input-send)
+              (efrit-agent-input-send-override)
               (test-efrit-agent--type "draft in progress")
               ;; A failed turn holds the queue
               (efrit-repl-loop-release session)
