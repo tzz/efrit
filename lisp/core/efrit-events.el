@@ -202,7 +202,15 @@ Clocks take a reading at their start and subtract the difference.")
 ;; global value is used.
 (efrit-session-local 'efrit-user-waiting-seconds 'efrit-user-waiting-depth)
 
-(defvar efrit-tools-input-allowed)
+(defvar efrit-tools-input-allowed nil
+  "Non-nil while efrit itself asks the user from inside an eval.
+The stubs `efrit-tools--call-with-input-blocked' installs are global:
+they replace `read-string' for everyone until the eval returns, and
+efrit's own prompts run inside the eval (the sandbox menu's `w' and
+`e', a y-or-n-p from the ediff path).  Bound to t by
+`efrit-with-user-waiting', the stubs call the real function then
+\(2026-10-16: `w' at a prompt raised by eval_sexp failed with the
+blocked-input error).")
 
 (defmacro efrit-with-user-waiting (&rest body)
   "Run BODY, a prompt to the user, with efrit's clocks paused.

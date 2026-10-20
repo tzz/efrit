@@ -206,12 +206,16 @@ CURRENT absent: the first entry."
       (user-error "There are %d agent buffer%s" (length ring) (if (= 1 (length ring)) "" "s")))
     (efrit-agent-ring--show (nth (1- n) ring))))
 
-(dotimes (i 9)
-  (defalias (intern (format "efrit-agent-switch-to-%d" (1+ i)))
-    (let ((n (1+ i)))
-      (lambda () (:documentation (format "Show agent buffer %d." n))
-        (interactive)
-        (efrit-agent-switch-to-number n)))))
+(defmacro efrit-agent-ring--define-switch-commands (count)
+  "Define `efrit-agent-switch-to-1' .. COUNT as top-level commands."
+  `(progn
+     ,@(cl-loop for n from 1 to count
+                collect `(defun ,(intern (format "efrit-agent-switch-to-%d" n)) ()
+                           ,(format "Show agent buffer %d." n)
+                           (interactive)
+                           (efrit-agent-switch-to-number ,n)))))
+
+(efrit-agent-ring--define-switch-commands 9)
 
 (defvar-local efrit-agent--unread-pinned nil
   "Non-nil when the user set the unread mark by hand: the first dwell
@@ -520,11 +524,14 @@ plus `window-end' per keystroke made typing stutter)."
   "Make every live agent buffer show the logo as its mode name.
 `efrit-agent-mode' sets it for new buffers; this is for buffers that
 exist across a reload (tzz, 2026-10-14: \"the text is still there\")."
-  (dolist (b (efrit-agent-buffers))
-    (with-current-buffer b
-      (setq mode-name '(:eval (or (efrit-agent-ring-mode-line-string) "Efrit-Agent")))
-      (setq mode-line-process nil)))
-  (force-mode-line-update t))
+  ;; `efrit-agent-buffers' is in efrit-agent-core, which requires this
+  ;; file; before core loads there are no agent buffers to retitle
+  (when (fboundp 'efrit-agent-buffers)
+    (dolist (b (efrit-agent-buffers))
+      (with-current-buffer b
+        (setq mode-name '(:eval (or (efrit-agent-ring-mode-line-string) "Efrit-Agent")))
+        (setq mode-line-process nil)))
+    (force-mode-line-update t)))
 
 (defun efrit-agent-ring-install ()
   "Subscribe to the events and hooks the marks depend on."

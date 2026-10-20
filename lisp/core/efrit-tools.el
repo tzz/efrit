@@ -208,15 +208,7 @@ Signals an error if rate limit would be exceeded."
 Each blocks the Emacs event loop waiting for keyboard input, which
 freezes the editor when called from the async tool loop (ef-bdg).")
 
-(defvar efrit-tools-input-allowed nil
-  "Non-nil while efrit itself asks the user from inside an eval.
-The stubs `efrit-tools--call-with-input-blocked' installs are global:
-they replace `read-string' for everyone until the eval returns, and
-efrit's own prompts run inside the eval (the sandbox menu's `w' and
-`e', a y-or-n-p from the ediff path).  Bound to t by
-`efrit-with-user-waiting', the stubs call the real function then
-\(2026-10-16: `w' at a prompt raised by eval_sexp failed with the
-blocked-input error).")
+(defvar efrit-tools-input-allowed) ; defined in efrit-events, bound by `efrit-with-user-waiting'
 
 (defun efrit-tools--call-with-input-blocked (thunk)
   "Call THUNK with synchronous input functions overridden to signal errors.

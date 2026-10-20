@@ -35,6 +35,8 @@
 (defvar efrit-agent--status)
 (declare-function efrit-usage-indicator "efrit-usage")
 (declare-function efrit-repl-session-id "efrit-repl-session")
+(declare-function url-host "url-parse" (cl-x) t)
+(declare-function url-generic-parse-url "url-parse" (url))
 (declare-function efrit-doctor--redact-url "efrit-doctor")
 (declare-function efrit-permissions "efrit-permissions-ui")
 (declare-function efrit-review-package "efrit-package-review")

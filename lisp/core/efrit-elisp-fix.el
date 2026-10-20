@@ -84,8 +84,9 @@ already balanced (or too broken to fix mechanically)."
           (when notes
             ;; only offer a fix that reads
             (condition-case nil
-                (progn (read-from-string fixed)
-                       (cons fixed (mapconcat #'identity notes ", ")))
+                (let ((parsed (read-from-string fixed)))
+                  (and (consp parsed)
+                       (cons fixed (mapconcat #'identity notes ", "))))
               (error nil))))
       (error nil))))
 

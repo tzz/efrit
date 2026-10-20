@@ -37,6 +37,7 @@
 (require 'efrit-config)
 (require 'dom)
 (declare-function efrit-sandbox-check "efrit-sandbox")
+(declare-function efrit-vcs-diff-strings "efrit-vcs" (old new &optional old-label new-label))
 (declare-function efrit-sandbox-abbreviate "efrit-sandbox")
 (declare-function efrit-sandbox--git-toplevel "efrit-sandbox")
 (defvar efrit-sandbox-enabled)

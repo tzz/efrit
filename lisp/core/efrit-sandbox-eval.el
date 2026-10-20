@@ -649,9 +649,10 @@ current buffer is where eval already runs."
     ;; shape it is looking at (advice gets the function, not the name)
     (let ((wrapper (intern (format "efrit-sandbox-eval--guard-%s" fn))))
       (unless (fboundp wrapper)
-        (defalias wrapper
-          (lambda (orig &rest args) (apply #'efrit-sandbox-eval--guard-process-1 fn orig args))
-          (format "The eval sandbox's process guard around `%s'." fn)))
+        (fset wrapper
+              (lambda (orig &rest args) (apply #'efrit-sandbox-eval--guard-process-1 fn orig args)))
+        (put wrapper 'function-documentation
+             (format "The eval sandbox's process guard around `%s'." fn)))
       (unless (advice-member-p wrapper fn)
         (advice-add fn :around wrapper))))
   (dolist (fn '(make-network-process open-network-stream url-retrieve

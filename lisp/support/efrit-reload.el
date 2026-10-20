@@ -43,6 +43,7 @@
 (require 'cl-lib)
 (require 'seq)
 (require 'subr-x)
+(declare-function efrit-log "efrit-log" (level fmt &rest args))
 
 (defconst efrit-reload--feature-prefix "efrit"
   "Features whose names start with this are reloaded.")

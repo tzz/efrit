@@ -105,6 +105,7 @@
 (declare-function efrit-unregister-package-tools "efrit-tool-registry")
 (declare-function efrit-submit "efrit-agent-input")
 (declare-function efrit-agent-repl-session "efrit-agent-input")
+(declare-function efrit-repl-session-id "efrit-repl-session")
 (declare-function efrit-repl-session-history-mark "efrit-repl-session")
 (declare-function efrit-repl-session-rewind "efrit-repl-session")
 (declare-function efrit-repl-session-last-answer "efrit-repl-session")
