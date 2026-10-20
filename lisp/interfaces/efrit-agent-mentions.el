@@ -31,8 +31,12 @@
 ;; Drag and drop.  A file dropped on the buffer from a file manager is
 ;; inserted as a mention; an image gets a small preview in the input.
 ;; Files from a temporary directory (a screenshot the OS offers as a
-;; drag) are copied under `<project>/.efrit/dropped/` first, so the
-;; mention still resolves after the OS deletes the original.
+;; drag) are copied under `efrit-agent-dropped-directory' first, so the
+;; mention still resolves after the OS deletes the original.  That is
+;; `~/.emacs.d/.efrit/dropped/<project>/', not the project: a paste
+;; landed in a code checkout as .efrit/dropped/paste-….png (2026-10-20,
+;; tzz: "why is the file in my code repo?").  Files older than
+;; `efrit-agent-dropped-keep-days' are deleted when a new one arrives.
 
 ;;; Code:
 
@@ -43,6 +47,7 @@
 (declare-function image-convert "image-converter")
 (declare-function image-convert-p "image-converter")
 (require 'efrit-log)
+(require 'efrit-config)
 (require 'efrit-tool-utils)
 (require 'efrit-vcs)
 (require 'efrit-brief)
@@ -486,20 +491,53 @@ typo should not cost a turn."
       (user-error "Not a local file: %s" url))
     file))
 
+(defcustom efrit-agent-dropped-directory
+  (expand-file-name "dropped" efrit-data-directory)
+  "Where pasted images and dragged temporary files are kept, by project.
+Outside the project tree: a file the user pasted into the conversation
+is efrit's record, not the project's."
+  :type 'directory
+  :group 'efrit-agent-mentions)
+
+(defcustom efrit-agent-dropped-keep-days 14
+  "Days a pasted or dropped file is kept before `efrit-agent-dropped-prune' deletes it.
+The transcript keeps the mention text; the API call that used the
+bytes is long over.  nil keeps them forever."
+  :type '(choice (const :tag "forever" nil) natnum)
+  :group 'efrit-agent-mentions)
+
+(defun efrit-agent-dropped-dir ()
+  "The directory this project's pasted and dropped files go to, created."
+  (let* ((root (or (ignore-errors (efrit-tool--get-project-root)) default-directory))
+         (name (file-name-nondirectory (directory-file-name root)))
+         (dir (file-name-as-directory
+               (expand-file-name (format "%s-%s" name (substring (md5 (expand-file-name root)) 0 8))
+                                 efrit-agent-dropped-directory))))
+    (make-directory dir t)
+    (efrit-agent-dropped-prune dir)
+    dir))
+
+(defun efrit-agent-dropped-prune (dir)
+  "Delete files in DIR older than `efrit-agent-dropped-keep-days'."
+  (when efrit-agent-dropped-keep-days
+    (let ((cutoff (time-subtract nil (days-to-time efrit-agent-dropped-keep-days))))
+      (dolist (f (directory-files dir t "\\`[^.]"))
+        (when (and (file-regular-p f)
+                   (time-less-p (file-attribute-modification-time (file-attributes f)) cutoff))
+          (ignore-errors (delete-file f)))))))
+
 (defun efrit-agent-dnd--keep (file)
-  "FILE, or a copy under the project when FILE is in a temporary directory.
+  "FILE, or a copy under `efrit-agent-dropped-dir' when FILE is temporary.
 The OS deletes a dragged screenshot soon after the drop."
   (let ((root (ignore-errors (efrit-tool--get-project-root)))
         (tmp (file-name-as-directory (expand-file-name temporary-file-directory))))
-    (if (and root (string-prefix-p tmp (expand-file-name file))
-             (not (string-prefix-p (file-name-as-directory root) (expand-file-name file))))
-        (let* ((dir (expand-file-name ".efrit/dropped/" root))
-               (dest (expand-file-name
-                      (format "%s-%s.%s" (format-time-string "%Y%m%d-%H%M%S")
-                              (substring (md5 file) 0 6)
-                              (or (file-name-extension file) "bin"))
-                      dir)))
-          (make-directory dir t)
+    (if (and (string-prefix-p tmp (expand-file-name file))
+             (not (and root (string-prefix-p (file-name-as-directory root) (expand-file-name file)))))
+        (let ((dest (expand-file-name
+                     (format "%s-%s.%s" (format-time-string "%Y%m%d-%H%M%S")
+                             (substring (md5 file) 0 6)
+                             (or (file-name-extension file) "bin"))
+                     (efrit-agent-dropped-dir))))
           (copy-file file dest t)
           dest)
       file)))
@@ -545,7 +583,7 @@ The OS deletes a dragged screenshot soon after the drop."
 ;; A screenshot in the clipboard (Cmd-Ctrl-Shift-4 on macOS, a snip
 ;; tool on Linux) is `image/png' on X and PGTK, `image/png' or
 ;; `image/tiff' on NS (Emacs 29+ `yank-media').  The bytes go to a
-;; file under `<project>/.efrit/dropped/', the same place a dragged
+;; file under `efrit-agent-dropped-dir', the same place a dragged
 ;; screenshot is kept, and the file becomes an image mention with a
 ;; preview, exactly as a drop does.  C-y in the input tries the
 ;; clipboard's media first and falls back to the ordinary yank, so
@@ -558,23 +596,17 @@ is kept as TIFF, which the API does not accept, and the mention says so."
   :type '(choice (const png) (const jpeg))
   :group 'efrit-agent-mentions)
 
-(defun efrit-agent-paste--dropped-dir ()
-  "The directory pasted and dropped files are kept in."
-  (let ((root (or (ignore-errors (efrit-tool--get-project-root)) default-directory)))
-    (expand-file-name ".efrit/dropped/" root)))
-
 (defun efrit-agent-paste--write-image (data mime)
   "Write image DATA (a unibyte string of MIME type) to a new file; return its path.
 TIFF is converted to `efrit-agent-paste-image-format' when
 `image-convert' is available (ImageMagick or GraphicsMagick)."
-  (let* ((dir (efrit-agent-paste--dropped-dir))
+  (let* ((dir (efrit-agent-dropped-dir))
          (ext (pcase mime
                 ("image/png" "png") ("image/jpeg" "jpg") ("image/gif" "gif")
                 ("image/webp" "webp") ("image/tiff" "tiff") ("image/bmp" "bmp")
                 (_ "img")))
          (stamp (format "%s-%s" (format-time-string "%Y%m%d-%H%M%S") (substring (md5 data) 0 6)))
          (path (expand-file-name (format "paste-%s.%s" stamp ext) dir)))
-    (make-directory dir t)
     (let ((coding-system-for-write 'binary))
       (with-temp-file path (set-buffer-multibyte nil) (insert data)))
     ;; the API takes png/jpeg/gif/webp; convert the rest when we can
@@ -593,7 +625,7 @@ TIFF is converted to `efrit-agent-paste-image-format' when
       path)))
 
 (defun efrit-agent-paste-image (mime data)
-  "`yank-media' handler: keep the image DATA of MIME under the project, mention it.
+  "`yank-media' handler: keep the image DATA of MIME in `efrit-agent-dropped-dir', mention it.
 MIME is the type symbol (`image/png'), DATA the bytes, in that order
 \(`yank-media-handler'); 0.12.27 to 0.12.30 had them swapped and
 failed with \"Invalid object argument: image/png\"."

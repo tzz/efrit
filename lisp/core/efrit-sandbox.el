@@ -1010,11 +1010,13 @@ the variable to nil to mean \"deny without asking\": no fallback there."
         (lambda () (file-name-directory (directory-file-name data-directory)))
         (lambda () (bound-and-true-p package-user-dir))
         (lambda () (and (boundp 'user-emacs-directory) (expand-file-name "elpa" user-emacs-directory)))
-        (lambda () temporary-file-directory))
+        (lambda () temporary-file-directory)
+        ;; what the user pasted or dropped into the conversation
+        (lambda () (bound-and-true-p efrit-agent-dropped-directory)))
   "Directories whose files the model may read without asking.
 Each element is a directory, or a function of no arguments returning
-one (or nil).  The Emacs installation, installed packages and the
-temporary directory by default."
+one (or nil).  The Emacs installation, installed packages, the
+temporary directory and the pasted-images directory by default."
   :type '(repeat (choice directory function))
   :group 'efrit-sandbox)
 
