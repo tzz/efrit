@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.12.12
+;; Version: 0.12.36
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tools, ai, faces
 
@@ -138,29 +138,102 @@ batch returns wrong values for hex colours."
       (clrhash efrit-pill--cache)
       (setq efrit-pill--cache-key key))))
 
+(defcustom efrit-pill-style 'raised
+  "How pills are drawn.
+`raised': a slight top-to-bottom gradient, a soft shadow beneath and a
+hairline highlight along the top, so the pill stands off its surround;
+the text is flat on top at full contrast.  `flat': one colour."
+  :type '(choice (const raised) (const flat))
+  :group 'efrit-pill)
+
+(defun efrit-pill--shade (color amount)
+  "COLOR lightened (AMOUNT > 0) or darkened (AMOUNT < 0) in HSL lightness."
+  (pcase-let* ((`(,r ,g ,b) (efrit-pill--rgb color))
+               (`(,h ,s ,l) (color-rgb-to-hsl r g b)))
+    (efrit-pill--hex (color-hsl-to-rgb h s (max 0.0 (min 1.0 (+ l amount)))))))
+
+(defun efrit-pill--lozenge-path (x y w h)
+  "Path data of a stadium at X Y, W by H: explicit arcs at both ends.
+Some renderers drop `rx' on small `rect's; arcs always draw."
+  (let ((r (/ h 2.0)))
+    (format "M%.2f,%.2f H%.2f A%.2f,%.2f 0 0 1 %.2f,%.2f H%.2f A%.2f,%.2f 0 0 1 %.2f,%.2f Z"
+            (+ x r) y (- (+ x w) r)
+            r r (- (+ x w) r) (+ y h)
+            (+ x r)
+            r r (+ x r) y)))
+
+(defvar efrit-pill--id 0 "Counter for unique ids within SVG documents.")
+
+(defun efrit-pill-draw-lozenge (svg x y w h fill &optional style)
+  "Append to SVG a stadium at X Y, W by H in FILL, per STYLE (default `efrit-pill-style').
+`raised': a `linearGradient' lighter at the top and darker at the
+bottom (within a few percent of FILL's lightness, so text on it keeps
+its contrast), a blurred darker copy offset downward as a shadow, and
+a near-white hairline along the upper arc.  `flat': FILL alone.  Draw
+text afterwards; it sits flat on top.  Shared with tzz-pill and
+nngmail so every pill on the screen is the same material."
+  (pcase (or style efrit-pill-style)
+    ('flat (svg-node svg 'path :d (efrit-pill--lozenge-path x y w h) :fill fill))
+    (_
+     (let* ((n (cl-incf efrit-pill--id))
+            (grad (format "efrit-pill-g%d" n))
+            (blur (format "efrit-pill-b%d" n))
+            (defs (or (car (dom-by-tag svg 'defs))
+                      (let ((d (dom-node 'defs))) (svg--append svg d) d)))
+            (dark-pill (< (nth 2 (apply #'color-rgb-to-hsl (efrit-pill--rgb fill))) 0.5))
+            (light (efrit-pill--shade fill (if dark-pill 0.14 0.07)))
+            (dark (efrit-pill--shade fill (if dark-pill -0.10 -0.16)))
+            (shadow (efrit-pill--shade fill -0.55))
+            (highlight-opacity (if dark-pill "0.25" "0.6")))
+       (dom-append-child
+        defs (dom-node 'linearGradient `((id . ,grad) (x1 . "0") (y1 . "0") (x2 . "0") (y2 . "1"))
+                       (dom-node 'stop `((offset . "0%") (stop-color . ,light)))
+                       (dom-node 'stop `((offset . "100%") (stop-color . ,dark)))))
+       (dom-append-child
+        defs (dom-node 'filter `((id . ,blur) (x . "-10%") (y . "-30%") (width . "120%") (height . "180%"))
+                       (dom-node 'feGaussianBlur `((stdDeviation . ,(format "%.2f" (* 0.09 h)))))))
+       (svg-node svg 'path :d (efrit-pill--lozenge-path x (+ y (* 0.12 h)) w h)
+                 :fill shadow :fill-opacity "0.6" :filter (format "url(#%s)" blur))
+       (svg-node svg 'path :d (efrit-pill--lozenge-path x y w h) :fill (format "url(#%s)" grad))
+       (let ((r (/ h 2.0)) (inset (* 0.08 h)))
+         (svg-node svg 'path
+                   :d (format "M%.2f,%.2f H%.2f" (+ x r) (+ y inset) (- (+ x w) r))
+                   :fill "none" :stroke "#ffffff" :stroke-opacity highlight-opacity
+                   :stroke-width (format "%.2f" (max 0.8 (* 0.06 h))) :stroke-linecap "round"))))))
+
 (defun efrit-pill--draw (text bg fg scale &optional dot)
   "TEXT as a pill image string with BG and FG colours at SCALE.
 DOT non-nil draws a disc inside the pill, before the text: red when
 DOT is `filled' (the agent needs you), a dimple in the background
 colour otherwise.  The pill itself is always filled (tzz, 2026-10-14)."
-  (let* ((height (max 12 (round (* scale (default-font-height)))))
+  (let* ((lh (default-font-height))
+         ;; Raised pills leave room below for the shadow (12% of the pill).
+         (height (max 12 (round (* scale lh (if (eq efrit-pill-style 'raised) 0.86 1.0)))))
          (font-size (round (* 0.62 height)))
          (family (face-attribute 'default :family))
          (dot-d (and dot (round (* 0.6 height))))
          (text-only (string-empty-p text))
          (dot-space (if dot (+ dot-d (if text-only 0 (round (* 0.35 font-size)))) 0))
          (width (+ (* (string-width text) (round (* 0.66 font-size))) (default-font-width) dot-space))
-         (svg (svg-create width height)))
-    (svg-rectangle svg 0 1 width (- height 2) :rx (/ height 2.0) :fill bg)
+         ;; The canvas is the full line height with the pill inset, so
+         ;; the shadow has room and pills of different scales centre.
+         (top (if (eq efrit-pill-style 'raised)
+                  (* 0.4 (- lh height))      ; a little high: the shadow falls below
+                (/ (- lh height) 2.0)))
+         (svg (svg-create width lh)))
+    (dom-set-attribute svg 'viewBox (format "0 0 %s %s" width lh))
+    (efrit-pill-draw-lozenge svg 0 top width height bg)
     (when dot
       ;; the mark: a solid embossed disc, red when the agent needs you,
       ;; a background-coloured dimple otherwise (tzz, 2026-10-14: a
       ;; drawn e did not read well at tab size)
-      (efrit-pill--dot svg (/ (default-font-width) 2.0) (/ (- height dot-d) 2.0) dot-d bg
+      (efrit-pill--dot svg (/ (default-font-width) 2.0) (+ top (/ (- height dot-d) 2.0)) dot-d bg
                        (max 0.6 (/ dot-d 16.0)) (eq dot 'filled)))
     (unless text-only
-      (svg-text svg text :x (+ (/ (+ width dot-space) 2.0)) :y (/ height 2.0)
-                :text-anchor "middle" :dominant-baseline "central"
+      ;; Baseline nudged by 0.35 em rather than `dominant-baseline',
+      ;; which some renderers ignore; this centres the x-height.
+      (svg-text svg text :x (+ (/ (+ width dot-space) 2.0)) :y (+ top (* height 0.5) (* font-size 0.35))
+                :text-anchor "middle"
                 :font-family family :font-weight "bold" :font-size font-size :fill fg))
     (propertize (if text-only "●" text) 'display (svg-image svg :ascent 'center :scale 1))))
 
@@ -231,7 +304,7 @@ HELP-ECHO becomes the tooltip.  Without SVG, TEXT with a face (and
                (deep (or (and state (efrit-pill-state-color state)) (efrit-pill-hue-color key)))
                (bg (or bg (if strong deep pale)))
                (fg (or fg (if strong pale deep)))
-               (cache-key (list text bg fg scale dot))
+               (cache-key (list text bg fg scale dot efrit-pill-style))
                (drawn (or (gethash cache-key efrit-pill--cache)
                           (puthash cache-key
                                    (if (efrit-pill-available-p)
