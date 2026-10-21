@@ -460,7 +460,13 @@ turn waiting on a question is ended so the next input is a new turn
 \(the model's question is withdrawn).  The efrit-do session, when one
 is active, is cancelled as before."
   (interactive)
-  (if (memq efrit-agent--status '(working paused waiting))
+  (if (or (memq efrit-agent--status '(working paused waiting))
+          ;; The UI may read idle while the session is stuck working
+          ;; (a turn that never sent its first request, 2026-10-21);
+          ;; the session's own status decides
+          (and efrit-agent--repl-session
+               (memq (efrit-repl-session-status efrit-agent--repl-session)
+                     '(working waiting paused))))
       (let ((session efrit-agent--repl-session))
         ;; Abort this session's in-flight streaming request first so
         ;; the model actually stops, not just the UI.  Only this
@@ -471,7 +477,11 @@ is active, is cancelled as before."
           (pcase (efrit-repl-session-status session)
             ;; Between requests or inside a tool: the loop checks the
             ;; flag before its next request and finishes "paused"
-            ('working (setf (efrit-repl-session-interrupt-requested session) t))
+            ('working
+             (if (efrit-repl-loop--entry-dead-p session)
+                 ;; Nothing will ever read the flag: end the turn now
+                 (efrit-repl-loop-abandon-turn session)
+               (setf (efrit-repl-session-interrupt-requested session) t)))
             ;; Waiting on request_user_input: nothing is in flight,
             ;; the loop is gone; just end the turn
             ((or 'waiting 'paused)
