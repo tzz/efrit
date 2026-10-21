@@ -121,6 +121,43 @@ next turn's rows are untouched by the previous fold."
             (cl-incf folds) (setq pos (or (next-single-property-change pos 'efrit-id) (point-max))))
           (should (= 2 folds)))))))
 
+(ert-deftest test-efrit-agent-question-options-are-widgets ()
+  "A question's options are wid-edit widgets, one per line: a push-button
+each for a single choice (pressing one answers), checkboxes plus a
+Submit button for a multi question (Submit answers with the checked
+set)."
+  (with-efrit-agent-test-buffer
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions)
+    (let ((session (efrit-agent-repl-session)) (sent nil)
+          (efrit-agent-question-menu nil))
+      (cl-letf (((symbol-function 'efrit-agent--repl-send)
+                 (lambda (input &optional _api) (push input sent) t)))
+        (efrit-repl-session-set-status session 'waiting)
+        (efrit-agent-show-question "Colour?" '("red" "blue" "green") (current-buffer))
+        (let ((buttons nil))
+          (save-excursion
+            (goto-char (point-min))
+            (while (let ((w (widget-at (point))))
+                     (when (and w (eq (widget-type w) 'push-button)) (push w buttons))
+                     (not (eobp)))
+              (forward-char)))
+          (should (= 3 (length (cl-remove-duplicates buttons))))
+          ;; one per line
+          (should (string-match-p "1  red\\][^\n]*\n[^\n]*2  blue\\][^\n]*\n[^\n]*3  green\\]"
+                                  (buffer-substring-no-properties (point-min) (point-max))))
+          (widget-apply (car (last buttons)) :notify (car (last buttons)) nil))
+        (should (equal '("red") sent))
+        ;; multi: checkboxes and Submit
+        (setq sent nil)
+        (efrit-repl-session-set-status session 'waiting)
+        (efrit-agent-show-question "Which?" '("a" "b" "c") (current-buffer) t)
+        (should (= 3 (length efrit-agent--option-widgets)))
+        (widget-value-set (nth 0 efrit-agent--option-widgets) t)
+        (widget-value-set (nth 2 efrit-agent--option-widgets) t)
+        (efrit-agent--submit-checked-options)
+        (should (equal '("a; c") sent))))))
+
 (ert-deftest test-efrit-agent-multi-question-answers-with-the-chosen-set ()
   "A multi question opens the chooser with toggles; the menu's answer (a
 list) is sent as the options joined by \"; \"; an empty set says none;

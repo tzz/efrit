@@ -75,22 +75,60 @@ the user did not type it."
    (mapconcat (lambda (item) (or (efrit-content-item-text item) ""))
               (append content nil) "")))
 
+(defconst efrit-questions-answer-first-message
+  "Error: request_user_input refused."
+  "Prefix of the tool_result the loop returns for a refused re-ask.
+`efrit-questions-answer-first-result' builds the whole text.")
+
+(defun efrit-questions-answer-first-result (messages)
+  "The tool_result text for a refused re-ask, quoting the user's question.
+The model re-asked 35 times on 2026-10-21 with a shorter version of
+this text: it needs the question in front of it and the exact shape
+of the response that will be accepted."
+  (format "%s The user did not pick an option; they asked you: \"%s\". Your next response must be plain text that answers that question (facts, comparison, your recommendation and why). Do not call any tool in that response. End the turn after the answer; ask again with request_user_input only in a later turn, and only if a choice still remains."
+          efrit-questions-answer-first-message
+          (string-trim (or (efrit-questions--last-user-text messages) ""))))
+
+(defun efrit-questions--already-refused-p (messages)
+  "Non-nil when a refusal was already returned since the user's last text.
+The refusal is a tool_result; the user message that carries it holds
+no text of the user's, so the question before it still reads as the
+last user text.  Without this bound the same refusal repeated for as
+long as the model re-asked: 19 rows on 2026-10-21."
+  (let ((refused nil))
+    (cl-loop for m across (vconcat messages)
+             when (equal (efrit-questions--get m "role") "user")
+             do (let ((content (efrit-questions--get m "content")))
+                  (cond
+                   ((stringp content) (setq refused nil))
+                   ((or (vectorp content) (listp content))
+                    (cl-loop for block across (vconcat content)
+                             for type = (efrit-questions--get block "type")
+                             do (cond
+                                 ((equal type "text") (setq refused nil))
+                                 ((and (equal type "tool_result")
+                                       (let ((c (efrit-questions--get block "content")))
+                                         (and (stringp c)
+                                              (string-prefix-p efrit-questions-answer-first-message c))))
+                                  (setq refused t))))))))
+    refused))
+
 (defun efrit-questions-answer-first-p (messages content)
   "Non-nil when CONTENT asks the user again without answering what they asked.
 MESSAGES is the conversation so far; CONTENT the new response.  True
 when the user's last message asks a question and CONTENT is a
-`request_user_input' with no text before it."
+`request_user_input' with no text before it.  Refused at most once
+per user message: if the model re-asks after the refusal, the
+question goes through (its prompt may hold the answer) rather than
+loop."
   (let ((uses (cl-loop for item across content
                        for use = (efrit-content-item-as-tool-use item)
                        when use collect use)))
     (and uses
          (cl-every (lambda (u) (equal (nth 1 u) "request_user_input")) uses)
          (string-empty-p (efrit-questions--content-text content))
-         (efrit-questions-user-asked-p (efrit-questions--last-user-text messages)))))
-
-(defconst efrit-questions-answer-first-message
-  "Error: the user asked you a question; answer it in text first. Write the answer as a normal message, then ask again with request_user_input only if a choice still remains."
-  "The tool_result the loop returns for a refused re-ask.")
+         (efrit-questions-user-asked-p (efrit-questions--last-user-text messages))
+         (not (efrit-questions--already-refused-p messages)))))
 
 ;;;; Choices written as prose
 

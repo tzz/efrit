@@ -488,9 +488,11 @@ response's stop_reason."
            (efrit-publish 'note `((:session-id . ,session-id) (:kind . question) (:face . warning)
                                   (:text . "⚖ asked again without answering your question; told the model to answer first")))
            (funcall (efrit-loop-adapter-add-assistant-fn adapter) session content)
-           (funcall (efrit-loop-adapter-add-tool-results-fn adapter) session
-                    (mapcar (lambda (use) (efrit-api-build-tool-result (nth 0 use) efrit-questions-answer-first-message t))
-                            (efrit-review--tool-uses content)))
+           (let ((text (efrit-questions-answer-first-result
+                        (funcall (efrit-loop-adapter-messages-fn adapter) session))))
+             (funcall (efrit-loop-adapter-add-tool-results-fn adapter) session
+                      (mapcar (lambda (use) (efrit-api-build-tool-result (nth 0 use) text t))
+                              (efrit-review--tool-uses content))))
            (funcall (efrit-loop-adapter-continue-fn adapter) session))
           ((efrit-review-applies-p content (funcall (efrit-loop-adapter-id-fn adapter) session))
            (efrit-loop--review-then-execute session adapter content))

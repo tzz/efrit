@@ -47,7 +47,24 @@ one with text before it, or after a plain answer, is not."
     (let ((tool-results (vconcat (list `((role . "user")
                                          (content . ,(vector `((type . "tool_result") (content . "x")))))))))
       (should (efrit-questions-answer-first-p
-               (vconcat asked tool-results) (test-questions--content '("request_user_input")))))))
+               (vconcat asked tool-results) (test-questions--content '("request_user_input")))))
+    ;; but only one refusal per user message: after it the re-ask goes through
+    (let ((refused (vconcat (list `((role . "user")
+                                    (content . ,(vector `((type . "tool_result")
+                                                          (content . ,efrit-questions-answer-first-message)))))))))
+      (should-not (efrit-questions-answer-first-p
+                   (vconcat asked refused) (test-questions--content '("request_user_input"))))
+      ;; a new user text resets the bound
+      (should (efrit-questions-answer-first-p
+               (vconcat asked refused (test-questions--messages '("user" . "why two?")))
+               (test-questions--content '("request_user_input")))))))
+
+(ert-deftest test-questions-answer-first-result-quotes-the-question ()
+  (let ((text (efrit-questions-answer-first-result
+               (test-questions--messages '("user" . "which one has the long vertical menu?")))))
+    (should (string-prefix-p efrit-questions-answer-first-message text))
+    (should (string-match-p "which one has the long vertical menu\\?" text))
+    (should (string-match-p "plain text" text))))
 
 (ert-deftest test-questions-parse-prose-choices ()
   "A final message with a numbered list and a closing 'Which one?' yields

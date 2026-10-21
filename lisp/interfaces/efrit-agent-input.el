@@ -78,44 +78,39 @@ Returns the question ID for tracking responses."
   ;; End any streaming Claude message first
   (efrit-agent--stream-end-message)
   (let* ((q-id (format "question-%d" (cl-incf efrit-agent--message-counter)))
-         (formatted-text
-          (concat
-           ;; Question indicator
-           (propertize (format "%s " (efrit-agent--char 'status-waiting))
-                       'face 'efrit-agent-timestamp)
-           ;; Question text
-           (propertize question 'face 'efrit-agent-question)
-           "\n"
-           ;; Options (if provided)
-           (when options
-             (concat
-              "   "
-              (mapconcat
-               (lambda (opt-pair)
-                 (let* ((idx (car opt-pair))
-                        (opt (cdr opt-pair)))
-                   (efrit-agent--make-option-button opt idx)))
-               (cl-loop for opt in options
-                        for idx from 1
-                        collect (cons idx opt))
-               " ")
-              "\n"))
-           ;; Hint for keyboard selection
-           (when options
-             (propertize (if efrit-agent--pending-question-multi
-                             "   toggle in the menu, RET submits; or type an answer\n"
-                           (format "   Press %s or type an answer\n"
-                                   (mapconcat #'number-to-string
-                                              (number-sequence 1 (min 9 (length options)))
-                                              "/")))
-                         'face 'efrit-agent-timestamp))
-           "\n")))
+         (multi efrit-agent--pending-question-multi)
+         (start nil))
     (efrit-agent--append-to-conversation
-     formatted-text
-     (list 'efrit-type 'question
-           'efrit-id q-id
-           'efrit-question question
-           'efrit-options options))
+     (concat (propertize (format "%s " (efrit-agent--char 'status-waiting))
+                         'face 'efrit-agent-timestamp)
+             (propertize question 'face 'efrit-agent-question)
+             "\n")
+     (list 'efrit-type 'question 'efrit-id q-id
+           'efrit-question question 'efrit-options options))
+    (when options
+      ;; The choices are Emacs widgets (wid-edit): a push-button per
+      ;; option, or a checkbox each plus a submit button for a set.
+      ;; One per line; TAB moves between them, RET or mouse-1 presses.
+      ;; The "[1] a [2] b [3] c" text ran off the window edge (2026-10-21).
+      (efrit-agent--with-render
+        (goto-char (efrit-agent--insertion-point))
+        (setq start (point))
+        (efrit-agent--insert-option-widgets options multi)
+        (insert (propertize (if multi
+                                "   toggle, then press Submit; or type an answer\n"
+                              (format "   %s or type an answer\n"
+                                      (if (<= (length options) 9)
+                                          (format "Press %s" (mapconcat #'number-to-string (number-sequence 1 (length options)) "/"))
+                                        "TAB to a choice and RET")))
+                            'face 'efrit-agent-timestamp))
+        (insert "\n")
+        (add-text-properties start (point)
+                             (list 'efrit-type 'question 'efrit-id q-id
+                                   'efrit-question question 'efrit-options options))
+        (efrit-agent--seal-rendered start (point))
+        (when-let* ((ind (bound-and-true-p efrit-agent--thinking-indicator)))
+          (when (and (marker-position (car ind)) (= (marker-position (car ind)) start))
+            (set-marker (car ind) (point))))))
     ;; Update input prompt to indicate we're waiting
     (efrit-agent--update-input-prompt question options)
     ;; A menu for the choices, on top of the transcript.  Opened from
@@ -139,6 +134,62 @@ Returns the question ID for tracking responses."
   (when (timerp efrit-agent--question-menu-timer)
     (cancel-timer efrit-agent--question-menu-timer))
   (setq efrit-agent--question-menu-timer nil))
+
+(defvar-local efrit-agent--option-widgets nil
+  "The checkbox widgets of the pending multi question, in option order.")
+
+(defun efrit-agent--insert-option-widgets (options multi)
+  "Insert one widget per option of OPTIONS at point.
+Single choice: a `push-button' that answers with the option.  MULTI: a
+`checkbox' per option and a Submit button that answers with the
+checked set.  A widget whose question was already answered does
+nothing (`efrit-agent--pending-question' is nil by then)."
+  (require 'wid-edit)
+  (setq efrit-agent--option-widgets nil)
+  (let ((buf (current-buffer)) (idx 0))
+    (dolist (opt options)
+      (cl-incf idx)
+      (insert "   ")
+      (if multi
+          (let ((box (widget-create 'checkbox
+                                    :help-echo "toggle this option; Submit sends the checked set"
+                                    nil)))
+            (push box efrit-agent--option-widgets)
+            (insert " " (propertize opt 'face 'efrit-agent-option)))
+        (let ((n idx))
+          (widget-create 'push-button
+                         :notify (lambda (&rest _)
+                                   (with-current-buffer buf
+                                     (if (efrit-agent--select-option n)
+                                         (efrit-agent--clear-input)
+                                       (message "That question was already answered"))))
+                         :help-echo (format "press %d, RET or mouse-1: answer with this" idx)
+                         :button-face 'efrit-agent-option
+                         :format "%[%v%]"
+                         (if (<= (length options) 9) (format "%d  %s" idx opt) opt))))
+      (insert "\n"))
+    (when multi
+      (setq efrit-agent--option-widgets (nreverse efrit-agent--option-widgets))
+      (insert "   ")
+      (widget-create 'push-button
+                     :notify (lambda (&rest _)
+                               (with-current-buffer buf
+                                 (efrit-agent--submit-checked-options)))
+                     :help-echo "answer with the checked options"
+                     "Submit")
+      (insert "\n"))
+    (widget-setup)))
+
+(defun efrit-agent--submit-checked-options ()
+  "Answer the pending multi question with the checked widgets' options."
+  (when efrit-agent--pending-question
+    (let* ((options (cadr efrit-agent--pending-question))
+           (chosen (cl-loop for box in efrit-agent--option-widgets
+                            for opt in options
+                            when (widget-value box) collect opt))
+           (text (if chosen (string-join chosen "; ") "none of them")))
+      (efrit-agent--clear-input)
+      (efrit-agent--answer-question text))))
 
 (defun efrit-agent--close-question-menu ()
   "Make sure no question menu is up or about to come up.
