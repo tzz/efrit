@@ -389,6 +389,23 @@ an exact-line target is never persisted."
                   (when t (symbol-function 'efrit-sandbox-check))))
     (should (efrit-sandbox-eval-inspect form))))
 
+(ert-deftest test-sb-eval-inspect-refuses-blocking-package-ops ()
+  "Package installs and synchronous url fetches freeze Emacs with no
+way to interrupt them from a timer (2026-10-21); the inspector refuses
+them and points at run_program.  Reading package state is fine."
+  (dolist (form '((package-refresh-contents)
+                  (progn (add-to-list 'package-pinned-packages '(embark . "gnu-devel"))
+                         (package-upgrade 'embark))
+                  (package-vc-install "https://example.invalid/x")
+                  (url-retrieve-synchronously "https://example.invalid/")))
+    (let ((why (efrit-sandbox-eval-inspect form)))
+      (should why)
+      (should (string-match-p "run_program" why))))
+  (dolist (form '((package-installed-p 'embark)
+                  (locate-library "embark")
+                  (assq 'embark package-alist)))
+    (should-not (efrit-sandbox-eval-inspect form))))
+
 (ert-deftest test-sb-eval-inspect-accepts-ordinary-code ()
   (dolist (form '((+ 1 2)
                   (with-current-buffer "*scratch*" (buffer-string))

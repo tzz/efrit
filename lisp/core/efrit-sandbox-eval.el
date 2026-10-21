@@ -121,19 +121,46 @@ Descends into quoted data too: a quoted symbol can be `funcall'ed."
       (push (intern-soft form) (car acc)))))
   acc)
 
+(defconst efrit-sandbox-eval--blocking-symbols
+  '(package-refresh-contents package-install package-install-file
+    package-install-selected-packages package-upgrade package-upgrade-all
+    package-reinstall package-delete package-autoremove package-menu-execute
+    package-vc-install package-vc-upgrade package-vc-upgrade-all
+    package-vc-install-from-checkout package-vc-checkout
+    package-import-keyring package-download-transaction
+    url-retrieve-synchronously url-insert-file-contents url-copy-file
+    url-file-local-copy)
+  "Functions that hold the Emacs event loop until they finish.
+Package operations download archives, verify signatures with gpg
+through `call-process' and compile, with the user's Emacs frozen the
+whole time and no timer able to interrupt them (the eval timeout did
+not fire; 2026-10-21 a `package-upgrade' from eval_sexp sat on
+\"Importing package-keyring.gpg...\" until the user's C-g).  They
+belong in a batch Emacs via run_program, or in the user's hands.")
+
+(defun efrit-sandbox-eval--blocking-p (sym)
+  (and (symbolp sym) (memq sym efrit-sandbox-eval--blocking-symbols)))
+
 (defun efrit-sandbox-eval-inspect (form)
   "Return nil if FORM is acceptable, else a string saying why not.
-Expands macros first so nothing hides behind a macro."
+Expands macros first so nothing hides behind a macro.  Two kinds of
+refusal: symbols the sandbox never permits (its own machinery), and
+symbols that freeze the user's Emacs (`efrit-sandbox-eval--blocking-symbols')."
   (let* ((expanded (condition-case err
                        (macroexpand-all form)
                      (error (list 'efrit-sandbox--unexpandable
                                   (error-message-string err)))))
          (acc (efrit-sandbox-eval--walk expanded (list nil)))
-         (bad (cl-remove-duplicates
-               (cl-remove-if-not #'efrit-sandbox-eval--forbidden-p (car acc)))))
-    (when bad
+         (symbols (cl-remove-duplicates (car acc)))
+         (bad (cl-remove-if-not #'efrit-sandbox-eval--forbidden-p symbols))
+         (blocking (cl-remove-if-not #'efrit-sandbox-eval--blocking-p symbols)))
+    (cond
+     (bad
       (format "the form references %s, which the sandbox never permits from eval_sexp. Use the dedicated tools instead: read_file, edit_file, run_program; load_project_file to load a project .el file; run_ert to run tests. Or ask the user."
-              (mapconcat (lambda (s) (format "`%s'" s)) bad ", ")))))
+              (mapconcat (lambda (s) (format "`%s'" s)) bad ", ")))
+     (blocking
+      (format "the form calls %s, which freezes the user's Emacs until it finishes and cannot be interrupted or timed out. Run it in a separate Emacs with run_program (emacs --batch --eval ...), or ask the user to run it themselves; then verify the outcome from eval_sexp (package-installed-p, locate-library)."
+              (mapconcat (lambda (s) (format "`%s'" s)) blocking ", "))))))
 
 ;;; 2. Dynamic enforcement
 
