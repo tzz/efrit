@@ -93,7 +93,25 @@ next turn's rows are untouched by the previous fold."
           (goto-char (text-property-any (point-min) (point-max) 'efrit-type 'turn-fold))
           (efrit-agent-toggle-expand)
           (should (eq 'efrit-turn-work (get-text-property (text-property-any (point-min) (point-max) 'efrit-type 'tool-call) 'invisible))))
-        ;; a second turn that pauses on a question is left open
+        ;; work after the answer (the session_complete row) does not
+        ;; pull the answer into the fold: only the work before it folds
+        (efrit-agent--add-user-message "which option?")
+        (let ((id (efrit-agent-show-tool-start "read_file" nil)))
+          (efrit-agent-show-tool-result id "ok" t 0.1))
+        (efrit-agent-stream-content "Options: 1) keep; 2) drop.")
+        (efrit-agent-stream-end)
+        (let ((id (efrit-agent-show-tool-start "session_complete" nil)))
+          (efrit-agent-show-tool-result id "done" t 0.1))
+        (efrit-repl-session-set-status session 'idle)
+        (efrit-agent--on-turn-complete session "end_turn")
+        (let ((answers nil) (pos (point-min)))
+          (while (setq pos (text-property-any pos (point-max) 'efrit-type 'claude-message))
+            (push (get-text-property pos 'invisible) answers)
+            (setq pos (or (next-single-property-change pos 'efrit-type) (point-max))))
+          (should (= 2 (length answers)))
+          (should-not (cl-some #'identity answers))
+          (should (string-match-p "Options: 1) keep" (buffer-substring-no-properties (point-min) (point-max)))))
+        ;; a third turn that pauses on a question is left open
         (efrit-agent--add-user-message "and the header?")
         (let ((id (efrit-agent-show-tool-start "read_file" nil)))
           (efrit-agent-show-tool-result id "ok" t 0.1))
@@ -101,7 +119,7 @@ next turn's rows are untouched by the previous fold."
         (let ((folds 0) (pos (point-min)))
           (while (setq pos (text-property-any pos (point-max) 'efrit-type 'turn-fold))
             (cl-incf folds) (setq pos (or (next-single-property-change pos 'efrit-id) (point-max))))
-          (should (= 1 folds)))))))
+          (should (= 2 folds)))))))
 
 (ert-deftest test-efrit-agent-multi-question-answers-with-the-chosen-set ()
   "A multi question opens the chooser with toggles; the menu's answer (a

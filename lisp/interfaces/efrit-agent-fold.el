@@ -109,10 +109,17 @@ reload did not have it, so folded rows stayed on screen (2026-10-21:
 
 (defun efrit-agent-fold--work-span (user-end conv-end)
   "The (FIRST-WORK-BEG . LAST-WORK-END) inside USER-END..CONV-END, or nil.
-The answer is the prose after the last work run; prose between work
-runs (narration) folds with the work."
+The answer is the last prose run; work before it folds, prose between
+work runs (narration) folds with it.  Rows after the answer stay out:
+a question the agent asked at the end of its text (the prose-choice
+fallback appends one) was folded with the answer on 2026-10-21, so
+the turn showed only its summary line and the prompt was hidden."
   (let* ((runs (efrit-agent-fold--runs user-end conv-end))
-         (work (cl-remove-if-not (lambda (r) (efrit-agent-fold--work-p (car r))) runs)))
+         (answer (cl-find 'claude-message (reverse runs) :key #'car))
+         (before (if answer
+                     (cl-subseq runs 0 (cl-position answer runs))
+                   runs))
+         (work (cl-remove-if-not (lambda (r) (efrit-agent-fold--work-p (car r))) before)))
     (when work
       (cons (nth 1 (car work)) (nth 2 (car (last work)))))))
 
