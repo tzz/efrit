@@ -31,6 +31,7 @@
 (require 'efrit-brief)
 (require 'efrit-questions)
 (require 'efrit-agent-fold)
+(require 'wid-edit)
 
 ;; Forward declarations
 (declare-function efrit-executor-respond "efrit-executor")
@@ -138,13 +139,26 @@ Returns the question ID for tracking responses."
 (defvar-local efrit-agent--option-widgets nil
   "The checkbox widgets of the pending multi question, in option order.")
 
+(defvar efrit-agent-option-widget-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map widget-keymap)
+    (define-key map (kbd "RET") #'widget-button-press)
+    (define-key map (kbd "SPC") #'widget-button-press)
+    (define-key map (kbd "x") #'widget-button-press)
+    (define-key map [mouse-1] #'widget-button-click)
+    (define-key map [mouse-2] #'widget-button-click)
+    map)
+  "Keys on an option widget in the agent buffer.
+`widget-keymap' is not the buffer's local map here, so a widget
+without its own `:keymap' got the agent buffer's RET (fold the row)
+and no mouse at all (2026-10-21).")
+
 (defun efrit-agent--insert-option-widgets (options multi)
   "Insert one widget per option of OPTIONS at point.
 Single choice: a `push-button' that answers with the option.  MULTI: a
 `checkbox' per option and a Submit button that answers with the
 checked set.  A widget whose question was already answered does
 nothing (`efrit-agent--pending-question' is nil by then)."
-  (require 'wid-edit)
   (setq efrit-agent--option-widgets nil)
   (let ((buf (current-buffer)) (idx 0))
     (dolist (opt options)
@@ -152,12 +166,14 @@ nothing (`efrit-agent--pending-question' is nil by then)."
       (insert "   ")
       (if multi
           (let ((box (widget-create 'checkbox
-                                    :help-echo "toggle this option; Submit sends the checked set"
+                                    :keymap efrit-agent-option-widget-map
+                                    :help-echo "RET, SPC, x or mouse-1: toggle; Submit sends the checked set"
                                     nil)))
             (push box efrit-agent--option-widgets)
             (insert " " (propertize opt 'face 'efrit-agent-option)))
         (let ((n idx))
           (widget-create 'push-button
+                         :keymap efrit-agent-option-widget-map
                          :notify (lambda (&rest _)
                                    (with-current-buffer buf
                                      (if (efrit-agent--select-option n)
@@ -172,13 +188,18 @@ nothing (`efrit-agent--pending-question' is nil by then)."
       (setq efrit-agent--option-widgets (nreverse efrit-agent--option-widgets))
       (insert "   ")
       (widget-create 'push-button
+                     :keymap efrit-agent-option-widget-map
                      :notify (lambda (&rest _)
                                (with-current-buffer buf
                                  (efrit-agent--submit-checked-options)))
                      :help-echo "answer with the checked options"
                      "Submit")
       (insert "\n"))
-    (widget-setup)))
+    ;; No `widget-setup': it installs `widget-before-change', which
+    ;; refused every keystroke in the input region ("Attempt to change
+    ;; text outside editable field", 2026-10-21).  There are no
+    ;; editable fields here, only buttons.
+    ))
 
 (defun efrit-agent--submit-checked-options ()
   "Answer the pending multi question with the checked widgets' options."

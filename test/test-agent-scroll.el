@@ -131,6 +131,37 @@ session_complete is the answer, so the message is not repeated."
               (should-not (string-match-p "hash-table" text)))))
       (when (get-buffer efrit-agent-buffer-name) (kill-buffer efrit-agent-buffer-name)))))
 
+(ert-deftest test-agent-chopped-rows-are-recut-on-resize ()
+  "A summary chopped at one width is cut again when the window gets wider:
+the row shows more text, the marker stays flush right, and the row's
+tool properties survive the replacement."
+  (let ((efrit-agent-buffer-name "*efrit-agent-test-rechop*") (efrit-agent-display-mode 'compact)
+        (width 60))
+    (unwind-protect
+        (cl-letf (((symbol-function 'efrit-agent--row-width) (lambda () width)))
+          (efrit-agent-open)
+          (with-current-buffer efrit-agent-buffer-name
+            (let* ((long (mapconcat (lambda (i) (format "word%d" i)) (number-sequence 1 80) " "))
+                   (id (efrit-agent-show-tool-start "shell_exec" nil))
+                   (row (lambda () (seq-find (lambda (l) (string-match-p "shell_exec" l))
+                                             (split-string (buffer-substring-no-properties (point-min) (point-max)) "\n")))))
+              (efrit-agent-show-tool-result id long t 0.0)
+              (let ((narrow (funcall row)))
+                (should-not (string-match-p "word20" narrow))
+                (setq width 200)
+                (efrit-agent--rechop-rows)
+                (let ((wide (funcall row)))
+                  (should (string-match-p "word20" wide))
+                  (should (string-suffix-p efrit-agent--chop-marker wide))
+                  (should (> (length wide) (length narrow))))
+                ;; the row is still the tool's region
+                (goto-char (point-min)) (search-forward "word20")
+                (should (equal id (get-text-property (point) 'efrit-id)))
+                (should (eq 'tool-call (get-text-property (point) 'efrit-type)))
+                ;; same width again: nothing to do
+                (should-not (progn (efrit-agent--rechop-rows) nil))))))
+      (when (get-buffer efrit-agent-buffer-name) (kill-buffer efrit-agent-buffer-name)))))
+
 (ert-deftest test-agent-long-summary-is-chopped-not-wrapped ()
   "A summary wider than the row is cut at the window width and marked at
 the right edge; the row stays one line and the full result lives in

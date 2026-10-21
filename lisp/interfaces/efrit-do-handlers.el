@@ -74,6 +74,7 @@
 (declare-function efrit-tool-project-outline "efrit-tool-outline")
 (declare-function efrit-tool-load-project-file "efrit-tool-lisp-dev")
 (declare-function efrit-tool-run-ert "efrit-tool-lisp-dev")
+(declare-function efrit-tool-reproduce-command "efrit-tool-lisp-dev")
 (declare-function efrit-tool-symbol-info "efrit-tool-introspect")
 (declare-function efrit-tool-show-ui-element "efrit-agent-screenshot")
 (declare-function efrit-tool-live-state "efrit-tool-introspect")
@@ -904,6 +905,12 @@ Returns JSON-encoded list of checkpoint metadata."
   :fields ("selector")
   :fn efrit-tool-run-ert
   :label "ERT Result")
+
+(efrit-define-optional-input-handler efrit-do--handle-reproduce-command "reproduce_command"
+  :require efrit-tool-lisp-dev
+  :fields ("command" "form" "buffer")
+  :fn efrit-tool-reproduce-command
+  :label "Reproduced")
 
 (efrit-define-optional-input-handler efrit-do--handle-project-outline "project_outline"
   :require efrit-tool-outline

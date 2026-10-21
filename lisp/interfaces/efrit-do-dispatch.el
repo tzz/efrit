@@ -146,6 +146,7 @@
     ("buffer_list"        . (efrit-do--handle-buffer-list . :tool-input))
     ("load_project_file"  . (efrit-do--handle-load-project-file . :tool-input))
     ("run_ert"            . (efrit-do--handle-run-ert . :tool-input))
+    ("reproduce_command"  . (efrit-do--handle-reproduce-command . :tool-input))
     ("treesit_info"       . (efrit-do--handle-treesit-info . :tool-input))
     ("surrounding_context" . (efrit-do--handle-surrounding-context . :tool-input))
     ("show_location"      . (efrit-do--handle-show-location . :tool-input))
