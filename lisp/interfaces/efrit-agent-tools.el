@@ -248,16 +248,26 @@ marking the end of the turn."
         ;; with no transcript, shows nothing else), so rendering both
         ;; gave the same paragraph twice.  Show the message only when
         ;; no text was streamed this turn and it IS the answer.
-        (when (and msg (not (string-empty-p msg))
-                   (not (efrit-agent--turn-has-streamed-text-p)))
-          (insert (propertize msg 'face 'efrit-agent-claude-message) "\n"))
-        (insert (propertize (concat (make-string 3 ?·) "\n") 'face 'efrit-agent-timestamp))
-        (add-text-properties start (point)
-                             (list 'efrit-type 'tool-call
-                                   'efrit-id (efrit-agent-tool-view-id tv)
-                                   'efrit-tool-name "session_complete"
-                                   'efrit-tool-result (efrit-agent-tool-view-result tv)
-                                   'efrit-tool-success t))
+        (let ((rule-start nil))
+          (when (and msg (not (string-empty-p msg))
+                     (not (efrit-agent--turn-has-streamed-text-p)))
+            (insert (propertize msg 'face 'efrit-agent-claude-message) "\n"))
+          (setq rule-start (point))
+          (insert (propertize (concat (make-string 3 ?·) "\n") 'face 'efrit-agent-timestamp))
+          ;; The message IS the answer: it is a `claude-message' like
+          ;; streamed prose, so the turn fold leaves it visible (a turn
+          ;; whose only answer was this message folded down to its
+          ;; summary line, 2026-10-21).  Only the rule is the tool row.
+          (when (> rule-start start)
+            (add-text-properties start rule-start
+                                 (list 'efrit-type 'claude-message
+                                       'efrit-id (efrit-agent-tool-view-id tv))))
+          (add-text-properties rule-start (point)
+                               (list 'efrit-type 'tool-call
+                                     'efrit-id (efrit-agent-tool-view-id tv)
+                                     'efrit-tool-name "session_complete"
+                                     'efrit-tool-result (efrit-agent-tool-view-result tv)
+                                     'efrit-tool-success t)))
         (point))
     (efrit-agent--render-tool-call-1 tv)))
 

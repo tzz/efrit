@@ -104,6 +104,12 @@ session_complete is the answer, so the message is not repeated."
               (efrit-agent-show-tool-result id "[SESSION-COMPLETE: Done, kill-ring-max is 30.]" t 0.0))
             (let ((text (buffer-substring-no-properties (point-min) (point-max))))
               (should (string-match-p "^Done, kill-ring-max is 30\\.$" text)))
+            ;; the shown message is an answer (claude-message), not part
+            ;; of the tool row, so the turn fold keeps it visible
+            (goto-char (point-min)) (search-forward "Done, kill-ring-max")
+            (should (eq 'claude-message (get-text-property (point) 'efrit-type)))
+            (goto-char (point-min)) (search-forward "···")
+            (should (eq 'tool-call (get-text-property (1- (point)) 'efrit-type)))
             ;; the answer streamed right before the signal is not repeated
             (efrit-agent-stream-content "The answer is 7.")
             (efrit-agent-stream-end)
