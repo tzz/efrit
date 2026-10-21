@@ -162,6 +162,17 @@ set)."
           (widget-button-press (point))
           (should (eq t (widget-value box))))
         (widget-value-set (nth 2 efrit-agent--option-widgets) t)
+        ;; All: checks the rest; All again: clears; None: clears
+        (efrit-agent--toggle-all-options)
+        (should (cl-every #'widget-value efrit-agent--option-widgets))
+        (efrit-agent--toggle-all-options)
+        (should (cl-notany #'widget-value efrit-agent--option-widgets))
+        (efrit-agent--toggle-all-options)
+        (efrit-agent--toggle-all-options 'none)
+        (should (cl-notany #'widget-value efrit-agent--option-widgets))
+        (should (string-match-p "\\[Submit\\]  \\[All\\]  \\[None\\]" (buffer-substring-no-properties (point-min) (point-max))))
+        (widget-value-set (nth 0 efrit-agent--option-widgets) t)
+        (widget-value-set (nth 2 efrit-agent--option-widgets) t)
         ;; typing in the input still works: no widget-before-change guard
         (goto-char (point-max))
         (should-not (memq #'widget-before-change before-change-functions))

@@ -98,7 +98,7 @@ Returns the question ID for tracking responses."
         (setq start (point))
         (efrit-agent--insert-option-widgets options multi)
         (insert (propertize (if multi
-                                "   toggle, then press Submit; or type an answer\n"
+                                "   toggle (All / None), then press Submit; or type an answer\n"
                               (format "   %s or type an answer\n"
                                       (if (<= (length options) 9)
                                           (format "Press %s" (mapconcat #'number-to-string (number-sequence 1 (length options)) "/"))
@@ -194,12 +194,40 @@ nothing (`efrit-agent--pending-question' is nil by then)."
                                  (efrit-agent--submit-checked-options)))
                      :help-echo "answer with the checked options"
                      "Submit")
+      (insert "  ")
+      (widget-create 'push-button
+                     :keymap efrit-agent-option-widget-map
+                     :notify (lambda (&rest _)
+                               (with-current-buffer buf
+                                 (efrit-agent--toggle-all-options)))
+                     :help-echo "check every option; again: clear them all"
+                     "All")
+      (insert "  ")
+      (widget-create 'push-button
+                     :keymap efrit-agent-option-widget-map
+                     :notify (lambda (&rest _)
+                               (with-current-buffer buf
+                                 (efrit-agent--toggle-all-options 'none)))
+                     :help-echo "clear every option"
+                     "None")
       (insert "\n"))
     ;; No `widget-setup': it installs `widget-before-change', which
     ;; refused every keystroke in the input region ("Attempt to change
     ;; text outside editable field", 2026-10-21).  There are no
     ;; editable fields here, only buttons.
     ))
+
+(defun efrit-agent--toggle-all-options (&optional none)
+  "Check every option widget of the pending question; clear them when
+all are checked already, or when NONE."
+  (let* ((boxes efrit-agent--option-widgets)
+         (all-on (cl-every #'widget-value boxes))
+         (value (not (or none all-on))))
+    (efrit-agent--with-render
+      (dolist (box boxes)
+        (unless (eq (and (widget-value box) t) value)
+          (widget-value-set box value))))
+    (message "efrit: %s" (if value "all options checked; Submit sends them" "all options cleared"))))
 
 (defun efrit-agent--submit-checked-options ()
   "Answer the pending multi question with the checked widgets' options."
