@@ -783,7 +783,7 @@ shell-command-to-string \"git …\" in one eval reached the prompt)."
 (ert-deftest test-sb-eval-buffer-sweep-asks-once-for-the-walk ()
   "A form walking `buffer-list' with `with-current-buffer' meets several
 out-of-project file buffers: one prompt names the count, and a yes covers
-the rest of the walk; a no ends the eval (2026-10-19: hrt.md then tzz.md)."
+the rest of the walk; a no ends the eval (2026-10-19: .md)."
   (test-sb--in-project
     (test-sb--with-buffers
       (let* ((outside (make-temp-file "efrit-sb-sweep-" t))
@@ -868,8 +868,7 @@ are housekeeping: no prompt.  A read elsewhere under HOME still asks."
 
 (ert-deftest test-sb-eval-buffer-sweep-over-remote-buffers-is-refused ()
   "A buffer-list walk that would enter a remote (TRAMP) buffer is refused
-without a prompt; the denial names buffer_list and the one-at-a-time way
-\(tzz, 2026-10-20: local first, remote by name, ask before reading one)."
+without a prompt; the denial names buffer_list and the one-at-a-time way."
   (test-sb--in-project
     (test-sb--with-buffers
       (let* ((outside (make-temp-file "efrit-sb-sweep-" t))
@@ -931,7 +930,7 @@ A gzip the form runs itself still asks."
   "A batch Emacs started from under `comp-trampoline-compile' (Emacs compiling
 a trampoline for an advised primitive) runs without a shell grant; the same
 process started by the form itself still asks (2026-10-05: a buffer_create
-turn asked tzz whether eval_sexp may run Emacs)."
+turn asked whether eval_sexp may run Emacs)."
   (test-sb--in-project
     (efrit-sandbox-grant 'elisp t 'session)
     (let ((emacs (expand-file-name invocation-name invocation-directory)))
@@ -1277,7 +1276,7 @@ on a file under it still asked (2026-10-20)."
                               '(with-temp-buffer (insert "hi") (buffer-string)))))
               ;; efrit's own functions may switch through the buffer list
               ;; to look (`efrit-agent-buffers' tests each major mode); the
-              ;; model did not name the buffer (2026-10-16: hrt.md)
+              ;; model did not name the buffer
               (require 'efrit-agent-core)
               (should (listp (efrit-sandbox-eval-form '(efrit-agent-buffers))))
               ;; but naming it in the form still asks

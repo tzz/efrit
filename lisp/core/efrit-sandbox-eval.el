@@ -270,7 +270,7 @@ Visiting `notes.org.gz' runs `sh -c gzip -c -q' (jka-compr); a `.gpg'
 file runs gpg; a remote file over TRAMP runs ssh.  Those are how Emacs
 reads the file the model asked for, and the file itself already went
 through the file-name handler and its grant.  Asking about the helper
-told the user efrit wanted \"a shell decompress\" (tzz, 2026-10-16).")
+told the user efrit wanted \"a shell decompress\".")
 
 (defun efrit-sandbox-eval--emacs-helper-p ()
   "The Emacs file-machinery frame on the stack, or nil."
@@ -285,7 +285,7 @@ told the user efrit wanted \"a shell decompress\" (tzz, 2026-10-16).")
 Calling any not-yet-compiled primitive-advised function makes Emacs
 write a trampoline under `temporary-file-directory' and start a child
 Emacs in batch mode to compile it (2026-10-05: a buffer_create turn
-asked tzz whether eval_sexp may \"run Emacs\").  That is Emacs
+asked whether eval_sexp may \"run Emacs\").  That is Emacs
 housekeeping: the stack holds a comp frame, and COMMAND, when given,
 is this very Emacs in batch mode."
   (let ((comp-frame nil))
@@ -297,8 +297,7 @@ is this very Emacs in batch mode."
      ;; Emacs, -no-comp-spawn -Q --batch, loading an emacs-async-comp-*
      ;; (comp-run.el, a timer) or emacs-int-comp-* (comp.el `comp--final',
      ;; synchronous: trampolines, native-compile of a defun) file it
-     ;; just wrote.  The frame test alone missed both (tzz, 2026-10-15:
-     ;; "why does efrit want to run emacs to pwd?").
+     ;; just wrote.  The frame test alone missed both
      ((and (listp command) (stringp (car command))
            (member "-no-comp-spawn" command)
            (member "--batch" command)
@@ -455,7 +454,7 @@ it decides how the argv is read out of ARGS."
                      (if (stringp line) (truncate-string-to-width line 80 nil nil "…") "a process")))
          ;; The model starting another Emacs is never the right tool:
          ;; everything it needs is in this one.  Refused outright, no
-         ;; prompt (tzz, 2026-10-15: "running an external emacs almost
+         ;; prompt ("running an external emacs almost
          ;; never makes sense with efrit ... everything it needs should
          ;; be inside Emacs already").  Two ways to the prompt instead:
          ;; `efrit-sandbox-eval-allow-emacs', or the reviewer's
@@ -568,8 +567,8 @@ never named)."
   "Non-nil when the innermost Lisp caller of this buffer switch is efrit's own code.
 `efrit-agent-buffers' walks the buffer list with `with-current-buffer'
 to test the major mode; a form that only called it was asked to grant
-the user's most recent file buffer (2026-10-16: `hrt.md', named
-nowhere in the form).  The model chose the function, not the buffer;
+the user's most recent file buffer
+The model chose the function, not the buffer;
 efrit's functions switch into buffers to look, and the file-name
 handler still guards what they read.  Only efrit's frames count: a
 `with-current-buffer' written in the form is still the model's."
@@ -598,7 +597,7 @@ handler still guards what they read.  Only efrit's frames count: a
 `save-buffer' and `find-file-noselect' run the user's hooks
 \(`after-save-hook', `find-file-hook', mode hooks), which walk the
 buffer list or update other buffers; a form that saved one file was
-asked for the user's unrelated `tzz.md' that way (2026-10-19).  Any
+asked for the user's unrelated buffer that way (2026-10-19).  Any
 hook run is the same: `run-mode-hooks' from `(eshell-mode)' in a temp
 buffer ran a global minor mode's hook that touched ten file buffers
 \(2026-10-22).  `run-hooks' and kin are the chokepoint; the model's
@@ -641,7 +640,6 @@ a switch made inside one of efrit's own functions passes
              ;; buffer in turn; asking per buffer is useless (the user
              ;; cannot say yes to the sweep).  Say how many there are
              ;; and ask once; `o'/`s' then covers them all this eval
-             ;; (2026-10-19: hrt.md, then tzz.md, for a minor-mode sweep)
              (others (cl-remove-if-not
                       (lambda (b) (and (not (eq b buffer))
                                        (buffer-local-value 'buffer-file-name b)
