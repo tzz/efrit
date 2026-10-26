@@ -180,6 +180,34 @@ showed only the sign-off on 2026-10-26."
             (should (get-text-property pos 'efrit-fold))
             (setq pos (or (next-single-property-change pos 'efrit-type) (point-max)))))))))
 
+(ert-deftest test-efrit-agent-heading-split-over-chunks-is-one-colour ()
+  "Under `global-font-lock-mode' the agent buffer keeps font-lock off, and
+a bold heading that arrives in two stream chunks ends with the same
+composed face on both halves even when `face' was stripped between
+them (what a font-lock pass with no keywords does)."
+  (with-efrit-agent-test-buffer
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions)
+    (let ((global-font-lock-mode t))
+      (efrit-agent-mode)
+      (efrit-agent--init-regions)
+      (efrit-agent--setup-regions)
+      (should-not font-lock-mode))
+    (cl-letf (((symbol-function 'efrit-agent--auto-save-session) #'ignore))
+      (efrit-agent--add-user-message "q")
+      (efrit-agent-stream-content "Intro.\n\n**Oct 23 (the one to read in ")
+      (let ((inhibit-read-only t))
+        (remove-list-of-text-properties (point-min) (point-max) '(face)))
+      (efrit-agent-stream-content "full):**\n• Bloomberg.\n")
+      (efrit-agent-stream-end))
+    (goto-char (point-min))
+    (search-forward "Oct 23")
+    (let ((head (get-text-property (match-beginning 0) 'face)))
+      (search-forward "full")
+      (should (equal head (get-text-property (match-beginning 0) 'face)))
+      (should (memq 'efrit-markdown-bold head))
+      (should (memq 'efrit-agent-claude-message head)))))
+
 (ert-deftest test-efrit-agent-question-options-are-widgets ()
   "A question's options are wid-edit widgets, one per line: a push-button
 each for a single choice (pressing one answers), checkboxes plus a

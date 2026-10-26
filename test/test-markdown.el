@@ -92,6 +92,26 @@ result equals rendering the whole text at once."
         (should (equal (substring-no-properties (buffer-string))
                        (substring-no-properties (efrit-markdown-render-string whole))))))))
 
+(ert-deftest test-markdown-bold-rebuilt-from-the-font-lock-mirror ()
+  "A chunk whose `face' font-lock stripped between two renders (its
+`font-lock-face' mirror intact) gets the same composed face as the
+chunk that kept it: one heading, one colour."
+  (with-temp-buffer
+    (insert (propertize "x **Oct 23 (the one to read in " 'face 'shadow 'font-lock-face 'shadow))
+    (efrit-markdown-render (point-min) (point-max) nil)
+    ;; what font-lock does to a buffer with no keywords
+    (remove-list-of-text-properties (point-min) (point-max) '(face))
+    (goto-char (point-max))
+    (insert (propertize "full):** rest" 'face 'shadow 'font-lock-face 'shadow))
+    (efrit-markdown-render (point-min) (point-max) t)
+    (goto-char (point-min))
+    (search-forward "Oct 23")
+    (let ((head (get-text-property (match-beginning 0) 'face)))
+      (search-forward "full")
+      (should (equal head (get-text-property (match-beginning 0) 'face)))
+      (should (memq 'efrit-markdown-bold head))
+      (should (memq 'shadow head)))))
+
 (ert-deftest test-markdown-file-references ()
   "Paths that exist become links, with line and column, also inside code
 spans; paths that do not exist stay text."

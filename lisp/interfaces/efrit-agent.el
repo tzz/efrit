@@ -386,6 +386,13 @@ Status is shown in the header-line at top of window.
   (setq-local inhibit-line-move-field-capture t)
   ;; Don't let cursor jump around during updates
   (setq-local cursor-in-non-selected-windows nil)
+  ;; Every face here is placed by the renderers; there are no keywords.
+  ;; Under `global-font-lock-mode' font-lock still marks each render
+  ;; `fontified' nil and strips `face' at the next redisplay (the
+  ;; `font-lock-face' mirror kept the display right, the renderers
+  ;; composing on `face' did not; a heading split over two chunks came
+  ;; out two colours, 2026-10-26).  So no font-lock in this buffer.
+  (font-lock-mode -1)
   ;; the efrit logo stands for the mode name (tzz, 2026-10-14: "remove
   ;; the efrit-agent text, the e is enough"); `mode-name' stays
   ;; "Efrit-Agent" for `describe-mode' and `derived-mode-p' users

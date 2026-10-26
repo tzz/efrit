@@ -169,7 +169,19 @@ in the background into `efrit-markdown-image-cache-directory'."
   (text-property-not-all start end efrit-markdown--frozen nil))
 
 (defun efrit-markdown--add-face (start end face)
-  "Add FACE to START..END, keeping faces already there."
+  "Add FACE to START..END, keeping faces already there.
+The faces already there are read from `font-lock-face' when `face'
+is gone: with font-lock on in the buffer, a redisplay between two
+streamed chunks strips `face' from the first chunk (no keywords, so
+font-lock only unfontifies), and the bold built on it lost the message
+colour while the rest of the heading kept it (2026-10-26)."
+  (let ((pos start))
+    (while (< pos end)
+      (let ((next (or (next-single-property-change pos 'font-lock-face nil end) end)))
+        (unless (get-text-property pos 'face)
+          (when-let* ((mirror (get-text-property pos 'font-lock-face)))
+            (put-text-property pos next 'face mirror)))
+        (setq pos next))))
   (add-face-text-property start end face)
   ;; Mirror for font-lock: the whole composed face list
   (let ((pos start))
