@@ -121,6 +121,65 @@ next turn's rows are untouched by the previous fold."
             (cl-incf folds) (setq pos (or (next-single-property-change pos 'efrit-id) (point-max))))
           (should (= 2 folds)))))))
 
+(ert-deftest test-efrit-agent-fold-keeps-long-prose-between-tool-rounds ()
+  "A long answer between two tool rounds stays visible: the work before
+it and the work after it fold separately, short narration folds with
+the work next to it, and the sign-off at the end is never folded.
+The gnus batch turns (clock in, analysis, clock out, one-line sign-off)
+showed only the sign-off on 2026-10-26."
+  (with-efrit-agent-test-buffer
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions)
+    (let ((session (efrit-agent-repl-session))
+          (efrit-agent-question-menu nil)
+          (efrit-agent-fold-narration-max-lines 3))
+      (cl-letf (((symbol-function 'efrit-agent--auto-save-session) #'ignore))
+        (efrit-agent--add-user-message "analyze articles 1-12")
+        (let ((id (efrit-agent-show-tool-start "review" nil)))
+          (efrit-agent-show-tool-result id "approved" t 0.1))
+        (efrit-agent-stream-content "Clocking in.")
+        (efrit-agent-stream-end)
+        (let ((id (efrit-agent-show-tool-start "eval_sexp" nil)))
+          (efrit-agent-show-tool-result id "t" t 0.1))
+        (efrit-agent-stream-content
+         (mapconcat (lambda (n) (format "Sep %d — digest %d summary line." n n))
+                    (number-sequence 15 26) "\n\n"))
+        (efrit-agent-stream-end)
+        (let ((id (efrit-agent-show-tool-start "review" nil)))
+          (efrit-agent-show-tool-result id "approved" t 0.1))
+        (let ((id (efrit-agent-show-tool-start "eval_sexp" nil)))
+          (efrit-agent-show-tool-result id "t" t 0.1))
+        (efrit-agent-stream-content "Batch 1 done; clock closed.")
+        (efrit-agent-stream-end)
+        (efrit-repl-session-set-status session 'idle)
+        (efrit-agent--on-turn-complete session "end_turn")
+        (let ((prose nil) (folds 0) (pos (point-min)))
+          (while (setq pos (text-property-any pos (point-max) 'efrit-type 'claude-message))
+            (push (cons (string-trim (buffer-substring-no-properties
+                                      pos (next-single-property-change pos 'efrit-type)))
+                        (get-text-property pos 'invisible))
+                  prose)
+            (setq pos (next-single-property-change pos 'efrit-type)))
+          (setq prose (nreverse prose))
+          (should (= 3 (length prose)))
+          ;; narration folds, the analysis and the sign-off do not
+          (should (eq 'efrit-turn-work (cdr (nth 0 prose))))
+          (should (string-prefix-p "Clocking in" (car (nth 0 prose))))
+          (should-not (cdr (nth 1 prose)))
+          (should (string-match-p "Sep 26 — digest 26" (car (nth 1 prose))))
+          (should-not (cdr (nth 2 prose)))
+          (should (string-prefix-p "Batch 1 done" (car (nth 2 prose))))
+          (setq pos (point-min))
+          (while (setq pos (text-property-any pos (point-max) 'efrit-type 'turn-fold))
+            (cl-incf folds) (setq pos (or (next-single-property-change pos 'efrit-id) (point-max))))
+          (should (= 2 folds))
+          ;; every tool row is hidden under one of the two folds
+          (setq pos (point-min))
+          (while (setq pos (text-property-any pos (point-max) 'efrit-type 'tool-call))
+            (should (eq 'efrit-turn-work (get-text-property pos 'invisible)))
+            (should (get-text-property pos 'efrit-fold))
+            (setq pos (or (next-single-property-change pos 'efrit-type) (point-max)))))))))
+
 (ert-deftest test-efrit-agent-question-options-are-widgets ()
   "A question's options are wid-edit widgets, one per line: a push-button
 each for a single choice (pressing one answers), checkboxes plus a

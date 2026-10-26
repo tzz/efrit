@@ -107,21 +107,51 @@ reload did not have it, so folded rows stayed on screen (2026-10-21:
   (when-let* ((starts (efrit-agent-fold--turn-starts)))
     (efrit-agent-fold--turn-bounds (car (last starts)) nil)))
 
-(defun efrit-agent-fold--work-span (user-end conv-end)
-  "The (FIRST-WORK-BEG . LAST-WORK-END) inside USER-END..CONV-END, or nil.
-The answer is the last prose run; work before it folds, prose between
-work runs (narration) folds with it.  Rows after the answer stay out:
-a question the agent asked at the end of its text (the prose-choice
-fallback appends one) was folded with the answer on 2026-10-21, so
-the turn showed only its summary line and the prompt was hidden."
+(defcustom efrit-agent-fold-narration-max-lines 3
+  "Prose of at most this many lines between tool rows folds with them.
+Longer prose is an answer and stays visible, with the work before and
+after it folded separately.  The last prose run of a turn is always an
+answer, whatever its length."
+  :type 'natnum
+  :group 'efrit-agent-fold)
+
+(defun efrit-agent-fold--narration-p (run)
+  "Non-nil when RUN, a (TYPE BEG END) prose run, is short enough to fold."
+  (pcase-let ((`(,_type ,beg ,end) run))
+    (<= (length (split-string (string-trim (buffer-substring-no-properties beg end)) "\n"))
+        efrit-agent-fold-narration-max-lines)))
+
+(defun efrit-agent-fold--trim-group (group)
+  "GROUP without the leading and trailing runs that are not work."
+  (let ((runs (cl-member-if (lambda (r) (efrit-agent-fold--work-p (car r))) group)))
+    (reverse (cl-member-if (lambda (r) (efrit-agent-fold--work-p (car r))) (reverse runs)))))
+
+(defun efrit-agent-fold--work-spans (user-end conv-end)
+  "The (BEG . END) spans of work inside USER-END..CONV-END, in order.
+Work rows fold.  Short prose between them (narration) folds with them.
+Prose longer than `efrit-agent-fold-narration-max-lines' is an answer:
+it stays visible and splits the work around it into separate spans.
+The last prose run is always an answer, and rows after it (a question
+the prose-choice fallback appends, the session_complete rule) stay out.
+One span per turn hid a twelve-article analysis that sat between two
+tool rounds, with only the sign-off line left showing (2026-10-26)."
   (let* ((runs (efrit-agent-fold--runs user-end conv-end))
-         (answer (cl-find 'claude-message (reverse runs) :key #'car))
-         (before (if answer
-                     (cl-subseq runs 0 (cl-position answer runs))
-                   runs))
-         (work (cl-remove-if-not (lambda (r) (efrit-agent-fold--work-p (car r))) before)))
-    (when work
-      (cons (nth 1 (car work)) (nth 2 (car (last work)))))))
+         (last-prose (cl-find 'claude-message (reverse runs) :key #'car))
+         (before (if last-prose (cl-subseq runs 0 (cl-position last-prose runs)) runs))
+         (groups nil) (group nil))
+    (cl-flet ((close () (when-let* ((g (efrit-agent-fold--trim-group (nreverse group))))
+                          (push g groups))
+                     (setq group nil)))
+      (dolist (run before)
+        (pcase-let ((`(,type ,_beg ,_end) run))
+          (cond ((efrit-agent-fold--work-p type) (push run group))
+                ((null type) (push run group))
+                ((and (eq type 'claude-message) (efrit-agent-fold--narration-p run))
+                 (push run group))
+                (t (close)))))
+      (close))
+    (mapcar (lambda (g) (cons (nth 1 (car g)) (nth 2 (car (last g)))))
+            (nreverse groups))))
 
 (defun efrit-agent-fold--summary (beg end)
   "A short account of the rows in BEG..END: steps, reviews, denials."
@@ -175,22 +205,30 @@ the turn showed only its summary line and the prompt was hidden."
               'help-echo "RET, mouse-1: show / hide this turn's steps"
               'read-only t 'field 'output 'fontified t))
 
+(defun efrit-agent-fold--fold-span (beg end)
+  "Fold the rows in BEG..END under a new header; return the fold id."
+  (let* ((fold-id (format "fold-%d" (cl-incf efrit-agent-fold--counter)))
+         (summary (efrit-agent-fold--summary beg end)))
+    (efrit-agent--with-render
+      (let ((inhibit-read-only t))
+        ;; the rows: hidden, and tagged so the header finds them
+        (add-text-properties beg end (list 'efrit-fold fold-id))
+        (put-text-property beg end 'invisible 'efrit-turn-work)
+        (goto-char beg)
+        (insert (efrit-agent-fold--header-text fold-id summary nil))))
+    fold-id))
+
 (defun efrit-agent-fold--fold-bounds (bounds)
-  "Fold the work inside BOUNDS, (USER-END . TURN-END); return the fold id or nil."
-  (when-let* ((span (efrit-agent-fold--work-span (car bounds) (cdr bounds))))
+  "Fold the work inside BOUNDS, (USER-END . TURN-END); return the first fold id or nil.
+Every work span of the turn gets a fold of its own; the folds are made
+last to first so the earlier positions stay valid."
+  (when-let* ((spans (efrit-agent-fold--work-spans (car bounds) (cdr bounds))))
     (unless (text-property-any (car bounds) (cdr bounds) 'efrit-type 'turn-fold)
       (efrit-agent-fold--ensure-spec)
-      (let* ((beg (car span)) (end (cdr span))
-             (fold-id (format "fold-%d" (cl-incf efrit-agent-fold--counter)))
-             (summary (efrit-agent-fold--summary beg end)))
-        (efrit-agent--with-render
-          (let ((inhibit-read-only t))
-            ;; the rows: hidden, and tagged so the header finds them
-            (add-text-properties beg end (list 'efrit-fold fold-id))
-            (put-text-property beg end 'invisible 'efrit-turn-work)
-            (goto-char beg)
-            (insert (efrit-agent-fold--header-text fold-id summary nil))))
-        fold-id))))
+      (let ((first nil))
+        (dolist (span (reverse spans))
+          (setq first (efrit-agent-fold--fold-span (car span) (cdr span))))
+        first))))
 
 (defun efrit-agent-fold-last-turn ()
   "Fold the work of the last turn under one header line.
