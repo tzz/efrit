@@ -44,6 +44,7 @@
 (require 'seq)
 (require 'efrit-events)
 (require 'efrit-pill)
+(require 'efrit-log)
 (defvar efrit-pill-e-alert-color)
 
 (declare-function efrit-agent-buffers "efrit-agent-core")
@@ -54,6 +55,7 @@
 (declare-function efrit-repl-session-status "efrit-repl-session")
 (defvar efrit-agent--repl-session)
 (defvar efrit-agent--input-start)
+(defvar efrit-agent--conversation-end)
 
 (defgroup efrit-agent-ring nil
   "Moving between agent buffers; unread and waiting marks."
@@ -410,14 +412,33 @@ the full e\")."
         (when-let* ((s (and (fboundp 'efrit-repl-session-get) (efrit-repl-session-get id))))
           (efrit-repl-session-buffer s)))))
 
+(defun efrit-agent-ring--last-turn-start (buffer)
+  "Where the last user line of BUFFER starts, or nil."
+  (with-current-buffer buffer
+    (when (and efrit-agent--conversation-end (marker-position efrit-agent--conversation-end))
+      (let ((pos (point-min)) (last nil)
+            (end (marker-position efrit-agent--conversation-end)))
+        (while (setq pos (text-property-any pos end 'efrit-type 'user-message))
+          (setq last pos)
+          (setq pos (or (next-single-property-change pos 'efrit-type nil end) end)))
+        last))))
+
 (defun efrit-agent-ring--viewing-p (buffer)
-  "Non-nil when BUFFER is in the selected window of a focused frame, showing its end."
+  "Non-nil when BUFFER is in the selected window of a focused frame, showing its reply.
+Reading means any part of the last turn is on screen: the end of the
+conversation is visible, or the window starts inside the last turn.
+`window-end' was the test before, and it ran short of the end by
+several thousand characters in a large frame with wrapped lines, so a
+buffer at Bot stayed unread (2026-10-26)."
   (and (buffer-live-p buffer)
        (eq buffer (window-buffer (selected-window)))
        (frame-focus-state)
-       (let ((end (with-current-buffer buffer
-                    (or efrit-agent--input-start (point-max)))))
-         (>= (window-end (selected-window) t) (min end (with-current-buffer buffer (point-max)))))))
+       (let* ((window (selected-window))
+              (end (with-current-buffer buffer
+                     (max (point-min) (1- (or efrit-agent--input-start (point-max))))))
+              (turn (efrit-agent-ring--last-turn-start buffer)))
+         (or (pos-visible-in-window-p end window)
+             (and turn (>= (window-start window) turn))))))
 
 (defun efrit-agent-ring--on-turn-complete (event)
   (when-let* ((buf (efrit-agent-ring--buffer-of event)))
@@ -494,12 +515,24 @@ plus `window-end' per keystroke made typing stutter)."
             (and efrit-agent-ring--heartbeat
                  (cl-some (lambda (b) (buffer-local-value 'efrit-agent--unread-pinned b))
                           (efrit-agent-buffers))))
-    (efrit-agent-ring-check-dwell)))
+    ;; An error here would get this function evicted from
+    ;; `post-command-hook' by Emacs, for good (2026-10-26: the hook
+    ;; was gone and only the heartbeat was left)
+    (condition-case err
+        (efrit-agent-ring-check-dwell)
+      (error (efrit-log 'warn "agent ring: dwell check failed: %s" (error-message-string err))))))
 
 (defun efrit-agent-ring--heartbeat-tick ()
-  "Advance the dwell clock while an unread buffer is on screen and the user is still."
+  "Advance the dwell clock while an unread buffer is on screen and the user is still.
+Also puts `efrit-agent-ring--view-changed' back on `post-command-hook'
+when it is missing (Emacs drops a hook function that signaled)."
   (if (cl-some #'efrit-agent-ring--unread-p (efrit-agent-buffers))
-      (efrit-agent-ring-check-dwell)
+      (progn
+        (unless (memq #'efrit-agent-ring--view-changed (default-value 'post-command-hook))
+          (add-hook 'post-command-hook #'efrit-agent-ring--view-changed))
+        (condition-case err
+            (efrit-agent-ring-check-dwell)
+          (error (efrit-log 'warn "agent ring: dwell check failed: %s" (error-message-string err)))))
     (efrit-agent-ring--stop-heartbeat)))
 
 (defun efrit-agent-ring--start-heartbeat ()

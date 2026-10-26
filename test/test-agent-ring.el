@@ -74,7 +74,7 @@ a gap over a second restarts the count."
       (with-selected-window (selected-window)
         (set-window-buffer (selected-window) a)
         (set-window-point (selected-window) (point-max))
-        (cl-letf (((symbol-function 'window-end) (lambda (&rest _) (with-current-buffer a (point-max)))))
+        (cl-letf (((symbol-function 'pos-visible-in-window-p) (lambda (&rest _) t)))
           (efrit-agent-ring-check-dwell 100.0)
           (efrit-agent-ring-check-dwell 102.0)
           (efrit-agent-ring-check-dwell 104.0)
@@ -93,6 +93,61 @@ a gap over a second restarts the count."
           (set-window-buffer (selected-window) b)
           (dotimes (i 8) (efrit-agent-ring-check-dwell (+ 200.0 i)))
           (should (buffer-local-value 'efrit-agent--unread a)))))))
+
+(ert-deftest test-ring-viewing-means-any-part-of-the-last-turn ()
+  "A long reply read from its top counts as viewing even with the end off
+screen; a window that starts before the last turn with the end off
+screen does not.  `window-end' is not consulted: it ran short of the
+buffer end in a large frame and kept a buffer at Bot unread."
+  (test-ring--with-three a b c
+    (with-current-buffer a
+      (cl-letf (((symbol-function 'efrit-agent--auto-save-session) #'ignore))
+        (efrit-agent--add-user-message "first")
+        (efrit-agent-stream-content "short answer")
+        (efrit-agent-stream-end)
+        (efrit-agent--add-user-message "second")
+        (efrit-agent-stream-content (mapconcat (lambda (i) (format "line %d" i)) (number-sequence 1 400) "\n"))
+        (efrit-agent-stream-end)))
+    (let ((turn (efrit-agent-ring--last-turn-start a)))
+      (should turn)
+      (cl-letf (((symbol-function 'frame-focus-state) (lambda (&rest _) t))
+                ((symbol-function 'pos-visible-in-window-p) (lambda (&rest _) nil)))
+        (save-window-excursion
+          (set-window-buffer (selected-window) a)
+          ;; window starts in the first turn: not reading the reply
+          (set-window-start (selected-window) (point-min))
+          (should-not (efrit-agent-ring--viewing-p a))
+          ;; window starts inside the last turn, end off screen: reading
+          (set-window-start (selected-window) (with-current-buffer a
+                                                (save-excursion (goto-char turn) (forward-line 3) (point))))
+          (should (efrit-agent-ring--viewing-p a))))
+      ;; the end on screen is reading wherever the window starts
+      (cl-letf (((symbol-function 'frame-focus-state) (lambda (&rest _) t))
+                ((symbol-function 'pos-visible-in-window-p) (lambda (&rest _) t)))
+        (save-window-excursion
+          (set-window-buffer (selected-window) a)
+          (set-window-start (selected-window) (point-min))
+          (should (efrit-agent-ring--viewing-p a)))))))
+
+(ert-deftest test-ring-heartbeat-restores-the-post-command-hook ()
+  "When the view hook was dropped from `post-command-hook' (Emacs evicts
+a function that signals), the heartbeat puts it back; and the hook
+function itself swallows errors so it is never evicted again."
+  (test-ring--with-three a b c
+    (efrit-publish 'turn-complete (list (cons :session-id (test-ring--id a)) (cons :stop-reason "end_turn")))
+    (let ((saved (default-value 'post-command-hook)))
+      (unwind-protect
+          (progn
+            (remove-hook 'post-command-hook #'efrit-agent-ring--view-changed)
+            (should-not (memq #'efrit-agent-ring--view-changed (default-value 'post-command-hook)))
+            (efrit-agent-ring--heartbeat-tick)
+            (should (memq #'efrit-agent-ring--view-changed (default-value 'post-command-hook)))
+            (cl-letf (((symbol-function 'efrit-agent-ring-check-dwell) (lambda (&rest _) (error "boom"))))
+              (set-window-buffer (selected-window) a)
+              (efrit-agent-ring--view-changed)
+              (efrit-agent-ring--heartbeat-tick))
+            (should (memq #'efrit-agent-ring--view-changed (default-value 'post-command-hook))))
+        (setq-default post-command-hook saved)))))
 
 (ert-deftest test-ring-commands-move-in-place ()
   (test-ring--with-three a b c

@@ -106,7 +106,7 @@ key gives the same colour; a state picks its colour; a user drawer wins."
 after the buffer leaves view, the next five-second look clears it."
   (test-tl--with-two a b
     (cl-letf (((symbol-function 'frame-focus-state) (lambda (&rest _) t))
-              ((symbol-function 'window-end) (lambda (&rest _) (with-current-buffer (window-buffer) (point-max)))))
+              ((symbol-function 'pos-visible-in-window-p) (lambda (&rest _) t)))
       (save-window-excursion
         (set-window-buffer (selected-window) a)
         (efrit-agent-mark-unread a)
