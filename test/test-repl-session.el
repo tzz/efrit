@@ -49,6 +49,23 @@ after the mark, or nil when the turns after it have none."
       (should (= 5 (length (efrit-repl-session-conversation session))))
       (should (equal "a1" (efrit-repl-session-last-answer session))))))
 
+(ert-deftest test-repl-session-turn-text-joins-every-assistant-message ()
+  "turn-text is all the assistant said after the mark: an analysis, a tool
+round, and a sign-off give the analysis and the sign-off joined, while
+last-answer gives only the sign-off.  Before the mark nothing counts."
+  (let ((session (efrit-repl-session-create)))
+    (efrit-repl-session-add-user-message session "q1")
+    (test-repl-session--assistant session "a1")
+    (let ((mark (efrit-repl-session-history-mark session)))
+      (should-not (efrit-repl-session-turn-text session mark))
+      (efrit-repl-session-add-user-message session "q2")
+      (test-repl-session--assistant session "the analysis ")
+      (test-repl-session--tool-round session "t1" "tool text")
+      (test-repl-session--assistant session "Clock closed.")
+      (should (equal "Clock closed." (efrit-repl-session-last-answer session mark)))
+      (should (equal "the analysis\n\nClock closed." (efrit-repl-session-turn-text session mark)))
+      (should (equal "a1\n\nthe analysis\n\nClock closed." (efrit-repl-session-turn-text session 0))))))
+
 (ert-deftest test-repl-session-fit-context-elides-oldest-tool-results-first ()
   "Over the budget, the oldest tool results are elided first, then the
 oldest user messages; assistant messages and the last user message are

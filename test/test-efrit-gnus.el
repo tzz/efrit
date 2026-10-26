@@ -145,7 +145,7 @@ not the articles."
           (should (equal "analyze articles 3-4 of 5 from unread in mail: Triage." (car (car submitted))))
           ;; The first batch's answer was collected and its turn rewound:
           ;; the history is the two earlier messages plus this batch's input.
-          (should (equal '(("Batch 1" . "answer one")) (efrit-gnus-run-answers efrit-gnus--run)))
+          (should (equal '(("Batch 1: articles 1-2" . "answer one")) (efrit-gnus-run-answers efrit-gnus--run)))
           (should (= 3 (length (efrit-repl-session-api-messages session))))
           (should (equal "earlier answer"
                          (efrit-repl-session-last-answer session)))
@@ -156,16 +156,25 @@ not the articles."
           (should (equal "analyze articles 5-5 of 5 from unread in mail: Triage." (car (car submitted))))
           (should-not (efrit-gnus-run-queue efrit-gnus--run))
           (should (equal "Overall triage." (efrit-gnus-run-closing efrit-gnus--run)))
+          ;; The last batch: analysis, then a tool round and a sign-off.
+          ;; The whole turn's text is the answer, not the sign-off alone.
           (test-gnus--answer session "answer three")
+          (efrit-repl-session-add-assistant-message
+           session (vector '((type . "tool_use") (id . "t1") (name . "eval_sexp") (input . ((expr . "1"))))))
+          (efrit-repl-session-add-tool-result session "t1" "1")
+          (test-gnus--answer session "Clock closed.")
           ;; The closing goes out on the next idle, after the last batch,
-          ;; with the three answers stitched and no article text.
+          ;; with the three answers stitched, no article text, and the
+          ;; selection's references so the model re-reads instead of searching.
           (efrit-gnus--on-status '((:status . idle)))
           (funcall (pop timers))
           (should (= 4 (length submitted)))
           (should (equal "over the whole selection" (car (car submitted))))
           (let ((closing (cdr (car submitted))))
             (should (string-match-p "5 articles from unread in mail, analyzed in 3 batches" closing))
-            (should (string-match-p "=== Batch 1 ===\nanswer one\n\n=== Batch 2 ===\nanswer two\n\n=== Batch 3 ===\nanswer three\n\nOverall triage\\." closing))
+            (should (string-match-p "=== Batch 1: articles 1-2 ===\nanswer one\n\n=== Batch 2: articles 3-4 ===\nanswer two\n\n=== Batch 3: articles 5-5 ===\nanswer three\n\nClock closed\\.\n\nOverall triage\\." closing))
+            (should (string-match-p "do not search for other articles" closing))
+            (should (string-match-p "nnml:mail#1\nnnml:mail#2\nnnml:mail#3\nnnml:mail#4\nnnml:mail#5" closing))
             (should-not (string-match-p "Subject: m1" closing)))
           (should-not efrit-gnus--run)
           (should (= 3 (length (efrit-repl-session-api-messages session))))
@@ -465,7 +474,7 @@ shown line plus the full API text; a busy efrit is a user error."
           (should (equal "analyze 2 articles from group mail: Summarize 2 articles of mail."
                          (car submitted)))
           (should (string-prefix-p "Summarize 2 articles of mail." (cadr submitted)))
-          (should (string-match-p "gnus_search and gnus_articles" (cadr submitted)))
+          (should (string-match-p "do not search for others" (cadr submitted)))
           (should (string-match-p "=== Article 1 of 2 ===" (cadr submitted)))
           (should (string-match-p "Subject: m2" (cadr submitted)))
           (efrit-gnus--submit '(("nnml:mail" . 1)) "summarize")

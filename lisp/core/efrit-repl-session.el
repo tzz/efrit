@@ -487,6 +487,23 @@ is a string or text blocks."
                     (append content nil) ""))
         (t "")))
 
+(defun efrit-repl-session-turn-text (session mark)
+  "Everything the assistant said in SESSION after history MARK, joined.
+Each assistant message with text contributes, in order, separated by a
+blank line; tool-use messages between them are skipped.  nil when
+none has text.  `efrit-repl-session-last-answer' keeps only the newest
+message, which lost a batch analysis when the model followed it with
+tool calls and a one-line sign-off (2026-10-26)."
+  (let ((texts nil))
+    (dolist (msg (nthcdr (or mark 0) (efrit-repl-session-api-messages session)))
+      (when (equal (efrit-repl-session--block-get msg "role") "assistant")
+        (let ((text (string-trim
+                     (efrit-repl-session--content-text
+                      (efrit-repl-session--block-get msg "content")))))
+          (unless (string-empty-p text)
+            (push text texts)))))
+    (and texts (mapconcat #'identity (nreverse texts) "\n\n"))))
+
 (defun efrit-repl-session-last-answer (session &optional mark)
   "The text of the assistant's most recent message in SESSION, or nil.
 With MARK, only messages after that history mark count, so a caller

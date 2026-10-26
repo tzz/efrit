@@ -108,7 +108,7 @@
 (declare-function efrit-repl-session-id "efrit-repl-session")
 (declare-function efrit-repl-session-history-mark "efrit-repl-session")
 (declare-function efrit-repl-session-rewind "efrit-repl-session")
-(declare-function efrit-repl-session-last-answer "efrit-repl-session")
+(declare-function efrit-repl-session-turn-text "efrit-repl-session")
 (declare-function efrit-reload "efrit-reload")
 (declare-function nngmail-reload "nngmail-reload")
 (declare-function shr-insert-document "shr")
@@ -671,6 +671,8 @@ conversation, so the closing summary can also see the articles."
   (session nil)    ; the REPL session the run uses
   (answers nil)    ; (LABEL . ANSWER) per finished batch, newest first
   (batches 0)      ; batches sent so far
+  (label nil)      ; how the batch in flight is named in the closing message
+  (refs nil)       ; every article of the selection, oldest first
   (where nil)      ; how the selection is named in the conversation
   (total 0))       ; articles in the selection
 
@@ -705,8 +707,9 @@ SUMMARIZING says a closing turn over everything will follow."
        "\n\nAnswer per article."))
    "\n\nThe articles follow, oldest first, each with its reference (GROUP#NUMBER). "
    "Refer to them by subject and sender, not by number. "
-   "If you need other articles, the rest of a conversation, or the full text of one "
-   "that was cut, the gnus_search and gnus_articles tools give it to you.\n\n"
+   "Analyze only these articles; do not search for others. "
+   "If one was cut and you need its full text, call gnus_articles with its reference. "
+   "gnus_search is only for a conversation an article continues.\n\n"
    text))
 
 (defun efrit-gnus--closing-text (run prompt)
@@ -716,12 +719,26 @@ this turn, so their answers are inlined, oldest first."
   (let ((answers (reverse (efrit-gnus-run-answers run))))
     (if (and efrit-gnus-isolate-batches answers)
         (concat
-         (format "That was the whole selection: %d articles from %s, analyzed in %d batch%s. The analysis of each batch follows; the articles themselves are not in this conversation (the gnus_search and gnus_articles tools have them if you need one).\n\n"
+         (format "That was the whole selection: %d articles from %s, analyzed in %d batch%s. The analysis of each batch follows; the articles themselves are not in this conversation.\n\n"
                  (efrit-gnus-run-total run) (or (efrit-gnus-run-where run) "the selection")
                  (length answers) (if (= 1 (length answers)) "" "es"))
          (mapconcat (lambda (a) (format "=== %s ===\n%s" (car a) (cdr a))) answers "\n\n")
-         "\n\n" prompt)
+         "\n\n" prompt
+         (efrit-gnus--closing-refs run))
       (concat "That was the whole selection. " prompt))))
+
+(defun efrit-gnus--closing-refs (run)
+  "The selection's references for the closing message of RUN, as a trailer.
+The selection is complete: the model must not go looking for more
+articles.  If it must re-read one, `gnus_articles' with one of these
+references is the way, not a search (the closing turn once searched
+the whole mailbox for the sender, 2026-10-26)."
+  (if-let* ((refs (efrit-gnus-run-refs run)))
+      (concat
+       "\n\nThe selection is complete; do not search for other articles. "
+       "If you must re-read one, call gnus_articles with its reference from this list, oldest first:\n"
+       (mapconcat (lambda (ref) (efrit-gnus--ref (car ref) (cdr ref))) refs "\n"))
+    ""))
 
 (defun efrit-gnus--rewind-for-turn (run)
   "Take RUN's session back to the history mark, when batches are isolated."
@@ -729,10 +746,14 @@ this turn, so their answers are inlined, oldest first."
     (efrit-repl-session-rewind (efrit-gnus-run-session run) (efrit-gnus-run-mark run))))
 
 (defun efrit-gnus--collect-answer (run)
-  "Store the answer of the turn that just ended in RUN, labeled by batch."
+  "Store what the model said in the turn that just ended in RUN, labeled by batch.
+All of the turn's text, not only its last message: a batch analysis
+followed by tool calls and a sign-off line is still the analysis."
   (when-let* ((session (efrit-gnus-run-session run))
-              (answer (efrit-repl-session-last-answer session (efrit-gnus-run-mark run))))
-    (push (cons (format "Batch %d" (efrit-gnus-run-batches run)) answer)
+              (answer (efrit-repl-session-turn-text session (efrit-gnus-run-mark run))))
+    (push (cons (or (efrit-gnus-run-label run)
+                    (format "Batch %d" (efrit-gnus-run-batches run)))
+                answer)
           (efrit-gnus-run-answers run))))
 
 (defun efrit-gnus--submit-batch (run refs prompt where offset total)
@@ -755,6 +776,8 @@ turn started."
       (when rest
         (push (list rest prompt where last total) (efrit-gnus-run-queue run)))
       (cl-incf (efrit-gnus-run-batches run))
+      (setf (efrit-gnus-run-label run)
+            (format "Batch %d: articles %d-%d" (efrit-gnus-run-batches run) (1+ offset) last))
       (efrit-gnus--rewind-for-turn run)
       (unless (efrit-submit shown api (efrit-gnus-agent-buffer))
         (setq efrit-gnus--run nil)
@@ -855,7 +878,7 @@ for what each turn can see."
          (run (efrit-gnus-run--make
                :closing summary :session session
                :mark (efrit-repl-session-history-mark session)
-               :where where :total n)))
+               :where where :total n :refs refs)))
     (setq efrit-gnus--run run)
     (efrit-gnus--watch-for-idle)
     (efrit-gnus--submit-batch run refs item where 0 n)))
