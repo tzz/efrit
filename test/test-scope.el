@@ -52,7 +52,43 @@
     (let ((p (efrit-prompts-get name)))
       (should p)
       (should (eq 'single (efrit-prompts-kind p)))
+      (should (equal '(code) (efrit-prompts-uses p)))
       (should (string-match-p "{{{:scope}}}" (plist-get p :item))))))
+
+(ert-deftest test-scope-insert-prompt-fills-from-the-target-buffer ()
+  "In the agent buffer, a library prompt goes into the input, filled from
+the buffer you came from when it names the text; a prompt without
+placeholders is inserted as it is, after a draft; the chooser is asked
+for the `chat' use."
+  (require 'efrit-agent)
+  (let ((efrit-agent-auto-show nil)
+        (src (generate-new-buffer "greet.el")))
+    (unwind-protect
+        (progn
+          (with-current-buffer src
+            (emacs-lisp-mode)
+            (insert "(defun greet (n) (format \"hi %s\" n))\n")
+            (goto-char 5))
+          (with-current-buffer (efrit-agent--get-buffer)
+            (let ((inhibit-read-only t)) (erase-buffer))
+            (efrit-agent-mode)
+            (efrit-agent--init-regions)
+            (efrit-agent--setup-regions)
+            (cl-letf (((symbol-function 'efrit-context-target-buffer) (lambda (&rest _) src)))
+              (efrit-scope-insert-prompt "explain")
+              (let ((input (efrit-agent--get-input)))
+                (should (string-match-p "\\`Explain what this defun of greet.el (emacs-lisp, lines 1-1)" input))
+                (should-not (string-match-p "{{{" input)))
+              (efrit-scope-insert-prompt "What is slow here?")
+              (should (string-match-p "lines 1-1) does.*\n\nWhat is slow here\\?\\'" (efrit-agent--get-input))))
+            ;; the interactive form asks for the chat prompts
+            (let ((use nil))
+              (cl-letf (((symbol-function 'efrit-prompts-read)
+                         (lambda (_purpose _default u) (setq use u) '("Plain." . nil))))
+                (call-interactively #'efrit-scope-insert-prompt))
+              (should (eq 'chat use))
+              (should (string-suffix-p "Plain." (efrit-agent--get-input))))))
+      (kill-buffer src))))
 
 (provide 'test-scope)
 ;;; test-scope.el ends here

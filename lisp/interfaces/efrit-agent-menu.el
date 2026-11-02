@@ -31,6 +31,7 @@
 (defvar efrit-agent-input-mode-map)
 (defvar efrit-agent--status)
 (defvar efrit-agent--repl-session)
+(declare-function efrit-scope-insert-prompt "efrit-scope" (prompt))
 (declare-function efrit-repl-session-queue "efrit-repl-session")
 (declare-function efrit-repl-session-status "efrit-repl-session")
 (defvar efrit-preset-current)
@@ -100,7 +101,8 @@ Live: transient calls it on every redraw, so toggles show at once."
        ("U" efrit-agent-queue-resume :description (lambda () (efrit-agent-menu--desc "send the next queued input" 'efrit-agent-queue-resume)))
        ("y" efrit-agent-copy-last-output :description (lambda () (efrit-agent-menu--desc "copy the last answer" 'efrit-agent-copy-last-output)))
        ("g" efrit-agent-regenerate :description (lambda () (efrit-agent-menu--desc "ask the last question again (C-u: edit it)" 'efrit-agent-regenerate)))
-       ("Q" efrit-agent-quote-region :description (lambda () (efrit-agent-menu--desc "quote the region into the input" 'efrit-agent-quote-region)))]
+       ("Q" efrit-agent-quote-region :description (lambda () (efrit-agent-menu--desc "quote the region into the input" 'efrit-agent-quote-region)))
+       ("L" efrit-scope-insert-prompt :description (lambda () (efrit-agent-menu--desc "insert a library prompt into the input" 'efrit-scope-insert-prompt)))]
       ["Tool rows"
        ("RET" efrit-agent-toggle-expand :description (lambda () (efrit-agent-menu--desc "fold / unfold the row at point" 'efrit-agent-toggle-expand)))
        ("e" efrit-agent-expand-all :description (lambda () (efrit-agent-menu--desc "unfold every row" 'efrit-agent-expand-all)) :transient t)

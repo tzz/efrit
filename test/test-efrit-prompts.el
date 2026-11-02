@@ -90,7 +90,7 @@ pair has no summary; a summarizing prompt needs one."
       (efrit-prompts-manage-refresh)
       (let ((row (seq-find (lambda (e) (equal (car e) "quicker")) tabulated-list-entries)))
         (should (equal "single" (substring-no-properties (aref (cadr row) 2))))
-        (should (equal "" (aref (cadr row) 4)))))
+        (should (equal "" (aref (cadr row) 5)))))
     ;; The editor round-trips the kind through its switch, and the
     ;; switch toggles it
     (with-temp-buffer
@@ -199,6 +199,58 @@ used name is offered first."
     (should (equal '("one" "two") (efrit-prompts-names)))
     (setq efrit-prompts-last "two")
     (should (equal '("two" "one") (efrit-prompts-names)))))
+
+(ert-deftest test-efrit-prompts-uses-filter-and-persist ()
+  "A prompt's uses filter the choosers: a tagged prompt shows for its
+uses only, an untagged one everywhere; uses survive the file round
+trip, a rename and a copy; the editor reads them back from words; the
+default offered first is dropped when it does not fit the use."
+  (test-prompts--with-library
+    (efrit-prompts-define "mail-only" "Per message." "Over all." "m" nil '(mail))
+    (efrit-prompts-define "code-only" "Over the {{{:scope}}}." "" "c" 'single "code chat")
+    (should (equal '(mail) (efrit-prompts-uses (efrit-prompts-get "mail-only"))))
+    (should (equal '(chat code) (efrit-prompts-uses (efrit-prompts-get "code-only"))))
+    (should-not (efrit-prompts-uses (efrit-prompts-get "one")))
+    (should (equal '("one" "two" "mail-only") (efrit-prompts-names 'mail)))
+    (should (equal '("one" "two" "code-only") (efrit-prompts-names 'code)))
+    (should (equal '("one" "two" "code-only") (efrit-prompts-names 'chat)))
+    (should (equal '("one" "two") (efrit-prompts-names 'documents)))
+    (should (equal '("one" "two" "mail-only" "code-only") (efrit-prompts-names)))
+    ;; yours: saved, reloaded, still tagged; a string of words is accepted
+    (efrit-prompts-put "mine" "Item mine." "" "why" 'single "chat, documents")
+    (efrit-prompts-reload)
+    (should (equal '(chat documents) (efrit-prompts-uses (efrit-prompts-get "mine"))))
+    (efrit-prompts-rename "mine" "ours")
+    (should (equal '(chat documents) (efrit-prompts-uses (efrit-prompts-get "ours"))))
+    ;; the editor shows the uses as words and reads them back
+    (let ((buf (get-buffer-create "*efrit prompt: uses*")))
+      (unwind-protect
+          (with-current-buffer buf
+            (efrit-prompts-edit-mode)
+            (efrit-prompts-edit--insert (efrit-prompts-get "ours"))
+            (should (equal "chat documents" (plist-get (efrit-prompts-edit--read) :uses)))
+            (efrit-prompts-edit--replace-section :uses "mail")
+            (setq efrit-prompts-edit--original (efrit-prompts-get "ours"))
+            (cl-letf (((symbol-function 'quit-window) #'ignore))
+              (efrit-prompts-edit-save))
+            (should (equal '(mail) (efrit-prompts-uses (efrit-prompts-get "ours")))))
+        (kill-buffer buf)))
+    ;; the chooser under a use: a default that does not fit is not offered
+    (let ((asked nil))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt names &rest args) (setq asked (list names (nth 4 args))) "one")))
+        (efrit-prompts-read "Test" "code-only" 'mail)
+        (should (equal '("edit" "ours" "one" "two" "mail-only") (car asked)))
+        ;; the default fell back to the first fitting prompt
+        (should (equal "ours" (cadr asked)))
+        (efrit-prompts-read "Test" "code-only" 'code)
+        (should (equal "code-only" (cadr asked)))))
+    ;; the manager has a Uses column: pills for the tagged, "any" for the rest
+    (with-temp-buffer
+      (efrit-prompts-manage-mode)
+      (efrit-prompts-manage-refresh)
+      (should (string-match-p "any" (buffer-string)))
+      (should (string-match-p "mail" (buffer-string))))))
 
 (ert-deftest test-efrit-prompts-read-falls-back-to-completion ()
   "In batch the chooser is `completing-read'; a name gives its pair and is

@@ -27,6 +27,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `efrit-do-async`: Use `efrit-do` (now the primary interface)
 - `efrit-api-url`: Use `efrit-api-base-url` in efrit-common.el instead. The legacy variable still works as an override but is deprecated.
 
+## [0.15.0] - 2026-11-02
+
+The prompt library in every interaction.
+
+### Added
+
+- A prompt carries uses (`mail`, `code`, `chat`, `documents`, or any symbol): where it is offered.  Each chooser passes the use it serves and shows the prompts tagged with it plus the untagged ones, which fit everywhere.  Pills in the chooser and the manager's new Uses column; a Uses line in the editor; `efrit-prompts-for`, `efrit-prompts-fits-p`, `efrit-prompts-read` takes a USE
+- `efrit-scope-insert-prompt` (`C-c p`, `/prompt`, menu `L`): a library prompt into the agent buffer's input, placeholders filled from the buffer you came from, to add to and send
+- The Gnus prompts are tagged `mail`, the scope and refactoring prompts `code`
+
+### Fixed
+
+- A gnus batch whose analysis preceded a tool call reached the closing summary as its sign-off line only; the whole turn's text is stitched now, and the closing message lists the selection's references instead of inviting a search (0.14.1)
+- Long prose between two tool rounds stays visible when a turn folds; each work span folds on its own (0.14.2)
+- The unread mark clears at the bottom of a large frame (`window-end` ran short); the dwell hook is restored when Emacs evicts it (0.14.3)
+- A bold heading split over two streamed chunks keeps one colour: font-lock is off in the agent buffer and the renderer rebuilds `face` from its mirror (0.14.4)
+
 ## [0.14.0] - 2026-10-23
 
 ### Changed

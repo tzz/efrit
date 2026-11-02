@@ -131,46 +131,48 @@
 ;; The named prompts live in efrit-prompts (a library with an editor,
 ;; `M-x efrit-prompts-manage'); these are the built-in ones.  A
 ;; summarizing prompt has a per-batch part and an over-everything part;
-;; a single prompt ("draft replies") has the per-batch part only.  Prompts may mention
-;; the group, the count and the query with the placeholders {group},
+;; a single prompt ("draft replies") has the per-batch part only.  All
+;; carry the `mail' use, so the chooser here offers them and the
+;; untagged ones, not the code prompts.  Prompts may mention the
+;; group, the count and the query with the placeholders {group},
 ;; {count} and {query}.
 
 (efrit-prompts-define
  "summarize"
  "Summarize each of these messages in two or three lines: what it says, who wants what from whom, anything decided or due."
- "Now, across everything you were sent: what are the main threads and themes, what changed over time, what recurs, and what stands out as important or unresolved. One consolidated summary, longest section first.")
+ "Now, across everything you were sent: what are the main threads and themes, what changed over time, what recurs, and what stands out as important or unresolved. One consolidated summary, longest section first." nil nil '(mail))
 (efrit-prompts-define
  "action items"
  "List every action item, request or deadline in these messages, each with who asked, who must act, and by when. Say which are addressed to me. Omit anything already done."
- "Across all of them: one consolidated action list, deduplicated, grouped by owner, mine first, dated where dates exist. Flag items that appear more than once or seem overdue.")
+ "Across all of them: one consolidated action list, deduplicated, grouped by owner, mine first, dated where dates exist. Flag items that appear more than once or seem overdue." nil nil '(mail))
 (efrit-prompts-define
  "draft replies"
  "For each message that expects a reply from me, draft one in my voice: brief, plain, specific. Show the draft under the message's subject. Say which messages need no reply and why."
- nil "One task per message; nothing to consolidate." 'single)
+ nil "One task per message; nothing to consolidate." 'single '(mail))
 (efrit-prompts-define
  "who and what"
  "Who are the people in these messages and what does each one want or report? One line per person per message."
- "Across all of them: one entry per person, merged: what they are working on, asking for, or blocked by over the whole period.")
+ "Across all of them: one entry per person, merged: what they are working on, asking for, or blocked by over the whole period." nil nil '(mail))
 (efrit-prompts-define
  "timeline"
  "Put the events, decisions and commitments in these messages on a dated timeline, oldest first, with the message each comes from."
- "Merge into one timeline over the whole selection, oldest first. Then name the turning points: where a plan changed, a decision was reversed, or a deadline moved.")
+ "Merge into one timeline over the whole selection, oldest first. Then name the turning points: where a plan changed, a decision was reversed, or a deadline moved." nil nil '(mail))
 (efrit-prompts-define
  "triage"
  "Sort these messages into: needs my reply today, needs my reply this week, read only, ignore. One line each with the reason. Be decisive."
- "Across all of them: the short list of what I must do today, then this week. Nothing else.")
+ "Across all of them: the short list of what I must do today, then this week. Nothing else." nil nil '(mail))
 (efrit-prompts-define
  "extract"
  "Extract every concrete fact from these messages -- names, dates, amounts, links, identifiers, decisions -- as a table with the message it came from."
- "One merged table over everything, duplicates collapsed, sorted by date. Then note any facts that conflict between messages.")
+ "One merged table over everything, duplicates collapsed, sorted by date. Then note any facts that conflict between messages." nil nil '(mail))
 (efrit-prompts-define
  "tone check"
  "Read these messages for tone: is anyone upset, blocked, or waiting on me? Quote the line that tells you and say what a good response would be."
- "Across all of them: who is unhappy or waiting, and for how long; whether it is getting better or worse over the period.")
+ "Across all of them: who is unhappy or waiting, and for how long; whether it is getting better or worse over the period." nil nil '(mail))
 (efrit-prompts-define
  "trends, accomplishments, concerns"
  "For each message, note in one line: the topics it covers, anything finished or decided, and anything worrying or blocked."
- "Now, over the whole selection, three sections. Trends: the recurring topics and how each moved over the period, with dates. Accomplishments: what got done or decided, by whom. Concerns: what is blocked, slipping, contested, or keeps coming back unresolved, and since when. Write it as a briefing someone who read none of these could act on; name people and dates.")
+ "Now, over the whole selection, three sections. Trends: the recurring topics and how each moved over the period, with dates. Accomplishments: what got done or decided, by whom. Concerns: what is blocked, slipping, contested, or keeps coming back unresolved, and since when. Write it as a briefing someone who read none of these could act on; name people and dates." nil nil '(mail))
 
 (defcustom efrit-gnus-own-buffer t
   "Non-nil gives Gnus its own agent buffer, `*efrit[gnus]*', when
@@ -612,7 +614,8 @@ Returns (ITEM-PROMPT . SUMMARY-PROMPT); for typed text the summary is
 nil and `efrit-gnus--prompt-pair' derives one.  DEFAULT names the
 prompt offered first, PURPOSE heads the chooser."
   (efrit-prompts-read (or purpose "Ask efrit about the articles")
-                      (or default efrit-prompts-last efrit-gnus-default-prompt)))
+                      (or default efrit-prompts-last efrit-gnus-default-prompt)
+                      'mail))
 
 (defun efrit-gnus--prompt-pair (prompt)
   "PROMPT as (ITEM . SUMMARY).

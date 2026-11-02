@@ -20,8 +20,14 @@
 ;; keeps those prompts, lets you pick one, and lets you edit them.
 ;;
 ;; A prompt is a plist: (:name NAME :kind single|summarizing :item ITEM
-;; :summary SUMMARY :description DESCRIPTION :builtin BOOL).  A
-;; `single' prompt has no :summary.  Prompts live in
+;; :summary SUMMARY :description DESCRIPTION :uses (USE...) :builtin
+;; BOOL).  A `single' prompt has no :summary.  :uses says where the
+;; prompt makes sense: `mail' (Gnus batches), `code' (the region, defun
+;; or buffer), `chat' (typed into the agent buffer), `documents'
+;; (efrit-documents sources), or any other symbol a package filters
+;; on.  A prompt with no uses fits everywhere; each chooser passes
+;; the use it serves and shows the prompts tagged with it plus the
+;; untagged ones.  Prompts live in
 ;; `efrit-prompts-builtin' (from code; a package adds its own with
 ;; `efrit-prompts-define') and in a JSON file under
 ;; `efrit-data-directory' (yours: edits, new prompts, and the built-in
@@ -116,6 +122,11 @@
   '((t :inherit shadow))
   "The first line of a prompt shown beside its name in the chooser.")
 
+(defface efrit-prompts-use
+  '((((background dark)) :foreground "#1b1b1b" :background "#b8a1d8")
+    (t :foreground "white" :background "#6a4c93"))
+  "Pill naming a use of a prompt (mail, code, chat...).")
+
 (defface efrit-prompts-kind-on
   '((((background dark)) :foreground "#1b1b1b" :background "#8fbc8f" :weight bold)
     (t :foreground "white" :background "#2e8b57" :weight bold))
@@ -162,6 +173,41 @@ Use `efrit-prompts-define' to add to it.")
   "The kinds of prompt: `single' is one task per batch of items;
 `summarizing' adds a closing part over all the per-batch answers.")
 
+(defcustom efrit-prompts-uses
+  '((mail . "Gnus articles, in batches")
+    (code . "the region, the defun or the buffer at hand")
+    (chat . "typed into the agent buffer")
+    (documents . "documents from efrit-documents sources"))
+  "The known uses of a prompt, (USE . WHAT-IT-MEANS).
+A prompt may carry any symbol as a use; these are the ones the editor
+explains and `efrit-prompts-manage' knows.  A prompt without uses
+fits every one of them."
+  :type '(alist :key-type symbol :value-type string))
+
+(defun efrit-prompts-uses (prompt)
+  "The uses of PROMPT (a plist) as a list of symbols; nil means all."
+  (plist-get prompt :uses))
+
+(defun efrit-prompts-fits-p (prompt use)
+  "Non-nil when PROMPT fits USE: no uses recorded, or USE among them.
+USE nil fits every prompt."
+  (or (null use)
+      (null (efrit-prompts-uses prompt))
+      (memq use (efrit-prompts-uses prompt))))
+
+(defun efrit-prompts--uses-of (uses)
+  "USES as a sorted list of symbols: from symbols, strings, or one string of words."
+  (let ((list (cond ((null uses) nil)
+                    ((stringp uses) (split-string uses "[ ,\t\n]+" t))
+                    ((listp uses) uses)
+                    (t (list uses)))))
+    (sort (delete-dups
+           (delq nil (mapcar (lambda (u)
+                               (let ((name (string-trim (format "%s" u))))
+                                 (and (not (string-empty-p name)) (intern (downcase name)))))
+                             list)))
+          #'string<)))
+
 (defun efrit-prompts-kind (prompt)
   "The kind of PROMPT (a plist): `single' or `summarizing'.
 A prompt without :kind is `summarizing' when it has a summary part."
@@ -181,11 +227,12 @@ A prompt without :kind is `summarizing' when it has a summary part."
         ((string-empty-p (string-trim (or summary ""))) 'single)
         (t 'summarizing)))
 
-(defun efrit-prompts-define (name item summary &optional description kind)
+(defun efrit-prompts-define (name item summary &optional description kind uses)
   "Define built-in prompt NAME with ITEM and SUMMARY parts and a DESCRIPTION.
 KIND is `single' or `summarizing'; without it, a non-empty SUMMARY
-makes the prompt summarizing.  Redefining NAME replaces the earlier
-definition."
+makes the prompt summarizing.  USES is a list of symbols (see
+`efrit-prompts-uses'); nil fits everywhere.  Redefining NAME replaces
+the earlier definition."
   (unless (and (stringp name) (not (string-empty-p name)))
     (error "efrit-prompts: a prompt needs a name"))
   (let ((kind (efrit-prompts--kind-of summary kind)))
@@ -194,7 +241,8 @@ definition."
                              :key (lambda (p) (plist-get p :name)) :test #'equal)
                   (list (list :name name :kind kind :item item
                               :summary (if (eq kind 'single) "" summary)
-                              :description (or description "") :builtin t)))))
+                              :description (or description "")
+                              :uses (efrit-prompts--uses-of uses) :builtin t)))))
   name)
 
 (defun efrit-prompts--plist-from-json (obj)
@@ -205,7 +253,8 @@ Files written before prompts had kinds carry none; the summary decides."
           :kind (efrit-prompts--kind-of summary (gethash "kind" obj nil))
           :item (gethash "item" obj "")
           :summary summary
-          :description (gethash "description" obj ""))))
+          :description (gethash "description" obj "")
+          :uses (efrit-prompts--uses-of (gethash "uses" obj nil)))))
 
 (defun efrit-prompts--load ()
   "Read `efrit-prompts-file' once.  A missing or broken file is empty."
@@ -237,6 +286,7 @@ Files written before prompts had kinds carry none; the summary decides."
                                   (puthash "item" (plist-get p :item) h)
                                   (puthash "summary" (plist-get p :summary) h)
                                   (puthash "description" (or (plist-get p :description) "") h)
+                                  (puthash "uses" (vconcat (mapcar #'symbol-name (efrit-prompts-uses p))) h)
                                   h))
                               efrit-prompts--user))
              obj)
@@ -263,6 +313,10 @@ carries :builtin t and :changed t."
      (seq-remove (lambda (p) (efrit-prompts--user-entry (plist-get p :name)))
                  efrit-prompts-builtin))))
 
+(defun efrit-prompts-for (use)
+  "The prompts that fit USE (see `efrit-prompts-fits-p'), in library order."
+  (seq-filter (lambda (p) (efrit-prompts-fits-p p use)) (efrit-prompts)))
+
 (defun efrit-prompts--user-entry (name)
   "The user's prompt plist named NAME, or nil."
   (efrit-prompts--load)
@@ -272,18 +326,20 @@ carries :builtin t and :changed t."
   "The prompt named NAME (user version first), or nil."
   (seq-find (lambda (p) (equal (plist-get p :name) name)) (efrit-prompts)))
 
-(defun efrit-prompts-names ()
-  "The names of all prompts, `efrit-prompts-last' first."
-  (let ((names (mapcar (lambda (p) (plist-get p :name)) (efrit-prompts))))
+(defun efrit-prompts-names (&optional use)
+  "The names of the prompts that fit USE (nil: all), `efrit-prompts-last' first."
+  (let ((names (mapcar (lambda (p) (plist-get p :name)) (efrit-prompts-for use))))
     (if (and efrit-prompts-last (member efrit-prompts-last names))
         (cons efrit-prompts-last (remove efrit-prompts-last names))
       names)))
 
-(defun efrit-prompts-put (name item summary &optional description kind)
+(defun efrit-prompts-put (name item summary &optional description kind uses)
   "Save prompt NAME with ITEM, SUMMARY and DESCRIPTION as yours.
 KIND is `single' or `summarizing' (default: from SUMMARY).  A
-summarizing prompt needs a summary part.  Replaces a user prompt of
-that name; over a built-in it becomes the override.  Returns the plist."
+summarizing prompt needs a summary part.  USES is a list of symbols,
+or a string of words (nil: fits everywhere).  Replaces a user prompt
+of that name; over a built-in it becomes the override.  Returns the
+plist."
   (unless (and (stringp name) (not (string-empty-p (string-trim name))))
     (user-error "efrit-prompts: the prompt needs a name"))
   (when (string-empty-p (string-trim (or item "")))
@@ -294,7 +350,8 @@ that name; over a built-in it becomes the override.  Returns the plist."
     (efrit-prompts--load)
     (let ((entry (list :name name :kind kind :item item
                        :summary (if (eq kind 'single) "" (or summary ""))
-                       :description (or description ""))))
+                       :description (or description "")
+                       :uses (efrit-prompts--uses-of uses))))
       (setq efrit-prompts--user
             (append (cl-remove name efrit-prompts--user
                                :key (lambda (p) (plist-get p :name)) :test #'equal)
@@ -320,7 +377,7 @@ that name; over a built-in it becomes the override.  Returns the plist."
       (user-error "efrit-prompts: a prompt named %s exists" new))
     (efrit-prompts-delete old)
     (efrit-prompts-put new (plist-get p :item) (plist-get p :summary) (plist-get p :description)
-                       (efrit-prompts-kind p))))
+                       (efrit-prompts-kind p) (efrit-prompts-uses p))))
 
 (defun efrit-prompts-pair (prompt)
   "PROMPT (a plist, a name, or (ITEM . SUMMARY)) as (ITEM . SUMMARY).
@@ -353,6 +410,14 @@ The SUMMARY is nil for a `single' prompt and for a typed question."
   "The chooser's answer: a name, (typed . TEXT), `manage', or `pending'.")
 (defvar efrit-prompts--depth nil)
 (defvar efrit-prompts--purpose nil)
+(defvar efrit-prompts--use nil
+  "The use the open chooser filters on, or nil for all.")
+
+(defun efrit-prompts-use-pills (prompt)
+  "PROMPT's uses as pills, or \"\" when it fits everywhere."
+  (require 'efrit-ui-helpers)
+  (mapconcat (lambda (u) (efrit-ui-badge (symbol-name u) 'efrit-prompts-use))
+             (efrit-prompts-uses prompt) " "))
 
 (defconst efrit-prompts--keys "asdfghjklqwrtyuiopzxcvbnm1234567890"
   "Keys handed to prompts in the chooser, in order.  `e', `/' and `?' are taken.")
@@ -365,28 +430,39 @@ The SUMMARY is nil for a `single' prompt and for a typed question."
 (defun efrit-prompts--chooser-children (_group)
   "The prompt rows of the chooser, built when it opens.
 Names are padded to one column so the hints line up."
-  (let* ((names (efrit-prompts-names))
+  (let* ((names (efrit-prompts-names efrit-prompts--use))
          (keys (append efrit-prompts--keys nil))
          (name-width (apply #'max 8 (mapcar #'length names)))
-         (hint-width (max 20 (- (frame-width) name-width 12)))
+         (hint-width (max 20 (- (frame-width) name-width 30)))
          (rows nil))
     (dolist (name names)
       (when keys
         (let* ((key (string (pop keys)))
                (p (efrit-prompts-get name))
                (hint (concat (if (efrit-prompts-summarizing-p p) "Σ " "  ")
-                             (efrit-prompts--first-line (plist-get p :item) (- hint-width 2)))))
+                             (efrit-prompts--first-line (plist-get p :item) (- hint-width 2))))
+               ;; Under a use filter every row fits it: only the
+               ;; untagged ones are worth a mark, as "any"
+               (pills (if efrit-prompts--use
+                          (if (efrit-prompts-uses p) "" (propertize "any" 'face 'shadow))
+                        (efrit-prompts-use-pills p))))
           (push (list key
                       (lambda () (interactive) (efrit-prompts--choose name))
                       :description (concat (propertize (format (format "%%-%ds" name-width) name)
                                                        'face 'efrit-prompts-name)
-                                           "  " (propertize hint 'face 'efrit-prompts-hint)))
+                                           "  " (propertize hint 'face 'efrit-prompts-hint)
+                                           (if (string-empty-p pills) "" (concat "  " pills))))
                 rows))))
     (transient-parse-suffixes 'efrit-prompts-chooser (nreverse rows))))
 
 (defun efrit-prompts--chooser-heading ()
   (concat (propertize (or efrit-prompts--purpose "Which prompt?") 'face 'efrit-prompts-name)
-          (propertize "   (Σ: per batch, then a summary over all the answers)" 'face 'shadow)))
+          (when efrit-prompts--use
+            (concat "  " (efrit-ui-badge (symbol-name efrit-prompts--use) 'efrit-prompts-use)))
+          (propertize (if efrit-prompts--use
+                          "   (prompts for this use and the ones for any; Σ: per batch, then a summary)"
+                        "   (Σ: per batch, then a summary over all the answers)")
+                      'face 'shadow)))
 
 (defun efrit-prompts--exit-recursive-edit ()
   (when (and efrit-prompts--depth (= (recursion-depth) efrit-prompts--depth))
@@ -417,10 +493,11 @@ Names are padded to one column so the hints line up."
     (when (string-empty-p (string-trim text)) (user-error "Nothing to ask"))
     text))
 
-(defun efrit-prompts--read-with-menu (purpose default)
-  "The transient chooser; returns a name, a typed string, or `manage'."
+(defun efrit-prompts--read-with-menu (purpose default use)
+  "The transient chooser over the prompts for USE; returns a name, a typed string, or `manage'."
   (setq efrit-prompts--choice 'pending
         efrit-prompts--purpose purpose
+        efrit-prompts--use use
         efrit-prompts-last (or default efrit-prompts-last))
   (let ((efrit-prompts--depth (1+ (recursion-depth))))
     (unwind-protect
@@ -434,9 +511,9 @@ Names are padded to one column so the hints line up."
     ('typed (efrit-prompts--read-typed))
     (v v)))
 
-(defun efrit-prompts--read-with-completion (purpose default)
-  "The fallback chooser for batch use or without transient."
-  (let* ((names (efrit-prompts-names))
+(defun efrit-prompts--read-with-completion (purpose default use)
+  "The fallback chooser for batch use or without transient, over the prompts for USE."
+  (let* ((names (efrit-prompts-names use))
          (default (or default (car names)))
          (choice (completing-read
                   (format "%s (name, your own question, or \"edit\"; default %s): "
@@ -448,20 +525,24 @@ Names are padded to one column so the hints line up."
 (defvar efrit-prompts-history nil)
 
 ;;;###autoload
-(defun efrit-prompts-read (&optional purpose default)
+(defun efrit-prompts-read (&optional purpose default use)
   "Ask the user for a prompt and return (ITEM . SUMMARY).
 PURPOSE is a short phrase for the heading (\"Analyze 113 unread in
-recaps\"); DEFAULT a prompt name offered first.  A named prompt is
-remembered in `efrit-prompts-last'.  Typing a question returns it with a
-nil summary.  `e' opens the manager and asks again when it closes."
-  (let ((choice (if (and (display-graphic-p) (not noninteractive)
-                         (efrit-prompts--define-chooser))
-                    (efrit-prompts--read-with-menu purpose default)
-                  (efrit-prompts--read-with-completion purpose default))))
+recaps\"); DEFAULT a prompt name offered first; USE (a symbol, see
+`efrit-prompts-uses') limits the choice to the prompts for it and
+the untagged ones.  A named prompt is remembered in
+`efrit-prompts-last'.  Typing a question returns it with a nil
+summary.  `e' opens the manager and asks again when it closes."
+  (let* ((default (and default (efrit-prompts-fits-p (or (efrit-prompts-get default) '(:name "")) use)
+                       default))
+         (choice (if (and (display-graphic-p) (not noninteractive)
+                          (efrit-prompts--define-chooser))
+                     (efrit-prompts--read-with-menu purpose default use)
+                   (efrit-prompts--read-with-completion purpose default use))))
     (cond
      ((eq choice 'manage)
       (efrit-prompts-manage t)
-      (efrit-prompts-read purpose default))
+      (efrit-prompts-read purpose default use))
      ((efrit-prompts-get choice)
       (setq efrit-prompts-last choice)
       (efrit-prompts-pair (efrit-prompts-get choice)))
@@ -526,6 +607,7 @@ answers supersedes it."
 (defconst efrit-prompts-edit--sections
   '((:name "Name" "One short label; it is what you pick in the chooser.")
     (:description "What it is for" "Optional. Shown in the manager.")
+    (:uses "Uses" "Where it is offered, as words: mail code chat documents. Empty: everywhere.")
     (:item "Per item" "Asked of every batch of items. Ask for a short, specific answer per item.")
     (:summary "Over everything" "Asked once at the end, over all the per-item answers. Ask for one consolidated answer."))
   "The editor's sections: (KEY HEADING HELP).  The kind is a switch, not a section.")
@@ -653,7 +735,10 @@ switch sits between the description and the two parts."
                               'face 'shadow 'efrit-prompts-section key))
           (efrit-prompts-edit--protect start (point)))
         (let ((start (point)))
-          (insert (or (plist-get plist key) "") "\n")
+          (insert (if (eq key :uses)
+                      (mapconcat #'symbol-name (efrit-prompts-uses plist) " ")
+                    (or (plist-get plist key) ""))
+                  "\n")
           (add-face-text-property start (point) 'efrit-prompts-field t))
         (insert "\n")))
     (efrit-prompts--mirror-faces (point-min) (point-max))
@@ -693,7 +778,8 @@ switch sits between the description and the two parts."
       (efrit-prompts-delete old-name))
     (let ((saved (efrit-prompts-put name (plist-get p :item) (plist-get p :summary)
                                     (plist-get p :description)
-                                    (efrit-prompts-edit--kind p)))
+                                    (efrit-prompts-edit--kind p)
+                                    (plist-get p :uses)))
           (on-save efrit-prompts-edit--on-save))
       (set-buffer-modified-p nil)
       (message "Saved prompt %s" name)
@@ -914,7 +1000,7 @@ ON-SAVE, when given, is called with the saved plist."
   "Manage efrit's two-part prompts.
 \\{efrit-prompts-manage-mode-map}"
   (setq tabulated-list-format
-        [("" 9 nil) ("Name" 30 t) ("Kind" 11 t) ("Per item" 40 nil) ("Over everything" 0 nil)])
+        [("" 9 nil) ("Name" 30 t) ("Kind" 11 t) ("Uses" 18 t) ("Per item" 40 nil) ("Over everything" 0 nil)])
   (setq tabulated-list-padding 1)
   (tabulated-list-init-header))
 
@@ -930,6 +1016,9 @@ ON-SAVE, when given, is called with the saved plist."
                   (vector (efrit-prompts--badge p)
                           (propertize (plist-get p :name) 'face 'efrit-prompts-name)
                           (propertize (symbol-name (efrit-prompts-kind p)) 'face 'shadow)
+                          (if (efrit-prompts-uses p)
+                              (efrit-prompts-use-pills p)
+                            (propertize "any" 'face 'shadow))
                           (efrit-prompts--first-line (plist-get p :item) 38)
                           (if (efrit-prompts-summarizing-p p)
                               (efrit-prompts--first-line (plist-get p :summary) 60)
@@ -974,7 +1063,7 @@ ON-SAVE, when given, is called with the saved plist."
   (interactive (list (read-string (format "Copy %s as: " (efrit-prompts-manage--name)))))
   (let ((p (efrit-prompts-get (efrit-prompts-manage--name))))
     (efrit-prompts-put new (plist-get p :item) (plist-get p :summary) (plist-get p :description)
-                       (efrit-prompts-kind p))
+                       (efrit-prompts-kind p) (efrit-prompts-uses p))
     (efrit-prompts-edit new)))
 
 (defun efrit-prompts-manage-delete ()
@@ -1034,7 +1123,9 @@ ON-SAVE, when given, is called with the saved plist."
      "*efrit prompt*"
      (lambda ()
        (insert (propertize (plist-get p :name) 'face '(:inherit efrit-prompts-name :height 1.2))
-               "  " (efrit-prompts--badge p) "\n")
+               "  " (efrit-prompts--badge p)
+               (if (efrit-prompts-uses p) (concat "  " (efrit-prompts-use-pills p)) "")
+               "\n")
        (unless (string-empty-p (or (plist-get p :description) ""))
          (insert (propertize (plist-get p :description) 'face 'shadow) "\n"))
        (dolist (section (efrit-prompts--sections-of p))

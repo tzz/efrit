@@ -21,8 +21,9 @@
 ;; name, {{{:scope}}} the word region/defun/buffer, {{{:lines}}} the
 ;; line range.  A prompt without {{{:text}}} gets the text appended in
 ;; a fenced block.  The built-in scoped prompts (explain, fix, document,
-;; tests, review, simplify) are `single' prompts in the library, so the
-;; prompt editor and manager apply to them.
+;; tests, review, simplify) are `single' prompts in the library with the
+;; `code' use, so the prompt editor and manager apply to them and the
+;; chooser here does not offer the mail prompts.
 
 ;;; Code:
 
@@ -220,7 +221,7 @@ The text is appended in a fence when PROMPT does not place it."
               "A code review of the code at hand")
              ("simplify" "Simplify this {{{:scope}}} of {{{:file}}} ({{{:mode}}}) without changing what it does: fewer branches, clearer names, standard idioms of the language. Return the new code only, then one line on what changed."
               "A simpler version of the code at hand")))
-  (efrit-prompts-define (nth 0 p) (nth 1 p) "" (nth 2 p) 'single))
+  (efrit-prompts-define (nth 0 p) (nth 1 p) "" (nth 2 p) 'single '(code)))
 
 ;;;; The command
 
@@ -238,7 +239,8 @@ in `efrit-scope-question-prompts' runs as a question: read-only turn."
           (pcase-let ((`(,_ ,_ ,kind) (efrit-scope-bounds)))
             (format "Run over the %s%s" kind
                     (pcase (prefix-numeric-value current-prefix-arg)
-                      (4 " (+ visible files)") (16 " (+ visible files, clipboard)") (_ "")))))
+                      (4 " (+ visible files)") (16 " (+ visible files, clipboard)") (_ ""))))
+          nil 'code)
          (prefix-numeric-value current-prefix-arg)))
   (pcase-let* ((`(,start ,end ,kind) (efrit-scope-bounds))
                (pair (efrit-prompts-pair prompt))
@@ -257,6 +259,46 @@ in `efrit-scope-question-prompts' runs as a question: read-only turn."
     (unless (efrit-submit shown api)
       (efrit-brief-question-turn nil)
       (user-error "efrit is busy with another turn; try again when it is idle"))))
+
+;;;; A library prompt in the agent buffer
+
+(declare-function efrit-context-target-buffer "efrit-context-sources" (&optional from-buffer))
+(declare-function efrit-agent--get-input "efrit-agent-core")
+(defvar efrit-agent--input-start)
+
+(defun efrit-scope-chat-values ()
+  "Placeholder values for a prompt typed into the agent buffer.
+They come from the buffer you were working in (`efrit-context-target-buffer'):
+its region when active, else the defun or the buffer, as for
+`efrit-scope-run'.  nil when there is no such buffer."
+  (require 'efrit-context-sources)
+  (when-let* ((target (efrit-context-target-buffer)))
+    (when (and (buffer-live-p target) (not (eq target (current-buffer))))
+      (with-current-buffer target
+        (pcase-let ((`(,start ,end ,kind) (efrit-scope-bounds)))
+          (efrit-scope-values start end kind))))))
+
+;;;###autoload
+(defun efrit-scope-insert-prompt (prompt)
+  "Put library PROMPT into the agent buffer's input, filled, to send or edit.
+PROMPT is a name from the library (the chooser offers the `chat' ones
+and the untagged ones) or a question typed there.  Placeholders that
+name the text at hand ({{{:text}}}, {{{:file}}}...) are filled from
+the buffer you came from; `{{{?name|...}}}' asks you.  A prompt
+without placeholders is inserted as it is.  Nothing is sent: RET does
+that, after you add to it or not."
+  (interactive (list (efrit-prompts-read "Insert a prompt into the input" nil 'chat)))
+  (unless (derived-mode-p 'efrit-agent-mode)
+    (user-error "Not in an agent buffer"))
+  (let* ((pair (efrit-prompts-pair prompt))
+         (item (car pair))
+         (values (and (string-match-p "{{{" item) (efrit-scope-chat-values)))
+         (text (if values (efrit-scope-fill item values) (efrit-scope-fill item nil)))
+         (draft (efrit-agent--get-input)))
+    (goto-char (point-max))
+    (insert (if (or (null draft) (string-empty-p draft)) "" "\n\n") text)
+    (when (cdr pair)
+      (message "efrit: the per-item part is in the input; the closing part is for batch runs"))))
 
 (provide 'efrit-scope)
 

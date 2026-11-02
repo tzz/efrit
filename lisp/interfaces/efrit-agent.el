@@ -338,6 +338,7 @@
     (define-key map (kbd "C-c C-,") #'efrit-agent-checkpoint)
     (define-key map (kbd "C-c ;") #'efrit-context-restore)
     (define-key map (kbd "C-c C-y") #'efrit-agent-quote-region)
+    (define-key map (kbd "C-c p") #'efrit-scope-insert-prompt)
     (define-key map (kbd "C-c C-.") #'efrit-agent-regenerate)
     (define-key map (kbd "C-c C-b") #'efrit-markdown-copy-block)
     (define-key map (kbd "C-c C-j") #'efrit-markdown-insert-block-other-window)
