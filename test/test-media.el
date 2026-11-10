@@ -11,6 +11,7 @@
 
 (require 'ert)
 (require 'cl-lib)
+(require 'efrit-http)
 (require 'efrit-media)
 (require 'efrit-tool-media)
 
@@ -24,7 +25,7 @@
   `(let* ((dir (make-temp-file "efrit-media-test" t))
           (capture (expand-file-name "capture.json" dir))
           (efrit-media-directory (expand-file-name "media" dir))
-          (efrit-media-curl-program test-media--script)
+          (efrit-http-curl-program test-media--script)
           (efrit-media-backends nil)
           (efrit-media-last nil)
           (efrit-media--active nil)
@@ -162,7 +163,7 @@ with the backend's name; a non-JSON answer is an error, not a file."
            (job (efrit-media-generate "x" (lambda (file err) (setq result (or file err)))
                                       :kind 'image :backend "slow")))
       (should (memq job efrit-media--active))
-      (should (process-live-p (efrit-media-job-process job)))
+      (should (process-live-p (efrit-http-request-process (efrit-media-job-request job))))
       ;; let the script start (a SIGINT before Python installs its
       ;; handler is ignored; the TERM a second later covers it anyway)
       (accept-process-output nil 0.3)

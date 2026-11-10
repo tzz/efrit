@@ -27,6 +27,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `efrit-do-async`: Use `efrit-do` (now the primary interface)
 - `efrit-api-url`: Use `efrit-api-base-url` in efrit-common.el instead. The legacy variable still works as an override but is deprecated.
 
+## [0.17.0] - 2026-11-10
+
+Decision models.
+
+### Added
+
+- `efrit-decisions`: fixed questions about a text answered by a decision model as numbers.  Backends via `efrit-decisions-add-backend` (name, URL, model; efrit's key or an auth-source host); protocol `decisions-v1` (`{model, input, questions}` → `{answers}`), questions as plists of type `predicate` (a probability), `choice` (a value with probabilities) or `score` (a probability-weighted index on labelled levels).  `efrit-decide`, `efrit-decide-async`, `efrit-decide-many` (parallel, ordered, cancellable)
+- Tool `decide` (exec; many inputs, one row of answers each), registered while a backend exists; command `efrit-decide-lines` over the region's lines with named question sets from `efrit-decisions-questions-file`, results in a sortable table (`w` copies TSV)
+- `efrit-gnus-triage` (`d` under the Gnus prefix): the selection or all unread through the decision model (action, urgency, asks-me), a table sorted by urgency, `RET` opens the article.  The sandbox and the reviewer do not use decisions, by design
+- `efrit-http`: the curl transport (JSON POST as a process, cancel, sync wait) shared by efrit-media and efrit-decisions
+
+### Fixed (0.16.1 – 0.16.6)
+
+- The generated image is a fold in the transcript (`RET`/`TAB` unfold, `o` opens, `c`/`m`/`w`); a video unfolds to a first-frame poster with duration, size and audio; videos open through `efrit-media-video-player` (system opener by default), not `find-file`
+- Font-lock is a no-op in agent buffers whatever turns it on (a jit function erased image `display` properties)
+- `url-retrieve` results are delivered from a timer: a prompt inside the url filter hung Emacs past SIGUSR2
+- efrit's own gateway hosts (API base, media backends, `efrit-sandbox-expected-hosts`) are expected `net` targets
+
 ## [0.16.0] - 2026-11-10
 
 Image and video generation.

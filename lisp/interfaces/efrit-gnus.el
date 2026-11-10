@@ -886,6 +886,125 @@ for what each turn can see."
     (efrit-gnus--watch-for-idle)
     (efrit-gnus--submit-batch run refs item where 0 n)))
 
+;;;; Triage through a decision model
+
+;; A decision model gives a label and a number per article in well
+;; under a second, no chat turn: for "what needs me today" over a
+;; hundred unread that is the right tool.  The questions live in the
+;; library as a named set so they can be edited; the answers come as
+;; a table sorted by urgency, with RET on a row showing the article.
+;; The chat `triage' prompt stays for when a reason in prose is wanted.
+
+(declare-function efrit-decide-many-sync "efrit-decisions")
+(declare-function efrit-decisions-available-p "efrit-decisions")
+(declare-function efrit-decisions-question "efrit-decisions")
+(declare-function efrit-decisions-answer "efrit-decisions")
+(declare-function efrit-decisions-format-answer "efrit-decisions")
+(declare-function efrit-decisions-show-results "efrit-tool-decisions")
+(declare-function efrit-decisions-results-mode "efrit-tool-decisions")
+(declare-function tabulated-list-init-header "tabulated-list")
+(declare-function tabulated-list-print "tabulated-list" (&optional remember-pos update))
+(declare-function tabulated-list-get-id "tabulated-list" (&optional pos))
+(defvar efrit-decisions-results-mode-map)
+(defvar tabulated-list-entries)
+(defvar tabulated-list-format)
+
+(defcustom efrit-gnus-triage-questions
+  '((:type choice :name "action" :instructions "What does this message need from me, the recipient? Pick the most urgent that applies."
+     :choices (("reply-today" . "A person is waiting on my answer and the matter is time-sensitive")
+               ("reply-this-week" . "A reply is expected, but days will do")
+               ("act" . "Something to do that is not a reply: approve, review, attend, fix")
+               ("read" . "Worth reading; nothing asked of me")
+               ("ignore" . "Automated, promotional, or irrelevant to me")))
+    (:type score :name "urgency" :instructions "How soon does this need attention?"
+     :levels (("none" . "never") ("low" . "this month") ("medium" . "this week") ("high" . "today") ("critical" . "now")))
+    (:type predicate :name "asks-me" :instructions "Does the sender ask me, by name or as the recipient, to do or answer something?"))
+  "The questions `efrit-gnus-triage' asks a decision model about each article."
+  :type 'sexp)
+
+(defcustom efrit-gnus-triage-max-chars 4000
+  "Characters of an article (headers and body) given to the decision model."
+  :type 'integer)
+
+(defun efrit-gnus--triage-text (group number)
+  "Article NUMBER of GROUP as the short text a decision model reads."
+  (when-let* ((text (efrit-gnus--render group number)))
+    (efrit-gnus--clip text efrit-gnus-triage-max-chars)))
+
+;;;###autoload
+(defun efrit-gnus-triage (refs)
+  "Triage REFS (the summary's selection, or all unread with a prefix) with a decision model.
+One request per article; the answers come as a table sorted by
+urgency.  Needs a backend in `efrit-decisions-backends'."
+  (interactive
+   (list (if current-prefix-arg
+             (let ((g (efrit-gnus--group-for-command)))
+               (mapcar (lambda (n) (cons g n)) (gnus-list-of-unread-articles g)))
+           (efrit-gnus--summary-refs))))
+  (require 'efrit-decisions)
+  (require 'efrit-tool-decisions)
+  (unless (efrit-decisions-available-p)
+    (user-error "efrit-gnus: no decision backend; see `efrit-decisions-backends' (the chat `triage' prompt works without one)"))
+  (when (null refs) (user-error "efrit-gnus: nothing to triage"))
+  (message "efrit-gnus: rendering %d article%s…" (length refs) (if (= 1 (length refs)) "" "s"))
+  (let* ((items (delq nil (mapcar (lambda (ref)
+                                    (when-let* ((text (efrit-gnus--triage-text (car ref) (cdr ref))))
+                                      (cons ref text)))
+                                  refs)))
+         (questions efrit-gnus-triage-questions))
+    (message "efrit-gnus: asking the decision model about %d article%s…" (length items) (if (= 1 (length items)) "" "s"))
+    (let* ((results (efrit-decide-many-sync (mapcar #'cdr items) questions
+                                            :progress (lambda (d n) (when (zerop (% d 10)) (message "efrit-gnus: %d/%d" d n)))))
+           (rows (cl-loop for item in items for r in results
+                          collect (list (car item) (nth 1 r) (nth 2 r))))
+           (urgency (lambda (row) (or (and (nth 1 row)
+                                           (alist-get 'score (efrit-decisions-answer (nth 1 row) "urgency")))
+                                      -1))))
+      (setq rows (sort rows (lambda (a b) (> (funcall urgency a) (funcall urgency b)))))
+      (efrit-gnus--show-triage rows questions))))
+
+(defvar efrit-gnus-triage-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "RET") #'efrit-gnus-triage-show-article)
+    map))
+
+(defun efrit-gnus-triage-show-article ()
+  "Show the article of the triage row at point in its summary."
+  (interactive)
+  (pcase-let ((`(,group . ,number) (tabulated-list-get-id)))
+    (unless group (user-error "No article on this line"))
+    (gnus-summary-read-group group nil t)
+    (gnus-summary-goto-article number nil t)))
+
+(defun efrit-gnus--show-triage (rows questions)
+  "Show triage ROWS ((REF ANSWERS ERROR) ...) in a table with subject and sender."
+  (let ((buf (get-buffer-create "*efrit triage*")))
+    (with-current-buffer buf
+      (require 'efrit-tool-decisions)
+      (efrit-decisions-results-mode)
+      (use-local-map (make-composed-keymap efrit-gnus-triage-mode-map efrit-decisions-results-mode-map))
+      (setq tabulated-list-format
+            (vconcat (list (list "Subject" 48 t) (list "From" 24 t))
+                     (mapcar (lambda (q) (list (plist-get q :name) 16 t)) questions)))
+      (setq tabulated-list-entries
+            (mapcar (lambda (row)
+                      (pcase-let* ((`(,ref ,answers ,err) row)
+                                   (line (efrit-gnus--header-line (car ref) (cdr ref)))
+                                   (parts (split-string line " | "))
+                                   (subject (or (nth 3 parts) ""))
+                                   (from (or (nth 2 parts) "")))
+                        (list ref (vconcat
+                                   (list subject from)
+                                   (if err
+                                       (cons (concat "ERROR: " err) (make-list (max 0 (1- (length questions))) ""))
+                                     (mapcar (lambda (q) (let ((a (efrit-decisions-answer answers (plist-get q :name))))
+                                                           (if a (efrit-decisions-format-answer a) "")))
+                                             questions))))))
+                    rows))
+      (tabulated-list-init-header)
+      (tabulated-list-print t))
+    (pop-to-buffer buf)))
+
 ;;;; Washing: a related-documents footnote in the article buffer
 ;;
 ;; A Gnus article treatment (like buttonizing): under the control of
@@ -1270,6 +1389,7 @@ each file as it loads."
     (define-key map "u" #'efrit-gnus-analyze-unread)
     (define-key map "g" #'efrit-gnus-analyze-group)
     (define-key map "s" #'efrit-gnus-analyze-search)
+    (define-key map "d" #'efrit-gnus-triage)
     (define-key map "e" #'efrit-prompts-manage)
     (define-key map "k" #'efrit-gnus-cancel)
     map)
@@ -1293,6 +1413,7 @@ reload rebuilds)."
     ["About all unread here..." efrit-gnus-analyze-unread t]
     ["About the newest N here..." efrit-gnus-analyze-group t]
     ["About a search..." efrit-gnus-analyze-search t]
+    ["Triage with a decision model (C-u: all unread)" efrit-gnus-triage t]
     "---"
     ["Show related documents (footnote)" gnus-article-show-related-documents t]
     ["Edit the prompts..." efrit-prompts-manage t]

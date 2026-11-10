@@ -60,6 +60,7 @@
 (require 'efrit-agent-tab-line)
 (require 'efrit-agent-consult)
 (require 'efrit-tool-media)
+(require 'efrit-tool-decisions)
 (require 'efrit-magit)
 ;; the recorder costs nothing until an error happens; on by default so
 ;; "why did that fail?" has an answer

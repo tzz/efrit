@@ -52,9 +52,9 @@
 (require 'efrit-config)
 (require 'efrit-common)
 (require 'efrit-api)
+(require 'efrit-http)
 (require 'browse-url)
 
-(declare-function efrit-auth-authorization "efrit-auth" (host &optional user))
 (declare-function efrit-tool--get-project-root "efrit-tool-utils")
 
 (defgroup efrit-media nil
@@ -66,10 +66,6 @@
   (expand-file-name "media" efrit-data-directory)
   "Where generated images and videos are saved."
   :type 'directory)
-
-(defcustom efrit-media-curl-program "curl"
-  "Program used for generation requests.  Must accept curl's arguments."
-  :type 'string)
 
 (defcustom efrit-media-timeout 600
   "Seconds a generation request may take before it is given up."
@@ -266,51 +262,17 @@ A string or symbol key reads an object member, an integer an array element."
             (or (and mime (efrit-media--extension-for-mime mime))
                 (alist-get wanted efrit-media--interactions-extensions "bin" nil #'equal))))))
 
-;;;; Authentication
-
-(defun efrit-media--headers (backend)
-  "The request headers for BACKEND: content type, authorization, extras."
-  (let ((auth (efrit-media-backend-auth backend)))
-    (append
-     '(("content-type" . "application/json") ("accept" . "application/json"))
-     (cond
-      ((stringp auth)
-       (require 'efrit-auth)
-       (list (cons "authorization" (efrit-auth-authorization auth))))
-      (t
-       ;; efrit's own headers carry the key under the configured
-       ;; scheme and the custom headers the gateway wants; the
-       ;; Anthropic version header is harmless to other endpoints
-       (efrit-api-build-headers (efrit-common-get-api-key))))
-     (when-let* ((fn (efrit-media-backend-headers backend)))
-       (funcall fn)))))
-
-;;;; The request, as a process
+;;;; The request
 
 (cl-defstruct (efrit-media-job (:constructor efrit-media-job--create))
   "One generation in flight."
-  backend prompt kind process output-file body-file config-file started callback cancelled)
+  backend prompt kind request started callback)
 
 (defvar efrit-media--active nil
   "The `efrit-media-job's in flight.")
 
 (defvar efrit-media-last nil
   "The file the most recent generation produced.")
-
-(defun efrit-media--write-config (headers)
-  "HEADERS in curl config syntax, in a private temp file; return its path."
-  (let ((file (make-temp-file "efrit-media-" nil ".cfg")))
-    (with-temp-file file
-      (dolist (h headers)
-        (insert (format "header = %s\n" (prin1-to-string (format "%s: %s" (car h) (cdr h)))))))
-    (set-file-modes file #o600)
-    file))
-
-(defun efrit-media--cleanup (job)
-  "Delete JOB's temp files and drop it from the active list."
-  (dolist (f (list (efrit-media-job-body-file job) (efrit-media-job-config-file job)))
-    (when (and f (file-exists-p f)) (ignore-errors (delete-file f))))
-  (setq efrit-media--active (delq job efrit-media--active)))
 
 (defun efrit-media--slug (prompt)
   "The first words of PROMPT as a file-name fragment."
@@ -353,19 +315,16 @@ A string or symbol key reads an object member, an integer an array element."
           (insert-file-contents side)
           (json-parse-buffer :object-type 'alist :array-type 'list))))))
 
-(defun efrit-media--finish (job status response)
-  "Turn JOB's RESPONSE (curl exit STATUS, body text) into a file or an error."
+(defun efrit-media--finish (job response error)
+  "Turn JOB's RESPONSE text (or ERROR) into a file for the callback."
   (let ((callback (efrit-media-job-callback job))
         (backend (efrit-media-job-backend job)))
-    (efrit-media--cleanup job)
+    (setq efrit-media--active (delq job efrit-media--active))
     (condition-case err
         (cond
-         ((efrit-media-job-cancelled job)
-          (funcall callback nil "cancelled"))
-         ((not (zerop status))
-          (funcall callback nil
-                   (format "%s: %s" (efrit-media-backend-name backend)
-                           (efrit-media--error-message response status))))
+         (error
+          (funcall callback nil (if (equal error "cancelled") error
+                                  (format "%s: %s" (efrit-media-backend-name backend) error))))
          (t
           (pcase-let* ((`(,bytes . ,ext) (efrit-media-parse (efrit-media-backend-protocol backend)
                                                             (efrit-media-job-kind job) response))
@@ -381,19 +340,6 @@ A string or symbol key reads an object member, an integer an array element."
             (funcall callback file nil))))
       (error (funcall callback nil (error-message-string err))))))
 
-(defun efrit-media--error-message (response status)
-  "A one-line reason from RESPONSE (an error body or curl's stderr) with exit STATUS."
-  (or (ignore-errors
-        (let* ((obj (efrit-media--json-parse response))
-               (err (efrit-media--json-get obj "error")))
-          (cond ((and (listp err) (efrit-media--json-get err "message")))
-                ((stringp err) err)
-                ((efrit-media--json-get obj "message")))))
-      (let ((text (string-trim (or response ""))))
-        (if (string-empty-p text)
-            (format "curl exited %d" status)
-          (truncate-string-to-width text 300 nil nil "…")))))
-
 (cl-defun efrit-media-generate (prompt callback &key kind backend options)
   "Generate KIND (`image' by default) from PROMPT with BACKEND; call CALLBACK.
 BACKEND is a name or nil for the kind's default; OPTIONS an alist laid
@@ -404,61 +350,27 @@ path on success, ERROR a string otherwise.  Returns the job, for
          (backend (if (efrit-media-backend-p backend) backend
                     (efrit-media-resolve-backend kind backend)))
          (body (efrit-media-request (efrit-media-backend-protocol backend) backend prompt options))
-         (headers (efrit-media--headers backend))
-         (req (efrit-api-apply-transforms (efrit-media-backend-url backend) headers body))
-         (body-file (make-temp-file "efrit-media-body-" nil ".json"))
-         (config (efrit-media--write-config (plist-get req :headers)))
          (job (efrit-media-job--create :backend backend :prompt prompt :kind kind
-                                       :body-file body-file :config-file config
-                                       :started (current-time) :callback callback))
-         (out (generate-new-buffer " *efrit-media*" t)))
-    (with-temp-file body-file
-      (set-buffer-multibyte nil)
-      (insert (encode-coding-string (json-encode (plist-get req :body)) 'utf-8)))
-    (set-file-modes body-file #o600)
+                                       :started (current-time) :callback callback)))
     (efrit-log 'info "media: %s %s: %s" (efrit-media-backend-name backend) kind
                (truncate-string-to-width prompt 80 nil nil "…"))
-    (let* ((default-directory (if (file-directory-p default-directory)
-                                  default-directory
-                                temporary-file-directory))
-           (proc (make-process
-                  :name "efrit-media"
-                  :buffer out
-                  :command (list efrit-media-curl-program
-                                 "--silent" "--show-error" "--fail-with-body"
-                                 "--max-time" (number-to-string efrit-media-timeout)
-                                 "--config" config
-                                 "--data-binary" (concat "@" body-file)
-                                 "--request" "POST"
-                                 (plist-get req :url))
-                  :connection-type 'pipe
-                  :coding 'utf-8-unix
-                  :noquery t
-                  :stderr nil
-                  :sentinel (lambda (p _event)
-                              (unless (process-live-p p)
-                                (let ((response (if (buffer-live-p out)
-                                                    (with-current-buffer out (buffer-string))
-                                                  "")))
-                                  (when (buffer-live-p out) (kill-buffer out))
-                                  (efrit-media--finish job (process-exit-status p) response)))))))
-      (setf (efrit-media-job-process job) proc)
-      (push job efrit-media--active)
-      job)))
+    (setf (efrit-media-job-request job)
+          (efrit-http-post-json (efrit-media-backend-url backend) body
+                                (lambda (text err) (efrit-media--finish job text err))
+                                :auth (efrit-media-backend-auth backend)
+                                :headers (when-let* ((fn (efrit-media-backend-headers backend))) (funcall fn))
+                                :label (format "media %s (%s)" kind (efrit-media-backend-name backend))
+                                :timeout efrit-media-timeout))
+    (push job efrit-media--active)
+    job))
 
 (defun efrit-media-cancel (&optional job)
   "Cancel JOB, or every generation in flight when nil."
   (interactive)
   (let ((jobs (if job (list job) (copy-sequence efrit-media--active))))
     (dolist (j jobs)
-      (setf (efrit-media-job-cancelled j) t)
-      (when-let* ((p (efrit-media-job-process j)))
-        (when (process-live-p p)
-          ;; SIGINT first (curl exits cleanly), SIGTERM a second later
-          ;; for a process that had not set up its handlers yet
-          (interrupt-process p)
-          (run-at-time 1 nil (lambda () (when (process-live-p p) (signal-process p 'SIGTERM))))
-          (run-at-time 2 nil (lambda () (when (process-live-p p) (delete-process p)))))))
+      (when (efrit-media-job-request j)
+        (efrit-http-cancel (efrit-media-job-request j))))
     (when (called-interactively-p 'any)
       (message "efrit-media: %d generation%s cancelled" (length jobs) (if (= 1 (length jobs)) "" "s")))
     (length jobs)))
@@ -473,7 +385,7 @@ processing while waiting; C-g cancels the request."
                       args)))
       (unwind-protect
           (while (not done)
-            (accept-process-output (efrit-media-job-process job) 0.2))
+            (accept-process-output (efrit-http-request-process (efrit-media-job-request job)) 0.2))
         (unless done (efrit-media-cancel job))))
     (if (and (stringp result) (file-exists-p result))
         result
