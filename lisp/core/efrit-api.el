@@ -410,6 +410,16 @@ disables the limit."
     (let ((kill-buffer-query-functions nil))
       (kill-buffer buffer))))
 
+(defun efrit-api--deliver-async (outcome callback error-callback)
+  "Hand OUTCOME, (response . R) or (error . MSG), to CALLBACK or ERROR-CALLBACK.
+Runs from a timer, never inside the transport's process filter."
+  (pcase outcome
+    (`(response . ,response) (funcall callback response))
+    (`(error . ,msg)
+     (if error-callback
+         (funcall error-callback msg)
+       (error "%s" msg)))))
+
 (defun efrit-api--request-async-1 (request-data callback &optional error-callback)
   "One asynchronous request; see `efrit-api-request-async'."
   (condition-case err
@@ -438,10 +448,14 @@ disables the limit."
               (url-retrieve
                (plist-get req :url)
                (lambda (status)
-                 ;; The callback can change the current buffer (tools may call
-                 ;; pop-to-buffer etc.), so capture the HTTP response buffer now
-                 ;; lest the cleanup kill whatever buffer the callback left current.
-                 (let ((response-buffer (current-buffer)))
+                 ;; Read the response here, in url-http's filter, but run
+                 ;; the callbacks from a timer: a callback that reaches a
+                 ;; tool and a sandbox prompt would wait for keys inside a
+                 ;; process filter, where none arrive and C-g is off.
+                 ;; The reviewer's verdict did exactly that and Emacs hung
+                 ;; past SIGUSR2 (2026-11-10).
+                 (let ((response-buffer (current-buffer))
+                       (outcome nil))
                    (unwind-protect
                        (unless settled
                          (setq settled t)
@@ -456,16 +470,16 @@ disables the limit."
                                                  (format "HTTP error: %s" http-err))))
                                (let ((response (efrit-api-parse-response)))
                                  (efrit-api--log-response response started purpose)
-                                 (funcall callback response)))
+                                 (setq outcome (cons 'response response))))
                            (error
                             (let ((msg (apply #'efrit-api-describe-failure
                                               (error-message-string url-err) describe-args)))
                               (efrit-log 'warn "api ← failed after %.1fs: %s" (- (float-time) started) msg)
-                              (if error-callback
-                                  (funcall error-callback msg)
-                                (error "%s" msg))))))
+                              (setq outcome (cons 'error msg))))))
                      (when (buffer-live-p response-buffer)
-                       (kill-buffer response-buffer)))))
+                       (kill-buffer response-buffer)))
+                   (when outcome
+                     (run-at-time 0 nil #'efrit-api--deliver-async outcome callback error-callback))))
                nil t t))
         (when (and efrit-api-async-timeout (> efrit-api-async-timeout 0))
           (setq watchdog

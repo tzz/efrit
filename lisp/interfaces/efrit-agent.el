@@ -365,6 +365,49 @@
 
 ;;; Major Mode Definition
 
+(defun efrit-agent--disarm-font-lock ()
+  "Make font-lock a no-op in this buffer, whatever turns it on.
+Every face in an agent buffer is placed by the renderers; font-lock's
+keyword-less pass only erases.  `(font-lock-mode -1)' from the mode
+body is undone by `global-font-lock-mode' on
+`after-change-major-mode-hook', so the fontify and unfontify
+functions are replaced instead, and `jit-lock' gets nothing to run."
+  (setq-local font-lock-function #'ignore
+              font-lock-fontify-region-function #'ignore
+              font-lock-unfontify-region-function #'ignore
+              font-lock-fontify-buffer-function #'ignore
+              font-lock-unfontify-buffer-function #'ignore
+              font-lock-defaults nil)
+  (when (bound-and-true-p jit-lock-mode)
+    (jit-lock-mode -1))
+  (setq-local jit-lock-functions nil)
+  ;; Redisplay fontifies through `fontification-functions'; a later
+  ;; `jit-lock-register' (bug-reference, rainbow...) puts
+  ;; `jit-lock-function' back, so that function is what the buffer
+  ;; must defeat: text it visits is marked fontified and handed to
+  ;; `jit-lock-functions', which stays empty here through the advice
+  (setq-local fontification-functions nil)
+  (font-lock-mode -1))
+
+(defun efrit-agent--no-jit-lock-functions (fn &rest args)
+  "Around `jit-lock-register': an agent buffer takes no fontifiers."
+  (unless (derived-mode-p 'efrit-agent-mode)
+    (apply fn args)))
+
+(advice-add 'jit-lock-register :around #'efrit-agent--no-jit-lock-functions)
+
+(defun efrit-agent--disarm-font-lock-when-enabled ()
+  "On `font-lock-mode-hook': an agent buffer stays without fontification."
+  (when (and font-lock-mode (derived-mode-p 'efrit-agent-mode))
+    (efrit-agent--disarm-font-lock)))
+
+(add-hook 'font-lock-mode-hook #'efrit-agent--disarm-font-lock-when-enabled)
+
+;; Buffers alive across a reload
+(dolist (b (buffer-list))
+  (when (and (buffer-live-p b) (eq (buffer-local-value 'major-mode b) 'efrit-agent-mode))
+    (with-current-buffer b (efrit-agent--disarm-font-lock))))
+
 (define-derived-mode efrit-agent-mode text-mode "Efrit-Agent"
   "Major mode for Efrit agentic session display.
 
@@ -393,8 +436,12 @@ Status is shown in the header-line at top of window.
   ;; `fontified' nil and strips `face' at the next redisplay (the
   ;; `font-lock-face' mirror kept the display right, the renderers
   ;; composing on `face' did not; a heading split over two chunks came
-  ;; out two colours, 2026-10-26).  So no font-lock in this buffer.
-  (font-lock-mode -1)
+  ;; out two colours, 2026-10-26).  `(font-lock-mode -1)' here is
+  ;; undone by `global-font-lock-mode' from `after-change-major-mode-hook'
+  ;; (and a `bug-reference-mode' jit function then erased the image
+  ;; `display' of a generated picture, 2026-11-10).  So make font-lock
+  ;; a no-op in this buffer instead: no fontification, no unfontify.
+  (efrit-agent--disarm-font-lock)
   ;; the efrit logo stands for the mode name (tzz, 2026-10-14: "remove
   ;; the efrit-agent text, the e is enough"); `mode-name' stays
   ;; "Efrit-Agent" for `describe-mode' and `derived-mode-p' users

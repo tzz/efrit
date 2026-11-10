@@ -237,8 +237,11 @@ Otherwise the line carries a button; RET, TAB or mouse-1 opens it."
     (kill-new file)
     (message "Copied %s" (abbreviate-file-name file))))
 
+(declare-function efrit-media-video-poster "efrit-media" (file))
+(declare-function efrit-media-video-info "efrit-media" (file))
+
 (defun efrit-agent--media-image (file)
-  "FILE as an image for the transcript, or nil (a video, no display, no decoder).
+  "FILE as an image for the transcript, or nil (no display, no decoder).
 The note arrives from a process sentinel, where the selected frame can
 be the terminal one: ask about the frame that shows this buffer, else
 any graphic frame (2026-11-10: the first image rendered as its name)."
@@ -252,19 +255,34 @@ any graphic frame (2026-11-10: the first image rendered as its name)."
   "The transcript lines for FILE of KIND made from PROMPT: a button line,
 then the image when OPEN and it is one.  All of it carries the media
 keymap and the file."
-  (let* ((image (and open (eq kind 'image) (efrit-agent--media-image file)))
+  (let* ((video (eq kind 'video))
+         (shown (and open (if video
+                              (progn (require 'efrit-media)
+                                     (or (efrit-media-video-poster file) file))
+                            file)))
+         (image (and shown (efrit-agent--media-image shown)))
          (name (file-name-nondirectory file))
          (help (concat (or prompt "") (if prompt "\n" "")
-                       "RET/TAB/mouse-1: show or hide · o: open in a window · c: copy to the project · m: move · w: copy the path"))
-         (button (concat "  " (efrit-agent--char (if image 'expand-expanded 'expand-collapsed))
+                       "RET/TAB/mouse-1: show or hide · o: open"
+                       (if video " in the player" " in a window")
+                       " · c: copy to the project · m: move · w: copy the path"))
+         (button (concat "  " (efrit-agent--char (if open 'expand-expanded 'expand-collapsed))
                          " " (symbol-name kind) ": "
                          (propertize name 'face 'link)
-                         (if (eq kind 'video) (propertize "  (o opens the player)" 'face 'shadow) "")
+                         (if video (propertize "  (o plays it)" 'face 'shadow) "")
                          "\n")))
     (propertize
      (concat button
-             (when image
-               (concat "    " (propertize name 'display image) "\n")))
+             (when open
+               (concat "    "
+                       (if image
+                           (propertize name 'display image)
+                         (propertize (if video "(no poster: ffmpeg not found)" "(no image decoder)")
+                                     'face 'shadow))
+                       (if video
+                           (propertize (concat "  " (efrit-media-video-info file)) 'face 'shadow)
+                         "")
+                       "\n")))
      'help-echo help
      'efrit-media-file file 'efrit-media-kind kind 'efrit-media-prompt prompt
      'efrit-media-open (and image t)
@@ -280,7 +298,7 @@ keymap and the file."
 
 (defun efrit-agent-media-toggle (&optional event)
   "Show or hide the generated image at point (or under the mouse EVENT).
-A video has nothing to unfold: `o' opens it."
+A video unfolds to its first frame with duration and size; `o' plays it."
   (interactive (list last-nonmenu-event))
   (when (and event (mouse-event-p event))
     (goto-char (posn-point (event-end event))))
@@ -291,16 +309,16 @@ A video has nothing to unfold: `o' opens it."
          (bounds (efrit-agent--media-bounds (point)))
          (type (get-text-property (car bounds) 'efrit-type))
          (key (get-text-property (car bounds) 'efrit-note-key)))
-    (if (eq kind 'video)
-        (efrit-agent-media-open)
-      (efrit-agent--with-render
-        (let ((inhibit-read-only t))
-          (goto-char (car bounds))
-          (delete-region (car bounds) (cdr bounds))
+    (efrit-agent--with-render
+      (let ((inhibit-read-only t))
+        (goto-char (car bounds))
+        (delete-region (car bounds) (cdr bounds))
+        (let ((start (point)))
           (insert (propertize (efrit-agent--media-line file kind prompt (not open))
-                              'efrit-type type 'efrit-note-key key))))
-      (goto-char (car bounds))
-      (forward-char 2))))
+                              'efrit-type type 'efrit-note-key key))
+          (efrit-agent--seal-rendered start (point)))))
+    (goto-char (car bounds))
+    (forward-char 2)))
 
 (defun efrit-agent--on-note (event)
   "Subscriber: a one-line note from the sandbox, the limits prompt, or review.

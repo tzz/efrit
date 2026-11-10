@@ -235,6 +235,98 @@ the path; the sandbox is asked for the endpoint's host."
     (should (string-match-p "prompt is required"
                             (efrit-tool-registry-dispatch "generate_image" (make-hash-table :test 'equal))))))
 
+(ert-deftest test-media-note-survives-global-font-lock ()
+  "Under `global-font-lock-mode' with a jit function that erases `display'
+(what bug-reference did, 2026-11-10), an agent buffer keeps the image:
+font-lock is a no-op there, whatever turns it on."
+  (require 'efrit-agent)
+  (require 'jit-lock)
+  (test-media--with
+    (let ((efrit-agent-auto-show nil)
+          (file (efrit-media-generate-sync "a cat" :kind 'image))
+          (eraser (lambda (beg end) (remove-list-of-text-properties beg end '(display)) nil)))
+      (with-current-buffer (efrit-agent--get-buffer)
+        (let ((inhibit-read-only t)) (erase-buffer))
+        (let ((global-font-lock-mode t))
+          (efrit-agent-mode)
+          ;; what global-font-lock-mode does after the mode body
+          (font-lock-mode 1)
+          (jit-lock-register eraser))
+        (efrit-agent--init-regions)
+        (efrit-agent--setup-regions)
+        (cl-letf (((symbol-function 'efrit-agent--media-image)
+                   (lambda (_file) '(image :type xbm :width 1 :height 1 :data "\0"))))
+          (let ((efrit-agent-media-open-by-default t))
+            (efrit-tool-media-show file 'image "a cat" nil)))
+        (let ((pos (text-property-any (point-min) (point-max) 'efrit-type 'media-note)))
+          ;; a fontification pass over the note changes nothing
+          (font-lock-ensure pos (point-max))
+          ;; what redisplay does: run the fontification functions over
+          ;; text not yet marked fontified
+          (let ((inhibit-read-only t)) (put-text-property pos (point-max) 'fontified nil))
+          (dolist (fn fontification-functions) (funcall fn pos))
+          (should (null jit-lock-functions))
+          (let ((at (text-property-not-all pos (point-max) 'display nil)))
+            (should at)
+            (should (equal '(image :type xbm :width 1 :height 1 :data "\0") (get-text-property at 'display))))
+          (should (eq font-lock-fontify-region-function #'ignore)))
+        (jit-lock-unregister eraser)))))
+
+(ert-deftest test-media-video-poster-info-and-open ()
+  "A video gets a first-frame poster beside it (once; ffmpeg), an info line
+with duration and size, and opens through the system opener or the
+configured player, never through find-file."
+  (skip-unless (executable-find "ffmpeg"))
+  (test-media--with
+    (let* ((video (expand-file-name "clip.mp4" efrit-media-directory)))
+      (make-directory efrit-media-directory t)
+      (should (zerop (call-process "ffmpeg" nil nil nil "-v" "error" "-y" "-f" "lavfi" "-i" "color=c=red:s=64x48:d=1"
+                                   "-pix_fmt" "yuv420p" video)))
+      (let ((poster (efrit-media-video-poster video)))
+        (should poster)
+        (should (file-exists-p poster))
+        (should (string-suffix-p ".poster.png" poster))
+        ;; made once
+        (let ((mtime (file-attribute-modification-time (file-attributes poster))))
+          (should (equal poster (efrit-media-video-poster video)))
+          (should (equal mtime (file-attribute-modification-time (file-attributes poster))))))
+      (should (string-match-p "\\`1 s, [0-9.]+[kM]?\\'" (efrit-media-video-info video)))
+      ;; posters are not generated files
+      (should-not (seq-find (lambda (f) (string-suffix-p ".poster.png" f)) (efrit-media-files)))
+      ;; open: a program, never find-file
+      (let ((ran nil) (found nil))
+        (cl-letf (((symbol-function 'start-process) (lambda (_name _buf prog &rest args) (setq ran (cons prog args)) 'proc))
+                  ((symbol-function 'find-file-other-window) (lambda (&rest _) (setq found t))))
+          (let ((efrit-media-video-player "mpv"))
+            (efrit-media-open video)
+            (should (equal "mpv" (car ran)))
+            (should (equal (expand-file-name video) (cadr ran))))
+          (let ((efrit-media-video-player nil))
+            (efrit-media-open video)
+            (should (member (car ran) '("open" "xdg-open" "start"))))
+          (should-not found)))
+      ;; the fold: a video unfolds to the poster and the info line, o plays
+      (require 'efrit-agent)
+      (let ((efrit-agent-auto-show nil) (played nil))
+        (with-current-buffer (efrit-agent--get-buffer)
+          (let ((inhibit-read-only t)) (erase-buffer))
+          (efrit-agent-mode) (efrit-agent--init-regions) (efrit-agent--setup-regions)
+          (efrit-tool-media-show video 'video "red" nil)
+          (let ((pos (text-property-any (point-min) (point-max) 'efrit-type 'media-note)))
+            (should (string-match-p "video: clip.mp4  (o plays it)" (buffer-substring-no-properties pos (point-max))))
+            (goto-char pos)
+            (cl-letf (((symbol-function 'efrit-agent--media-image) (lambda (_f) '(image :type xbm :width 1 :height 1 :data "\0")))
+                      ((symbol-function 'efrit-media-open) (lambda (f) (setq played f))))
+              (efrit-agent-media-toggle)
+              (should-not played)
+              (let* ((p2 (text-property-any (point-min) (point-max) 'efrit-type 'media-note))
+                     (text (buffer-substring-no-properties p2 (point-max))))
+                (should (get-text-property p2 'efrit-media-open))
+                (should (string-match-p "1 s, " text))
+                (should (text-property-not-all p2 (point-max) 'display nil)))
+              (efrit-agent-media-open)
+              (should (equal video played)))))))))
+
 (ert-deftest test-media-note-renders-in-the-agent-buffer ()
   "A media note puts the file's line in the agent buffer with the file as
 a text property and the media keymap; the image is drawn when the

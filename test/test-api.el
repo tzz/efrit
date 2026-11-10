@@ -31,6 +31,47 @@
       (should (string-match-p "model m-2" got))
       (should (string-match-p "No API key found" got)))))
 
+(ert-deftest test-api-async-callbacks-run-outside-the-url-filter ()
+  "The url-retrieve callback parses the response and hands it to the
+caller's callback from a timer, so a callback that opens a prompt never
+waits for keys inside a process filter (Emacs hung past SIGUSR2 on
+2026-11-10).  The error path takes the same route."
+  (let ((efrit-api-key "sk-test-key-1234567890abcdefghij")
+        (efrit-api-auth-scheme 'x-api-key)
+        (efrit-api-async-timeout nil)
+        (url-callback nil) (timers nil) (got nil) (err nil))
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (_url cb &rest _) (setq url-callback cb) 'transfer))
+              ((symbol-function 'run-at-time)
+               (lambda (_secs _repeat fn &rest args) (push (cons fn args) timers) 'timer))
+              ((symbol-function 'efrit-api-parse-response)
+               (lambda () (let ((h (make-hash-table :test 'equal))) (puthash "stop_reason" "end_turn" h) h)))
+              ((symbol-function 'efrit-api--log-response) #'ignore))
+      (efrit-api--request-async-1 '(("model" . "m")) (lambda (r) (setq got r)) (lambda (e) (setq err e)))
+      (should url-callback)
+      ;; the filter runs the callback: nothing delivered yet, a timer queued
+      (setq timers nil)
+      (with-temp-buffer (funcall url-callback nil))
+      (should-not got)
+      (let ((call (seq-find (lambda (c) (eq (car c) #'efrit-api--deliver-async)) timers)))
+        (should call)
+        (apply (car call) (cdr call)))
+      (should (hash-table-p got))
+      (setq timers nil)
+      ;; an HTTP error: the error callback, from a timer too (a request
+      ;; settles once, so this is a second request)
+      (efrit-api--request-async-1 '(("model" . "m")) (lambda (r) (setq got r)) (lambda (e) (setq err e)))
+      (setq timers nil)
+      (with-temp-buffer
+        (insert "HTTP/1.1 400\n\n{\"error\":{\"message\":\"bad\"}}")
+        (funcall url-callback '(:error (error http 400))))
+      (should-not err)
+      (let ((call (seq-find (lambda (c) (eq (car c) #'efrit-api--deliver-async)) timers)))
+        (should call)
+        (apply (car call) (cdr call)))
+      (should (stringp err))
+      (should (string-match-p "bad\\|HTTP error" err)))))
+
 (ert-deftest test-api-refusal-retries-with-inlined-system ()
   "A pre-generation refusal of a request with a system prompt is retried
 once with the prompt folded into the first user message; the retry's

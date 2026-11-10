@@ -482,9 +482,9 @@ processing while waiting; C-g cancels the request."
 ;;;; Keeping results
 
 (defun efrit-media-files ()
-  "The generated files, newest first."
+  "The generated files, newest first (sidecars and posters left out)."
   (when (file-directory-p efrit-media-directory)
-    (sort (seq-remove (lambda (f) (string-suffix-p ".json" f))
+    (sort (seq-remove (lambda (f) (or (string-suffix-p ".json" f) (string-suffix-p ".poster.png" f)))
                       (directory-files efrit-media-directory t "\\`[0-9]"))
           #'string>)))
 
@@ -510,11 +510,12 @@ processing while waiting; C-g cancels the request."
     (when (file-exists-p target)
       (unless (yes-or-no-p (format "%s exists; overwrite? " (abbreviate-file-name target)))
         (user-error "efrit-media: not %s" (if move "moved" "copied"))))
-    (if move
-        (progn (rename-file file target t)
-               (when (file-exists-p side) (rename-file side (efrit-media--sidecar target) t)))
-      (copy-file file target t)
-      (when (file-exists-p side) (copy-file side (efrit-media--sidecar target) t)))
+    (dolist (pair (list (cons file target)
+                        (cons side (efrit-media--sidecar target))
+                        (cons (concat (file-name-sans-extension file) ".poster.png")
+                              (concat (file-name-sans-extension target) ".poster.png"))))
+      (when (file-exists-p (car pair))
+        (if move (rename-file (car pair) (cdr pair) t) (copy-file (car pair) (cdr pair) t))))
     (kill-new target)
     (message "efrit-media: %s %s (path copied)" (if move "moved to" "copied to")
              (abbreviate-file-name target))
@@ -537,13 +538,69 @@ The path lands in the kill ring."
   (efrit-media--transfer file t))
 
 ;;;###autoload
+(defcustom efrit-media-video-player nil
+  "How a generated video is opened.
+nil: the system's opener (`open' on macOS, `xdg-open' elsewhere), so
+the video starts in whatever plays .mp4 there.  A string: a program
+run with the file as its argument (\"mpv\", \"vlc\").  A function:
+called with the file.  `browse-url-of-file' went through Emacs's own
+`auto-mode-alist' and landed in a media mode that showed a poster
+and played nothing (2026-11-10)."
+  :type '(choice (const :tag "System opener" nil) string function))
+
+(defcustom efrit-media-poster-program (executable-find "ffmpeg")
+  "ffmpeg, for a video's first frame in the transcript; nil shows none."
+  :type '(choice (const nil) string))
+
+(defun efrit-media-video-poster (file)
+  "A PNG of FILE's first frame beside it, made once with ffmpeg; nil without ffmpeg."
+  (let ((poster (concat (file-name-sans-extension file) ".poster.png")))
+    (cond
+     ((file-exists-p poster) poster)
+     ((and efrit-media-poster-program (file-exists-p file))
+      (with-temp-buffer
+        (if (zerop (call-process efrit-media-poster-program nil t nil
+                                 "-v" "error" "-y" "-ss" "0.5" "-i" file
+                                 "-frames:v" "1" "-vf" "scale=800:-1" poster))
+            poster
+          (efrit-log 'warn "media: no poster for %s: %s" (file-name-nondirectory file)
+                     (string-trim (buffer-string)))
+          nil)))
+     (t nil))))
+
+(defun efrit-media-video-info (file)
+  "One line about video FILE: duration and size, from ffprobe when present."
+  (let* ((probe (and efrit-media-poster-program (executable-find "ffprobe")))
+         (seconds (and probe
+                       (with-temp-buffer
+                         (when (zerop (call-process probe nil t nil "-v" "error" "-show_entries"
+                                                    "format=duration" "-of" "default=nw=1:nk=1"
+                                                    (expand-file-name file)))
+                           (string-to-number (string-trim (buffer-string))))))))
+    (format "%s%s" (if (and seconds (> seconds 0)) (format "%d s, " (round seconds)) "")
+            (file-size-human-readable (file-attribute-size (file-attributes file))))))
+
+(defun efrit-media--system-open (file)
+  "Open FILE with the operating system's opener."
+  (let ((program (cond ((eq system-type 'darwin) "open")
+                       ((memq system-type '(windows-nt cygwin)) "start")
+                       (t "xdg-open"))))
+    (unless (executable-find program)
+      (user-error "efrit-media: no %s on this system; set `efrit-media-video-player'" program))
+    (start-process "efrit-media-open" nil program (expand-file-name file))))
+
+;;;###autoload
 (defun efrit-media-open (file)
-  "Open generated FILE (default the newest): images in Emacs, videos with the system player."
+  "Open generated FILE (default the newest): images in Emacs, videos per `efrit-media-video-player'."
   (interactive (list (or (and (not current-prefix-arg) efrit-media-last)
                          (efrit-media--read-file "Open: "))))
-  (if (member (downcase (or (file-name-extension file) "")) '("png" "jpg" "jpeg" "gif" "webp"))
-      (find-file-other-window file)
-    (browse-url-of-file file)))
+  (cond
+   ((member (downcase (or (file-name-extension file) "")) '("png" "jpg" "jpeg" "gif" "webp"))
+    (find-file-other-window file))
+   ((functionp efrit-media-video-player) (funcall efrit-media-video-player file))
+   ((stringp efrit-media-video-player)
+    (start-process "efrit-media-player" nil efrit-media-video-player (expand-file-name file)))
+   (t (efrit-media--system-open file))))
 
 (provide 'efrit-media)
 
