@@ -27,6 +27,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `efrit-do-async`: Use `efrit-do` (now the primary interface)
 - `efrit-api-url`: Use `efrit-api-base-url` in efrit-common.el instead. The legacy variable still works as an override but is deprecated.
 
+## [0.16.0] - 2026-11-10
+
+Image and video generation.
+
+### Added
+
+- `efrit-media`: generate an image or a video from a prompt through a configured backend.  Backends are added with `efrit-media-add-backend` (name, kind, protocol, URL, model; efrit's API key and auth scheme by default, or an auth-source host); two protocols ship, `openai-images` (OpenAI's images shape, `b64_json`) and `interactions` (Google's Interactions shape, `steps[].content[]`), and a package adds one with two `cl-defmethod`s.  The request runs as a curl process; `efrit-media-cancel` stops it.  Results land under `efrit-data-directory/media/` with a JSON sidecar (prompt, backend, model, time)
+- Tools `generate_image` and `generate_video` (exec class; the sandbox asks for the endpoint's host; the reviewer sees the prompt), registered only for kinds that have a backend; the result shows in the agent buffer with keys to open (`RET`), copy (`c`) or move (`m`) it into the project's `media/`, or copy its path (`w`)
+- Commands `efrit-generate-image`, `efrit-generate-video` (the region as the default prompt; `C-u` picks the backend), `efrit-media-copy-to-project`, `efrit-media-move-to-project`, `efrit-media-open`
+
+### Fixed
+
+- `efrit-agent-fold` no longer uses `cl-member-if` (obsolete in Emacs 31)
+
 ## [0.15.0] - 2026-11-02
 
 The prompt library in every interaction.

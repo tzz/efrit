@@ -123,8 +123,13 @@ answer, whatever its length."
 
 (defun efrit-agent-fold--trim-group (group)
   "GROUP without the leading and trailing runs that are not work."
-  (let ((runs (cl-member-if (lambda (r) (efrit-agent-fold--work-p (car r))) group)))
-    (reverse (cl-member-if (lambda (r) (efrit-agent-fold--work-p (car r))) (reverse runs)))))
+  (let ((runs group))
+    (while (and runs (not (efrit-agent-fold--work-p (car (car runs)))))
+      (setq runs (cdr runs)))
+    (setq runs (reverse runs))
+    (while (and runs (not (efrit-agent-fold--work-p (car (car runs)))))
+      (setq runs (cdr runs)))
+    (reverse runs)))
 
 (defun efrit-agent-fold--work-spans (user-end conv-end)
   "The (BEG . END) spans of work inside USER-END..CONV-END, in order.

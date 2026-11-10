@@ -55,6 +55,9 @@
 ;;   todos-changed    :todos
 ;;   review-start / review-verdict / review-skipped
 
+(declare-function efrit-markdown--make-image "efrit-markdown" (file width &optional exact))
+(defvar efrit-markdown-image-max-width)
+
 (defmacro efrit-agent--in-agent-buffer (event &rest body)
   "Run BODY in the agent buffer of EVENT's session; otherwise do nothing.
 The buffer is the one of the event's :session-id (`efrit-agent-buffer-for');
@@ -180,15 +183,90 @@ The publisher may name the buffer (:buffer); else the session's."
       (with-current-buffer buffer
         (efrit-agent--add-error-message (alist-get :message event))))))
 
+(defvar efrit-agent-media-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "RET") #'efrit-agent-media-open)
+    (define-key map [mouse-1] #'efrit-agent-media-open)
+    (define-key map (kbd "c") #'efrit-agent-media-copy-to-project)
+    (define-key map (kbd "m") #'efrit-agent-media-move-to-project)
+    (define-key map (kbd "w") #'efrit-agent-media-copy-path)
+    map)
+  "Keys on a generated image or video in the transcript.")
+
+(defun efrit-agent--media-file-at-point ()
+  "The generated file under point, or a `user-error'."
+  (or (get-text-property (point) 'efrit-media-file)
+      (user-error "No generated image or video here")))
+
+(declare-function efrit-media-open "efrit-media" (file))
+(declare-function efrit-media-copy-to-project "efrit-media" (file))
+(declare-function efrit-media-move-to-project "efrit-media" (file))
+
+(defun efrit-agent-media-open (&optional event)
+  "Open the generated file at point (or under the mouse EVENT)."
+  (interactive (list last-nonmenu-event))
+  (when (and event (mouse-event-p event))
+    (goto-char (posn-point (event-end event))))
+  (require 'efrit-media)
+  (efrit-media-open (efrit-agent--media-file-at-point)))
+
+(defun efrit-agent-media-copy-to-project ()
+  "Copy the generated file at point into the project's media/ directory."
+  (interactive)
+  (require 'efrit-media)
+  (efrit-media-copy-to-project (efrit-agent--media-file-at-point)))
+
+(defun efrit-agent-media-move-to-project ()
+  "Move the generated file at point into the project's media/ directory."
+  (interactive)
+  (require 'efrit-media)
+  (efrit-media-move-to-project (efrit-agent--media-file-at-point)))
+
+(defun efrit-agent-media-copy-path ()
+  "Put the generated file's path at point in the kill ring."
+  (interactive)
+  (let ((file (efrit-agent--media-file-at-point)))
+    (kill-new file)
+    (message "Copied %s" (abbreviate-file-name file))))
+
+(defun efrit-agent--media-line (event)
+  "The transcript line for a `media' note EVENT: the image itself when it
+is one and the display can draw it, else the file's name; with keys to
+open, copy or move it."
+  (let* ((file (alist-get :media-file event))
+         (kind (alist-get :media-kind event))
+         (image (and (eq kind 'image) (display-graphic-p)
+                     (require 'efrit-markdown nil t)
+                     (efrit-markdown--make-image file efrit-markdown-image-max-width)))
+         (label (concat "  " (alist-get :text event)))
+         (help "RET: open · c: copy to the project · m: move to the project · w: copy the path"))
+    (concat
+     (if image
+         (concat (propertize "  " 'face 'shadow)
+                 (propertize (file-name-nondirectory file) 'display image
+                             'help-echo (concat (alist-get :media-prompt event) "\n" help))
+                 "\n" (propertize label 'face 'shadow))
+       (propertize label 'face 'shadow 'help-echo help))
+     "\n")))
+
 (defun efrit-agent--on-note (event)
   "Subscriber: a one-line note from the sandbox, the limits prompt, or review.
 A note with a `:replaces' key rewrites the last note that carried the
-same key (the sandbox's \"asks to …\" line becomes the outcome line)."
+same key (the sandbox's \"asks to …\" line becomes the outcome line).
+A `media' note (a generated image or video) draws the image and gives
+the line keys to open, copy or move the file."
   (efrit-agent--in-agent-buffer event
     (let* ((key (alist-get :replaces event))
-           (line (concat (propertize (concat "  " (alist-get :text event)) 'face (alist-get :face event)) "\n"))
-           (props (list 'efrit-type (intern (format "%s-note" (alist-get :kind event)))
-                        'efrit-note-key key))
+           (media (eq (alist-get :kind event) 'media))
+           (line (if media
+                     (efrit-agent--media-line event)
+                   (concat (propertize (concat "  " (alist-get :text event)) 'face (alist-get :face event)) "\n")))
+           (props (append
+                   (list 'efrit-type (intern (format "%s-note" (alist-get :kind event)))
+                         'efrit-note-key key)
+                   (and media (list 'efrit-media-file (alist-get :media-file event)
+                                    'keymap efrit-agent-media-map
+                                    'mouse-face 'highlight))))
            (old (and key (efrit-agent--find-note key))))
       (if old
           (efrit-agent--with-render
