@@ -141,6 +141,25 @@ function adds a header, the MP4 is saved with the mime's extension."
       (should (string-match-p "x-client: efrit-test" (alist-get 'config (test-media--capture dir))))
       (should (equal "waves" (alist-get 'input (alist-get 'body (test-media--capture dir))))))))
 
+(ert-deftest test-media-sync-wait-keeps-emacs-alive ()
+  "While a generation is waited for, timers fire and other processes are
+served: the wait goes through `sit-for', not a wait on one process
+(Emacs looked frozen for the length of an image generation,
+2026-11-10)."
+  (test-media--with
+    (efrit-media-add-backend :name "slowish" :kind 'image :protocol 'openai-images
+                             :url "https://gw.example.test/v1/slow" :model "m")
+    ;; the mock sleeps 30 s on /slow; cancel from a timer after 0.4 s,
+    ;; which only a wait that runs timers can do
+    (let ((timer-ran nil) (other-output nil))
+      (run-at-time 0.4 nil (lambda () (setq timer-ran t) (efrit-media-cancel)))
+      ;; another process whose output must arrive during the wait
+      (make-process :name "other" :command '("sh" "-c" "sleep 0.2; echo hi")
+                    :filter (lambda (_p out) (setq other-output out)) :noquery t)
+      (should-error (efrit-media-generate-sync "x" :kind 'image :backend "slowish"))
+      (should timer-ran)
+      (should (equal "hi\n" other-output)))))
+
 (ert-deftest test-media-errors-are-readable ()
   "A failed request (curl --fail-with-body) reports the endpoint's message
 with the backend's name; a non-JSON answer is an error, not a file."
@@ -199,9 +218,9 @@ under media/ of the project root and leave the path in the kill ring."
           (should-not (file-exists-p (efrit-media--sidecar file))))))))
 
 (ert-deftest test-media-tools-follow-the-backends ()
-  "generate_image and generate_video register for the kinds that have a
-backend, with the backend names in the description, and withdraw when
-the last backend of a kind goes; the tool runs the request and returns
+  "generate_image and generate_video are always registered, with the
+backend names in the description, or a note that none is configured
+and a call that says the fix; the tool runs the request and returns
 the path; the sandbox is asked for the endpoint's host."
   (test-media--with
     (efrit-media-ensure-tools)
@@ -210,7 +229,12 @@ the path; the sandbox is asked for the endpoint's host."
     (should (eq 'exec (efrit-tool-registry-class "generate_image")))
     (should (string-match-p "(pic)" (efrit-registered-tool-description (efrit-registered-tool-get "generate_image"))))
     (efrit-media-remove-backend "clip")
-    (should-not (efrit-registered-tool-get "generate_video"))
+    ;; still registered, the description says what is missing, a call says the fix
+    (should (efrit-registered-tool-get "generate_video"))
+    (should (string-match-p "NONE CONFIGURED" (efrit-registered-tool-description (efrit-registered-tool-get "generate_video"))))
+    (should (string-match-p "no video backend configured"
+                            (efrit-tool-registry-dispatch "generate_video"
+                                                          (let ((h (make-hash-table :test 'equal))) (puthash "prompt" "x" h) h))))
     (should (efrit-registered-tool-get "generate_image"))
     ;; the tool: result text names the file; the sandbox saw the host
     (let ((asked nil) (shown nil))
@@ -327,6 +351,48 @@ configured player, never through find-file."
                 (should (text-property-not-all p2 (point-max) 'display nil)))
               (efrit-agent-media-open)
               (should (equal video played)))))))))
+
+(ert-deftest test-media-note-survives-the-turn-fold ()
+  "When the turn ends and its tool rows fold, the generated image's line
+stays visible between the folds; the rows before and after it fold."
+  (require 'efrit-agent)
+  (test-media--with
+    (let ((efrit-agent-auto-show nil)
+          (efrit-agent-question-menu nil)
+          (file (efrit-media-generate-sync "a cat" :kind 'image)))
+      (with-current-buffer (efrit-agent--get-buffer)
+        (let ((inhibit-read-only t)) (erase-buffer))
+        (efrit-agent-mode) (efrit-agent--init-regions) (efrit-agent--setup-regions)
+        (let ((session (efrit-agent-repl-session)))
+          (cl-letf (((symbol-function 'efrit-agent--auto-save-session) #'ignore))
+            (efrit-agent--add-user-message "draw a cat")
+            (let ((id (efrit-agent-show-tool-start "review" nil)))
+              (efrit-agent-show-tool-result id "approved" t 0.1))
+            (let ((id (efrit-agent-show-tool-start "generate_image" nil)))
+              (efrit-agent-show-tool-result id "Generated image saved" t 30.0))
+            (efrit-tool-media-show file 'image "a cat" nil)
+            (let ((id (efrit-agent-show-tool-start "read_file" nil)))
+              (efrit-agent-show-tool-result id "ok" t 0.1))
+            (efrit-agent-stream-content "Done. Image saved.")
+            (efrit-agent-stream-end)
+            (efrit-repl-session-set-status session 'idle)
+            (efrit-agent--on-turn-complete session "end_turn")))
+        (let ((note (text-property-any (point-min) (point-max) 'efrit-type 'media-note))
+              (folds 0) (pos (point-min)))
+          (should note)
+          (should-not (get-text-property note 'invisible))
+          (should (string-match-p "image: " (buffer-substring-no-properties note (line-end-position))))
+          (while (setq pos (text-property-any pos (point-max) 'efrit-type 'turn-fold))
+            (cl-incf folds) (setq pos (or (next-single-property-change pos 'efrit-id) (point-max))))
+          (should (= 2 folds))
+          ;; the first fold counts both tool rows, not one type run
+          (let ((h (text-property-any (point-min) (point-max) 'efrit-type 'turn-fold)))
+            (should (equal "1 step · 1 review" (get-text-property h 'efrit-fold-summary))))
+          ;; every tool row is hidden
+          (setq pos (point-min))
+          (while (setq pos (text-property-any pos (point-max) 'efrit-type 'tool-call))
+            (should (eq 'efrit-turn-work (get-text-property pos 'invisible)))
+            (setq pos (or (next-single-property-change pos 'efrit-type) (point-max)))))))))
 
 (ert-deftest test-media-note-renders-in-the-agent-buffer ()
   "A media note puts the file's line in the agent buffer with the file as

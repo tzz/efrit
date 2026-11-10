@@ -197,8 +197,9 @@ a cancel stops what is left."
       (should (null efrit-http--active)))))
 
 (ert-deftest test-decisions-tool-registers-and-runs ()
-  "The decide tool exists while a backend does, takes JSON-shaped questions,
-asks the sandbox for the host, and returns one row per input."
+  "The decide tool is always registered (its description says when no
+backend is configured and a call says the fix), takes JSON-shaped
+questions, asks the sandbox for the host, and returns one row per input."
   (test-decisions--with
     (efrit-decisions-ensure-tools)
     (should (efrit-registered-tool-get "decide"))
@@ -236,7 +237,17 @@ asks the sandbox for the host, and returns one row per input."
     (should (string-match-p "inputs is required"
                             (efrit-tool-registry-dispatch "decide" (make-hash-table :test 'equal))))
     (efrit-decisions-remove-backend "fast")
-    (should-not (efrit-registered-tool-get "decide"))))
+    (should (efrit-registered-tool-get "decide"))
+    (should (string-match-p "NONE CONFIGURED" (efrit-registered-tool-description (efrit-registered-tool-get "decide"))))
+    (should (string-match-p "no decision backend configured"
+                            (efrit-tool-registry-dispatch "decide"
+                                                          (let ((h (make-hash-table :test 'equal)))
+                                                            (puthash "inputs" ["x"] h)
+                                                            (puthash "questions" (vector (let ((q (make-hash-table :test 'equal)))
+                                                                                           (puthash "type" "predicate" q) (puthash "name" "a" q)
+                                                                                           (puthash "instructions" "b" q) q))
+                                                                     h)
+                                                            h))))))
 
 (ert-deftest test-decisions-lines-command-and-question-sets ()
   "efrit-decide-lines asks about each non-blank line of the region with a

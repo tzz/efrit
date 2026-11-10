@@ -58,9 +58,15 @@
   "`efrit-type' values that are a turn's work, not its answer.
 A `*-note' type not listed here is work too (see `efrit-agent-fold--work-p').")
 
+(defconst efrit-agent-fold--result-types '(media-note)
+  "`efrit-type' values that are results for the user, not work: never folded.
+A generated image or video is what the turn was for; folding it with
+the tool rows hid the picture once the turn ended (2026-11-10).")
+
 (defun efrit-agent-fold--work-p (type)
   "Non-nil when TYPE marks a row that folds."
   (and type
+       (not (memq type efrit-agent-fold--result-types))
        (or (memq type efrit-agent-fold--work-types)
            (string-suffix-p "-note" (symbol-name type)))))
 
@@ -159,24 +165,30 @@ tool rounds, with only the sign-off line left showing (2026-10-26)."
             (nreverse groups))))
 
 (defun efrit-agent-fold--summary (beg end)
-  "A short account of the rows in BEG..END: steps, reviews, denials."
-  (let ((steps 0) (reviews 0) (rejected 0) (denied 0) (questions 0) (seen nil))
-    (dolist (r (efrit-agent-fold--runs beg end))
-      (pcase-let ((`(,type ,b ,_e) r))
+  "A short account of the rows in BEG..END: steps, reviews, denials.
+Rows are told apart by `efrit-id', not `efrit-type': two tool rows in
+a row are one type run, and counting runs showed \"0 steps · 1 review\"
+over a review and a 30 s generate_image (2026-11-10)."
+  (let ((steps 0) (reviews 0) (rejected 0) (denied 0) (questions 0) (seen nil)
+        (pos beg))
+    (while (< pos end)
+      (let* ((next (min end (or (next-single-property-change pos 'efrit-id nil end) end)))
+             (type (get-text-property pos 'efrit-type))
+             (id (get-text-property pos 'efrit-id)))
         (pcase type
           ('tool-call
-           (let ((id (get-text-property b 'efrit-id))
-                 (name (get-text-property b 'efrit-tool-name)))
+           (let ((name (get-text-property pos 'efrit-tool-name)))
              (unless (member id seen)
                (push id seen)
                (cond
                 ((equal name "review")
                  (cl-incf reviews)
-                 (unless (get-text-property b 'efrit-tool-success) (cl-incf rejected)))
+                 (unless (get-text-property pos 'efrit-tool-success) (cl-incf rejected)))
                 ((equal name "session_complete") nil)
                 (t (cl-incf steps)
-                   (unless (get-text-property b 'efrit-tool-success) (cl-incf denied)))))))
-          ('question (cl-incf questions)))))
+                   (unless (get-text-property pos 'efrit-tool-success) (cl-incf denied)))))))
+          ('question (cl-incf questions)))
+        (setq pos next)))
     (string-join
      (delq nil
            (list (format "%d step%s" steps (if (= steps 1) "" "s"))

@@ -191,14 +191,26 @@ Returns the request."
       (message "efrit-http: %d request%s cancelled" (length requests) (if (= 1 (length requests)) "" "s")))
     (length requests)))
 
+(defun efrit-http-wait-while (pred &optional on-quit)
+  "Wait while PRED returns non-nil, keeping Emacs alive; C-g runs ON-QUIT.
+`sit-for' handles keyboard, redisplay, timers and every process, so
+the spinner turns and other buffers work; `accept-process-output' on
+one process did none of that and Emacs looked frozen for the length
+of an image generation (2026-11-10).  A keystroke ends a `sit-for'
+early, so the loop polls at short intervals."
+  (condition-case nil
+      (while (funcall pred)
+        (unless (sit-for 0.1 t)
+          ;; input is pending: let the command loop have it, then look again
+          (accept-process-output nil 0.05)))
+    (quit (when on-quit (funcall on-quit))
+          (signal 'quit nil))))
+
 (defun efrit-http-wait (request)
   "Wait for REQUEST to finish; Emacs keeps processing; C-g cancels it.
 Returns nothing: the callback has run by the time this returns."
-  (unwind-protect
-      (while (memq request efrit-http--active)
-        (accept-process-output (efrit-http-request-process request) 0.2))
-    (when (memq request efrit-http--active)
-      (efrit-http-cancel request))))
+  (efrit-http-wait-while (lambda () (memq request efrit-http--active))
+                         (lambda () (efrit-http-cancel request))))
 
 (cl-defun efrit-http-post-json-sync (url body &rest args)
   "Like `efrit-http-post-json' but wait; return the response text or signal.

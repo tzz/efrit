@@ -374,12 +374,10 @@ what is left and returns what came back (missing ones carry the error
          (cancel (apply #'efrit-decide-many inputs questions
                         (lambda (r) (setq results r done t))
                         args)))
-    (unwind-protect
-        (while (not done)
-          (accept-process-output nil 0.1))
-      (unless done
-        (funcall cancel)
-        (setq results (mapcar (lambda (in) (list in nil "cancelled")) inputs))))
+    (condition-case nil
+        (efrit-http-wait-while (lambda () (not done)) cancel)
+      (quit (setq results (mapcar (lambda (in) (list in nil "cancelled")) inputs))
+            (signal 'quit nil)))
     results))
 
 ;;;; Showing answers

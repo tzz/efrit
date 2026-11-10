@@ -383,10 +383,8 @@ processing while waiting; C-g cancels the request."
     (let ((job (apply #'efrit-media-generate prompt
                       (lambda (file err) (setq result (or file err) done t))
                       args)))
-      (unwind-protect
-          (while (not done)
-            (accept-process-output (efrit-http-request-process (efrit-media-job-request job)) 0.2))
-        (unless done (efrit-media-cancel job))))
+      (efrit-http-wait-while (lambda () (not done))
+                             (lambda () (efrit-media-cancel job))))
     (if (and (stringp result) (file-exists-p result))
         result
       (error "%s" (or result "efrit-media: no result")))))

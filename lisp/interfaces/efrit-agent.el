@@ -38,6 +38,7 @@
 (require 'efrit-agent-svg-header)
 (require 'efrit-sandbox-ui)
 (declare-function efrit-api-stream-cancel "efrit-api-stream")
+(declare-function efrit-http-cancel "efrit-http" (&optional request))
 (autoload 'efrit-menu "efrit-menu" nil t)
 (require 'efrit-agent-tools)
 (require 'efrit-agent-input)
@@ -530,6 +531,11 @@ is active, is cancelled as before."
         ;; session's: other agent buffers keep running.
         (when (fboundp 'efrit-api-stream-cancel)
           (efrit-api-stream-cancel (if session (efrit-repl-session-id session) nil)))
+        ;; A tool waiting on its own request (image or video
+        ;; generation, a decision batch) ends it too: the tool returns
+        ;; "cancelled" and the loop goes on to read the flag
+        (when (fboundp 'efrit-http-cancel)
+          (efrit-http-cancel))
         (when session
           (pcase (efrit-repl-session-status session)
             ;; Between requests or inside a tool: the loop checks the

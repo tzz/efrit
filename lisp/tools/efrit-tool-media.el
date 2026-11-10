@@ -27,10 +27,10 @@
 ;;   and `efrit-media-move-to-project' carry a result (default the
 ;;   newest) into the project's media/ directory, with its sidecar.
 ;;
-;; The tools register only when a backend of their kind exists, so a
-;; configuration without image models offers the model nothing to
-;; call; `efrit-media-ensure-tools' runs at load and after
-;; `efrit-media-add-backend'.
+;; The tools are always registered; without a backend their
+;; description says so and a call fails with the fix.
+;; `efrit-media-ensure-tools' refreshes the descriptions at load and
+;; after `efrit-media-add-backend'.
 
 ;;; Code:
 
@@ -115,8 +115,11 @@ is why the commands open the file themselves."
                    ,@(and session-id `((:session-id . ,session-id))))))
 
 (defun efrit-tool-media--backend-list (kind)
-  "The names of KIND's backends for a tool description, the default first."
-  (mapconcat #'efrit-media-backend-name (efrit-media-backends-for kind) ", "))
+  "The names of KIND's backends for a tool description, the default first.
+With none: says so, so the model tells the user instead of hunting."
+  (if (efrit-media-backends-for kind)
+      (mapconcat #'efrit-media-backend-name (efrit-media-backends-for kind) ", ")
+    (format "NONE CONFIGURED: a call fails until the user adds a %s backend with efrit-media-add-backend; tell them that, do not look for another way" kind)))
 
 (defun efrit-tool-media--schema (kind)
   "The input schema of the KIND tool."
@@ -140,17 +143,18 @@ is why the commands open the file themselves."
 
 ;;;###autoload
 (defun efrit-media-ensure-tools ()
-  "Register generate_image and generate_video for the kinds that have a backend.
-Withdraws a tool whose kind lost its backends.  Idempotent."
+  "Register generate_image and generate_video; refresh their descriptions.
+Always registered: without a backend the description says so and a
+call fails with the fix, which beats the model spending tools to find
+out the tool is missing (2026-11-10: four introspection calls and a
+question).  Idempotent."
   (interactive)
   (dolist (spec '((image "generate_image" efrit-tool-media-generate-image)
                   (video "generate_video" efrit-tool-media-generate-video)))
     (pcase-let ((`(,kind ,name ,fn) spec))
-      (if (efrit-media-backends-for kind)
-          (efrit-register-tool name :description (efrit-tool-media--description kind)
-                               :input-schema (efrit-tool-media--schema kind)
-                               :function fn :class 'exec :package 'efrit-media)
-        (efrit-unregister-tool name))))
+      (efrit-register-tool name :description (efrit-tool-media--description kind)
+                           :input-schema (efrit-tool-media--schema kind)
+                           :function fn :class 'exec :package 'efrit-media)))
   (when (called-interactively-p 'any)
     (message "efrit-media: %d image, %d video backend(s); tools %s"
              (length (efrit-media-backends-for 'image)) (length (efrit-media-backends-for 'video))

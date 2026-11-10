@@ -24,7 +24,8 @@
 ;;   the answers come as a `tabulated-list' with the inputs, sortable
 ;;   by any column, `w' copies the table as TSV.
 ;;
-;; The tool registers only when a decision backend exists.
+;; The tool is always registered; without a backend its description
+;; says so and a call fails with the fix.
 
 ;;; Code:
 
@@ -140,17 +141,19 @@
 
 (defun efrit-tool-decisions--description ()
   (format "Ask a decision model fixed questions about many texts at once and get numbers back: a probability for a yes/no question, a choice with probabilities, or a score on a labelled scale. Fast (well under a second per text) and consistent; use it to label, sort, filter or triage a list (headlines, messages, log lines, items) instead of judging each yourself. Models: %s."
-          (mapconcat #'efrit-decisions-backend-name efrit-decisions-backends ", ")))
+          (if efrit-decisions-backends
+              (mapconcat #'efrit-decisions-backend-name efrit-decisions-backends ", ")
+            "NONE CONFIGURED: a call fails until the user adds a backend with efrit-decisions-add-backend; tell them that, do not look for another way")))
 
 ;;;###autoload
 (defun efrit-decisions-ensure-tools ()
-  "Register the decide tool when a decision backend exists; withdraw it when none.  Idempotent."
+  "Register the decide tool; refresh its description.
+Always registered: without a backend the description says so and a
+call fails with the fix (see `efrit-media-ensure-tools').  Idempotent."
   (interactive)
-  (if efrit-decisions-backends
-      (efrit-register-tool "decide" :description (efrit-tool-decisions--description)
-                           :input-schema (efrit-tool-decisions--schema)
-                           :function #'efrit-tool-decisions-decide :class 'exec :package 'efrit-decisions)
-    (efrit-unregister-tool "decide"))
+  (efrit-register-tool "decide" :description (efrit-tool-decisions--description)
+                       :input-schema (efrit-tool-decisions--schema)
+                       :function #'efrit-tool-decisions-decide :class 'exec :package 'efrit-decisions)
   (when (called-interactively-p 'any)
     (message "efrit-decisions: %d backend(s); decide tool %s" (length efrit-decisions-backends)
              (if (efrit-registered-tool-get "decide") "registered" "withdrawn"))))
