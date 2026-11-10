@@ -568,17 +568,33 @@ and played nothing (2026-11-10)."
           nil)))
      (t nil))))
 
+(defun efrit-media--probe (file &rest args)
+  "ffprobe's output for FILE with ARGS, or nil without ffprobe or on failure."
+  (when-let* ((probe (and efrit-media-poster-program (executable-find "ffprobe"))))
+    (with-temp-buffer
+      (when (zerop (apply #'call-process probe nil t nil "-v" "error"
+                          (append args (list (expand-file-name file)))))
+        (string-trim (buffer-string))))))
+
 (defun efrit-media-video-info (file)
-  "One line about video FILE: duration and size, from ffprobe when present."
-  (let* ((probe (and efrit-media-poster-program (executable-find "ffprobe")))
-         (seconds (and probe
-                       (with-temp-buffer
-                         (when (zerop (call-process probe nil t nil "-v" "error" "-show_entries"
-                                                    "format=duration" "-of" "default=nw=1:nk=1"
-                                                    (expand-file-name file)))
-                           (string-to-number (string-trim (buffer-string))))))))
-    (format "%s%s" (if (and seconds (> seconds 0)) (format "%d s, " (round seconds)) "")
-            (file-size-human-readable (file-attribute-size (file-attributes file))))))
+  "One line about video FILE: duration, frame size, audio, file size (ffprobe when present).
+A silent clip says so: the generated ones carry a track or do not, and
+the player's mute button is not where one looks first."
+  (let* ((seconds (string-to-number (or (efrit-media--probe file "-show_entries" "format=duration"
+                                                            "-of" "default=nw=1:nk=1")
+                                        "0")))
+         (streams (efrit-media--probe file "-show_entries" "stream=codec_type,width,height"
+                                      "-of" "csv=p=0"))
+         (video (and streams (seq-find (lambda (l) (string-prefix-p "video," l)) (split-string streams "\n" t))))
+         (size (and video (pcase (split-string video ",")
+                            (`("video" ,w ,h . ,_) (and (> (length w) 0) (format "%sx%s" w h))))))
+         (audio (and streams (string-match-p "^audio" streams))))
+    (string-join
+     (delq nil (list (and (> seconds 0) (format "%d s" (round seconds)))
+                     size
+                     (and streams (if audio "with audio" "silent"))
+                     (file-size-human-readable (file-attribute-size (file-attributes file)))))
+     ", ")))
 
 (defun efrit-media--system-open (file)
   "Open FILE with the operating system's opener."

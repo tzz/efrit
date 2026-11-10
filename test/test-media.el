@@ -290,7 +290,7 @@ configured player, never through find-file."
         (let ((mtime (file-attribute-modification-time (file-attributes poster))))
           (should (equal poster (efrit-media-video-poster video)))
           (should (equal mtime (file-attribute-modification-time (file-attributes poster))))))
-      (should (string-match-p "\\`1 s, [0-9.]+[kM]?\\'" (efrit-media-video-info video)))
+      (should (string-match-p "\\`1 s, 64x48, silent, [0-9.]+[kM]?\\'" (efrit-media-video-info video)))
       ;; posters are not generated files
       (should-not (seq-find (lambda (f) (string-suffix-p ".poster.png" f)) (efrit-media-files)))
       ;; open: a program, never find-file
