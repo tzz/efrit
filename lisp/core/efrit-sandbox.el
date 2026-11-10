@@ -60,6 +60,7 @@
 (require 'efrit-settings)
 (require 'efrit-events)
 (require 'vc)
+(require 'url-parse)
 
 (declare-function efrit-sandbox-store-save "efrit-sandbox-store")
 (declare-function efrit-sandbox-store-ensure-loaded "efrit-sandbox-store")
@@ -1042,6 +1043,45 @@ matches.  Read-only tools by default."
   :type '(repeat string)
   :group 'efrit-sandbox)
 
+(defcustom efrit-sandbox-expected-hosts nil
+  "Hosts the model may reach without asking, besides efrit's own endpoints.
+Each element is a host name (its subdomains count) or a function of no
+arguments returning one.  efrit's API host (`efrit-api-base-url') and
+the hosts of the configured `efrit-media-backends' are expected
+without being listed: a request to the gateway efrit already talks to
+on every turn is transport, not the model reaching somewhere new
+(2026-11-10: generate_image asked for the proxy it was configured on)."
+  :type '(repeat (choice string function))
+  :group 'efrit-sandbox)
+
+(declare-function efrit-common-get-base-url "efrit-common")
+(declare-function efrit-media-backend-url "efrit-media")
+(defvar efrit-media-backends)
+
+(defun efrit-sandbox--url-host (url)
+  "The host of URL, or nil."
+  (and (stringp url)
+       (ignore-errors (url-host (url-generic-parse-url url)))))
+
+(defun efrit-sandbox--configured-hosts ()
+  "The hosts efrit is configured to talk to: its API, the media backends, the option."
+  (delq nil
+        (append
+         (list (and (fboundp 'efrit-common-get-base-url)
+                    (efrit-sandbox--url-host (ignore-errors (efrit-common-get-base-url)))))
+         (and (boundp 'efrit-media-backends) (fboundp 'efrit-media-backend-url)
+              (mapcar (lambda (b) (efrit-sandbox--url-host (efrit-media-backend-url b)))
+                      efrit-media-backends))
+         (mapcar (lambda (x) (let ((h (if (functionp x) (ignore-errors (funcall x)) x)))
+                               (and (stringp h) (not (string-empty-p h)) h)))
+                 efrit-sandbox-expected-hosts))))
+
+(defun efrit-sandbox--expected-host-p (target)
+  "Non-nil when TARGET, a (host . NAME) net target, is a configured host or under one."
+  (and (efrit-sandbox-host-target-p target)
+       (cl-some (lambda (h) (efrit-sandbox-host-under-p (cdr target) h))
+                (efrit-sandbox--configured-hosts))))
+
 (defun efrit-sandbox--expected-roots (option)
   "The directories OPTION (a list of dirs or thunks) names, canonical."
   (delq nil (mapcar (lambda (x)
@@ -1177,6 +1217,8 @@ The reason is a short string for the transcript note."
              (format "inside %s, granted earlier this session" (efrit-sandbox-abbreviate repo)))))
      ((and (eq cap 'shell) (efrit-sandbox--expected-shell-line-p target))
       "read-only shell commands")
+     ((and (eq cap 'net) (efrit-sandbox--expected-host-p target))
+      "a gateway efrit is configured to use")
      (t nil))))
 
 (defun efrit-sandbox--grant-expected (cap target root reason tool)

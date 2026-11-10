@@ -185,13 +185,21 @@ The publisher may name the buffer (:buffer); else the session's."
 
 (defvar efrit-agent-media-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "RET") #'efrit-agent-media-open)
-    (define-key map [mouse-1] #'efrit-agent-media-open)
+    (define-key map (kbd "RET") #'efrit-agent-media-toggle)
+    (define-key map (kbd "TAB") #'efrit-agent-media-toggle)
+    (define-key map [mouse-1] #'efrit-agent-media-toggle)
+    (define-key map (kbd "o") #'efrit-agent-media-open)
     (define-key map (kbd "c") #'efrit-agent-media-copy-to-project)
     (define-key map (kbd "m") #'efrit-agent-media-move-to-project)
     (define-key map (kbd "w") #'efrit-agent-media-copy-path)
     map)
   "Keys on a generated image or video in the transcript.")
+
+(defcustom efrit-agent-media-open-by-default nil
+  "When non-nil, a generated image shows in full under its line at once.
+Otherwise the line carries a button; RET, TAB or mouse-1 opens it."
+  :type 'boolean
+  :group 'efrit-agent)
 
 (defun efrit-agent--media-file-at-point ()
   "The generated file under point, or a `user-error'."
@@ -203,7 +211,7 @@ The publisher may name the buffer (:buffer); else the session's."
 (declare-function efrit-media-move-to-project "efrit-media" (file))
 
 (defun efrit-agent-media-open (&optional event)
-  "Open the generated file at point (or under the mouse EVENT)."
+  "Open the generated file at point (or under the mouse EVENT) in its own window."
   (interactive (list last-nonmenu-event))
   (when (and event (mouse-event-p event))
     (goto-char (posn-point (event-end event))))
@@ -229,25 +237,70 @@ The publisher may name the buffer (:buffer); else the session's."
     (kill-new file)
     (message "Copied %s" (abbreviate-file-name file))))
 
-(defun efrit-agent--media-line (event)
-  "The transcript line for a `media' note EVENT: the image itself when it
-is one and the display can draw it, else the file's name; with keys to
-open, copy or move it."
-  (let* ((file (alist-get :media-file event))
-         (kind (alist-get :media-kind event))
-         (image (and (eq kind 'image) (display-graphic-p)
-                     (require 'efrit-markdown nil t)
-                     (efrit-markdown--make-image file efrit-markdown-image-max-width)))
-         (label (concat "  " (alist-get :text event)))
-         (help "RET: open · c: copy to the project · m: move to the project · w: copy the path"))
-    (concat
-     (if image
-         (concat (propertize "  " 'face 'shadow)
-                 (propertize (file-name-nondirectory file) 'display image
-                             'help-echo (concat (alist-get :media-prompt event) "\n" help))
-                 "\n" (propertize label 'face 'shadow))
-       (propertize label 'face 'shadow 'help-echo help))
-     "\n")))
+(defun efrit-agent--media-image (file)
+  "FILE as an image for the transcript, or nil (a video, no display, no decoder).
+The note arrives from a process sentinel, where the selected frame can
+be the terminal one: ask about the frame that shows this buffer, else
+any graphic frame (2026-11-10: the first image rendered as its name)."
+  (let ((frame (or (when-let* ((w (get-buffer-window (current-buffer) t))) (window-frame w))
+                   (seq-find #'display-graphic-p (frame-list)))))
+    (and frame (display-graphic-p frame)
+         (require 'efrit-markdown nil t)
+         (efrit-markdown--make-image file efrit-markdown-image-max-width))))
+
+(defun efrit-agent--media-line (file kind prompt open)
+  "The transcript lines for FILE of KIND made from PROMPT: a button line,
+then the image when OPEN and it is one.  All of it carries the media
+keymap and the file."
+  (let* ((image (and open (eq kind 'image) (efrit-agent--media-image file)))
+         (name (file-name-nondirectory file))
+         (help (concat (or prompt "") (if prompt "\n" "")
+                       "RET/TAB/mouse-1: show or hide · o: open in a window · c: copy to the project · m: move · w: copy the path"))
+         (button (concat "  " (efrit-agent--char (if image 'expand-expanded 'expand-collapsed))
+                         " " (symbol-name kind) ": "
+                         (propertize name 'face 'link)
+                         (if (eq kind 'video) (propertize "  (o opens the player)" 'face 'shadow) "")
+                         "\n")))
+    (propertize
+     (concat button
+             (when image
+               (concat "    " (propertize name 'display image) "\n")))
+     'help-echo help
+     'efrit-media-file file 'efrit-media-kind kind 'efrit-media-prompt prompt
+     'efrit-media-open (and image t)
+     'keymap efrit-agent-media-map 'mouse-face 'highlight)))
+
+(defun efrit-agent--media-bounds (pos)
+  "(BEG . END) of the media note that contains POS."
+  (let ((file (get-text-property pos 'efrit-media-file)))
+    (cons (if (and (> pos (point-min)) (equal (get-text-property (1- pos) 'efrit-media-file) file))
+              (previous-single-property-change pos 'efrit-media-file)
+            pos)
+          (or (next-single-property-change pos 'efrit-media-file) (point-max)))))
+
+(defun efrit-agent-media-toggle (&optional event)
+  "Show or hide the generated image at point (or under the mouse EVENT).
+A video has nothing to unfold: `o' opens it."
+  (interactive (list last-nonmenu-event))
+  (when (and event (mouse-event-p event))
+    (goto-char (posn-point (event-end event))))
+  (let* ((file (efrit-agent--media-file-at-point))
+         (kind (get-text-property (point) 'efrit-media-kind))
+         (prompt (get-text-property (point) 'efrit-media-prompt))
+         (open (get-text-property (point) 'efrit-media-open))
+         (bounds (efrit-agent--media-bounds (point)))
+         (type (get-text-property (car bounds) 'efrit-type))
+         (key (get-text-property (car bounds) 'efrit-note-key)))
+    (if (eq kind 'video)
+        (efrit-agent-media-open)
+      (efrit-agent--with-render
+        (let ((inhibit-read-only t))
+          (goto-char (car bounds))
+          (delete-region (car bounds) (cdr bounds))
+          (insert (propertize (efrit-agent--media-line file kind prompt (not open))
+                              'efrit-type type 'efrit-note-key key))))
+      (goto-char (car bounds))
+      (forward-char 2))))
 
 (defun efrit-agent--on-note (event)
   "Subscriber: a one-line note from the sandbox, the limits prompt, or review.
@@ -259,14 +312,12 @@ the line keys to open, copy or move the file."
     (let* ((key (alist-get :replaces event))
            (media (eq (alist-get :kind event) 'media))
            (line (if media
-                     (efrit-agent--media-line event)
+                     (efrit-agent--media-line (alist-get :media-file event) (alist-get :media-kind event)
+                                              (alist-get :media-prompt event)
+                                              efrit-agent-media-open-by-default)
                    (concat (propertize (concat "  " (alist-get :text event)) 'face (alist-get :face event)) "\n")))
-           (props (append
-                   (list 'efrit-type (intern (format "%s-note" (alist-get :kind event)))
-                         'efrit-note-key key)
-                   (and media (list 'efrit-media-file (alist-get :media-file event)
-                                    'keymap efrit-agent-media-map
-                                    'mouse-face 'highlight))))
+           (props (list 'efrit-type (intern (format "%s-note" (alist-get :kind event)))
+                        'efrit-note-key key))
            (old (and key (efrit-agent--find-note key))))
       (if old
           (efrit-agent--with-render

@@ -253,11 +253,25 @@ display can (batch: no image, the name shows)."
           (should pos)
           (should (equal file (get-text-property pos 'efrit-media-file)))
           (should (eq efrit-agent-media-map (get-text-property pos 'keymap)))
-          (should (string-match-p (regexp-quote (file-name-nondirectory file))
+          (should (string-match-p (concat "image: " (regexp-quote (file-name-nondirectory file)))
                                   (buffer-substring-no-properties pos (point-max))))
+          ;; folded by default: one line, no image
+          (should-not (get-text-property pos 'efrit-media-open))
           (goto-char pos)
           (efrit-agent-media-copy-path)
-          (should (equal file (current-kill 0))))))))
+          (should (equal file (current-kill 0)))
+          ;; toggling redraws the note open (the image itself needs a
+          ;; display; the state and the keys are what batch can check)
+          (cl-letf (((symbol-function 'efrit-agent--media-image)
+                     (lambda (_file) '(image :type xbm :width 1 :height 1 :data "\0"))))
+            (efrit-agent-media-toggle)
+            (let ((p2 (text-property-any (point-min) (point-max) 'efrit-type 'media-note)))
+              (should (get-text-property p2 'efrit-media-open))
+              (should (text-property-any p2 (point-max) 'display (get-text-property p2 'display)))
+              (should (string-match-p "▼\\|v" (buffer-substring-no-properties p2 (+ p2 4))))
+              (efrit-agent-media-toggle)
+              (should-not (get-text-property (text-property-any (point-min) (point-max) 'efrit-type 'media-note)
+                                             'efrit-media-open)))))))))
 
 (provide 'test-media)
 ;;; test-media.el ends here

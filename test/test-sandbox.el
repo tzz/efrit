@@ -4,6 +4,8 @@
 
 (require 'ert)
 (require 'efrit-sandbox)
+(require 'efrit-common)
+(require 'efrit-media)
 (require 'efrit-sandbox-store)
 (require 'efrit-grant-history)
 (require 'efrit-sandbox-eval)
@@ -1474,6 +1476,36 @@ outside any repo still ask."
             (should (cl-every #'null (hash-table-values efrit-sandbox--project-grants))))
         (efrit-unsubscribe 'note listener)
         (delete-directory repo t)))))
+
+(ert-deftest test-sb-expected-hosts-are-the-configured-gateways ()
+  "A net request to efrit's API host, to a media backend's host, or to a
+host in `efrit-sandbox-expected-hosts' (subdomains included) passes
+with a note; any other host asks."
+  (test-sb--in-project
+    (let* ((efrit-api-base-url "https://gw.example.test/anthropic")
+           (efrit-sandbox-expected-hosts (list "docs.example.org" (lambda () "cdn.example.net")))
+           (efrit-media-backends
+            (list (efrit-media-backend--create :name "pic" :kind 'image :protocol 'openai-images
+                                               :url "https://images.example.test/v1/x" :model "m")))
+           (asked nil) (notes nil)
+           (efrit-sandbox-request-function
+            (lambda (req) (push (efrit-sandbox-request-target req) asked) nil))
+           (listener (lambda (e) (when (string-match-p "allowed without asking" (alist-get :text e))
+                                   (push (alist-get :text e) notes)))))
+      (efrit-subscribe 'note listener)
+      (unwind-protect
+          (progn
+            (should (efrit-sandbox-check 'net '(host . "gw.example.test") "generate_image"))
+            (should (efrit-sandbox-check 'net '(host . "images.example.test") "generate_image"))
+            (should (efrit-sandbox-check 'net '(host . "api.docs.example.org") "fetch_url"))
+            (should (efrit-sandbox-check 'net '(host . "cdn.example.net") "fetch_url"))
+            (should (null asked))
+            (should (= 4 (length notes)))
+            (should (string-match-p "a gateway efrit is configured to use" (car notes)))
+            (should-error (efrit-sandbox-check 'net '(host . "evil.example.com") "fetch_url")
+                          :type 'efrit-sandbox-denied)
+            (should (equal '((host . "evil.example.com")) asked)))
+        (efrit-unsubscribe 'note listener)))))
 
 (ert-deftest test-sb-expected-shell-line-rules ()
   (let ((efrit-sandbox-expected-shell-commands (eval (car (get 'efrit-sandbox-expected-shell-commands 'standard-value)) t)))

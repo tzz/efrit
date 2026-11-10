@@ -109,7 +109,7 @@ The agent buffer draws the image on the line; a video gets a line
 with its name.  Without an agent buffer the note goes nowhere, which
 is why the commands open the file themselves."
   (efrit-publish 'note
-                 `((:text . ,(format "%s %s" (if (eq kind 'image) "🖼" "🎞") (abbreviate-file-name file)))
+                 `((:text . ,(format "%s: %s" kind (abbreviate-file-name file)))
                    (:face . shadow) (:kind . media)
                    (:media-file . ,file) (:media-kind . ,kind) (:media-prompt . ,prompt)
                    ,@(and session-id `((:session-id . ,session-id))))))
