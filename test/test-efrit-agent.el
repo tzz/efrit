@@ -208,6 +208,53 @@ them (what a font-lock pass with no keywords does)."
       (should (memq 'efrit-markdown-bold head))
       (should (memq 'efrit-agent-claude-message head)))))
 
+(ert-deftest test-efrit-agent-fold-keeps-tool-body-state ()
+  "Folding a turn and opening it again leaves each tool row as it was:
+a collapsed body stays hidden under its own `efrit-tool-body'
+invisibility with the arrow pointing right, an expanded body stays
+shown with the arrow down.  The first fold wrote `efrit-turn-work'
+over the body's own invisibility, so opening the turn showed every
+body while the arrows said collapsed (2026-11-10)."
+  (with-efrit-agent-test-buffer
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions)
+    (let ((session (efrit-agent-repl-session))
+          (efrit-agent-question-menu nil)
+          (efrit-agent-display-mode 'smart))
+      (cl-letf (((symbol-function 'efrit-agent--auto-save-session) #'ignore))
+        (efrit-agent--add-user-message "scan")
+        (let ((a (efrit-agent-show-tool-start "buffer_scan" nil))
+              (b (efrit-agent-show-tool-start "read_file" nil)))
+          (efrit-agent-show-tool-result a "ok a" t 0.1)
+          (efrit-agent-show-tool-result b "ok b" t 0.1)
+          ;; the user expands b before the turn ends
+          (goto-char (car (efrit-agent--find-tool-region b)))
+          (efrit-agent--toggle-tool-expansion)
+          (should (get-text-property (point) 'efrit-tool-expanded))
+          (efrit-agent-stream-content "Done.")
+          (efrit-agent-stream-end)
+          (efrit-repl-session-set-status session 'idle)
+          (efrit-agent--on-turn-complete session "end_turn")
+          ;; open the turn fold
+          (goto-char (text-property-any (point-min) (point-max) 'efrit-type 'turn-fold))
+          (efrit-agent-fold-toggle)
+          (cl-flet ((row-state (id)
+                      (let* ((region (efrit-agent--find-tool-region id))
+                             (body (efrit-agent--tool-body-bounds (car region) (cdr region)))
+                             (glyph (save-excursion (goto-char (car region)) (skip-chars-forward " ")
+                                                    (string (char-after)))))
+                        (list (get-text-property (car region) 'efrit-tool-expanded)
+                              (and body (get-text-property (car body) 'invisible))
+                              glyph))))
+            ;; a: collapsed, body hidden by its own property, arrow right
+            (should (equal (list nil 'efrit-tool-body (efrit-agent--char 'expand-collapsed)) (row-state a)))
+            ;; b: expanded, body visible, arrow down
+            (should (equal (list t nil (efrit-agent--char 'expand-expanded)) (row-state b)))
+            ;; one click on a opens it: arrow and body agree
+            (goto-char (car (efrit-agent--find-tool-region a)))
+            (efrit-agent--toggle-tool-expansion)
+            (should (equal (list t nil (efrit-agent--char 'expand-expanded)) (row-state a)))))))))
+
 (ert-deftest test-efrit-agent-question-options-are-widgets ()
   "A question's options are wid-edit widgets, one per line: a push-button
 each for a single choice (pressing one answers), checkboxes plus a

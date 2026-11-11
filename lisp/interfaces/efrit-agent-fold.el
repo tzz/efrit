@@ -230,10 +230,23 @@ over a review and a 30 s generate_image (2026-11-10)."
       (let ((inhibit-read-only t))
         ;; the rows: hidden, and tagged so the header finds them
         (add-text-properties beg end (list 'efrit-fold fold-id))
-        (put-text-property beg end 'invisible 'efrit-turn-work)
+        (efrit-agent-fold--hide beg end)
         (goto-char beg)
         (insert (efrit-agent-fold--header-text fold-id summary nil))))
     fold-id))
+
+(defun efrit-agent-fold--hide (beg end)
+  "Hide BEG..END under the turn fold, keeping text already hidden as it is.
+A folded tool body carries `invisible' `efrit-tool-body'; writing
+`efrit-turn-work' over it made the body visible when the turn was
+opened, while its row still said collapsed, so the arrow and the text
+disagreed and the first click flipped the arrow alone (2026-11-10)."
+  (let ((pos beg))
+    (while (< pos end)
+      (let ((next (or (next-single-property-change pos 'invisible nil end) end)))
+        (unless (get-text-property pos 'invisible)
+          (put-text-property pos next 'invisible 'efrit-turn-work))
+        (setq pos next)))))
 
 (defun efrit-agent-fold--fold-bounds (bounds)
   "Fold the work inside BOUNDS, (USER-END . TURN-END); return the first fold id or nil.

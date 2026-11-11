@@ -698,6 +698,9 @@ the calls in the reviewer's view and never decide anything."
          (recap (efrit-review-turn-recap messages))
          (proposer (efrit-review--proposer-text content))
          (batch (efrit-review-describe-batch content advisor-lines))
+         ;; the calls, not the batch's lines: FLAG, SANDBOX and ADVISOR
+         ;; sub-lines inflated "review: 3 tool calls" for one call
+         (call-count (length (efrit-review-reviewable-uses content)))
          (classes (efrit-review--batch-classes content))
          (request (efrit-review--request-data intent proposer batch recap))
          (done nil)
@@ -714,13 +717,12 @@ the calls in the reviewer's view and never decide anything."
                                       (:prompt . ,prompt)))
                      (funcall callback verdict)))))
     (efrit-publish 'review-start `((:session-id . ,session-id)
-                                   (:calls . ,(length (split-string batch "\n" t)))
+                                   (:calls . ,call-count)
                                    (:model . ,(or efrit-review-model efrit-default-model))
                                    (:prompt . ,prompt)))
     (condition-case err
         (let ((efrit-api-request-purpose
-               (format "reviewing %d proposed tool call(s) before they run"
-                       (length (split-string batch "\n" t)))))
+               (format "reviewing %d proposed tool call(s) before they run" call-count)))
           (efrit-api-request-async
            request
          (lambda (response)

@@ -245,6 +245,12 @@ advisor leaves an unavailable line within the timeout."
                                               '((name . "risk") (type . score) (score . 3.0) (level . "high")))
                                         nil)))
                    #'ignore)))
+        (let ((starts nil))
+          (efrit-subscribe 'review-start (lambda (e) (push (alist-get :calls e) starts)))
+          (test-review--with-reviewer (list "{\"verdict\": \"reject\", \"reason\": \"not asked\"}")
+            (efrit-review-turn "s2" messages content (lambda (v) (setq verdict v))))
+          ;; two calls, whatever the FLAG and ADVISOR sub-lines add
+          (should (equal '(2) starts)))
         (test-review--with-reviewer (list "{\"verdict\": \"reject\", \"reason\": \"not asked\"}")
           (efrit-review-turn "s2" messages content (lambda (v) (setq verdict v)))
           (should (equal '(2 ("asked" "risk")) asked))
