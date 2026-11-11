@@ -563,5 +563,36 @@ a note; at most `efrit-gnus-expand-links-max' are expanded."
     (should (equal '("https://a.example/p" "https://b.example/q")
                    (efrit-gnus--article-links "see https://a.example/p, and (https://b.example/q).")))))
 
+(ert-deftest test-efrit-gnus-agent-buffer-has-its-own-root ()
+  "The Gnus agent buffer is rooted in `efrit-gnus-project-root' (else efrit's
+default project), not in whatever project the current buffer is in; an
+existing buffer rooted elsewhere is moved back."
+  (require 'efrit-agent-instances)
+  (let* ((dir (make-temp-file "efrit-gnus-root" t))
+         (other (make-temp-file "efrit-gnus-other" t))
+         (efrit-gnus-project-root dir)
+         (efrit-gnus-own-buffer t)
+         (efrit-agent-instances-mode t)
+         (efrit-agent-auto-show nil))
+    (unwind-protect
+        (progn
+          (when (get-buffer "*efrit[gnus]*") (kill-buffer "*efrit[gnus]*"))
+          ;; created while another directory is current
+          (let ((buf (let ((default-directory (file-name-as-directory other)))
+                       (efrit-gnus-agent-buffer))))
+            (should buf)
+            (should (equal (file-name-as-directory dir)
+                           (buffer-local-value 'default-directory buf)))
+            (should (equal (file-name-as-directory dir)
+                           (efrit-repl-session-project-root (buffer-local-value 'efrit-agent--repl-session buf))))
+            ;; moved elsewhere by hand: the next use brings it back
+            (with-current-buffer buf (efrit-agent-set-directory other))
+            (should (equal (file-name-as-directory other) (buffer-local-value 'default-directory buf)))
+            (should (eq buf (efrit-gnus-agent-buffer)))
+            (should (equal (file-name-as-directory dir) (buffer-local-value 'default-directory buf)))))
+      (when (get-buffer "*efrit[gnus]*") (kill-buffer "*efrit[gnus]*"))
+      (delete-directory dir t)
+      (delete-directory other t))))
+
 (provide 'test-efrit-gnus)
 ;;; test-efrit-gnus.el ends here

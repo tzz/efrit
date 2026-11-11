@@ -181,17 +181,54 @@ code work.  A mail analysis and a code session then do not interleave."
   :type 'boolean
   :group 'efrit-gnus)
 
+(defcustom efrit-gnus-project-root nil
+  "The project the Gnus agent buffer works in; nil for `efrit-default-project-root'.
+Mail is not code: the session must not take its project from whatever
+file happened to be in the other window.  On 2026-11-10 the Gnus
+buffer was created while a remote checkout was current, and every
+grant was keyed on that checkout."
+  :type '(choice (const :tag "efrit-default-project-root" nil) directory))
+
+(defun efrit-gnus--project-root ()
+  "The root for the Gnus agent buffer: the option, else efrit's default project, else ~."
+  (file-name-as-directory
+   (expand-file-name
+    (or efrit-gnus-project-root
+        (and (fboundp 'efrit-default-project-root) (efrit-default-project-root))
+        "~"))))
+
 (defun efrit-gnus-agent-buffer ()
   "The agent buffer Gnus turns go to."
   (if (and efrit-gnus-own-buffer (bound-and-true-p efrit-agent-instances-mode)
            (fboundp 'efrit-agent-instance-create))
-      (or (get-buffer "*efrit[gnus]*")
-          (with-current-buffer (efrit-agent-instance-create nil "gnus")
+      (let ((root (efrit-gnus--project-root)))
+        (if-let* ((buf (efrit-gnus--existing-agent-buffer)))
+            (with-current-buffer buf
+              ;; A buffer made before the root was fixed (or whose root
+              ;; the user moved elsewhere) comes back to the Gnus root
+              (unless (equal (file-name-as-directory (expand-file-name default-directory)) root)
+                (efrit-agent-set-directory root)
+                (rename-buffer "*efrit[gnus]*" t))
+              buf)
+          (with-current-buffer (efrit-agent-instance-create root "gnus")
             (rename-buffer "*efrit[gnus]*" t)
-            (current-buffer)))
+            (current-buffer))))
     nil))
 
+(defun efrit-gnus--existing-agent-buffer ()
+  "The live agent buffer of the Gnus instance, whatever its name now, or nil.
+`efrit-agent-set-directory' renames a buffer after its root; the
+instance name \"gnus\" survives that."
+  (or (get-buffer "*efrit[gnus]*")
+      (seq-find (lambda (b)
+                  (and (eq (buffer-local-value 'major-mode b) 'efrit-agent-mode)
+                       (equal (plist-get (buffer-local-value 'efrit-agent--instance b) :name) "gnus")))
+                (buffer-list))))
+
+(defvar efrit-agent--instance)
 (declare-function efrit-agent-instance-create "efrit-agent-instances")
+(declare-function efrit-agent-set-directory "efrit-agent-instances" (directory))
+(declare-function efrit-default-project-root "efrit-tool-utils")
 
 (defcustom efrit-gnus-default-prompt "summarize"
   "Name of the prompt offered first, when none was used yet this session."
