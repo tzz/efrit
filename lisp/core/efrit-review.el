@@ -443,10 +443,23 @@ effects), see efrit-review-flags."
              (ignore-errors (efrit-review-flags-for-use use))))))
     (and lines (mapconcat #'identity lines "\n   "))))
 
-(defun efrit-review-describe-batch (content)
+(defun efrit-review-reviewable-uses (content)
+  "The reviewable tool uses in CONTENT, in order."
+  (cl-remove-if-not (lambda (use) (efrit-review--reviewable-p (nth 1 use) use))
+                    (efrit-review--tool-uses content)))
+
+(defun efrit-review-call-texts (content)
+  "One line of text per reviewable call in CONTENT: the tool and its input.
+What the advisor reads; the reviewer's batch adds the flags and facts."
+  (mapcar (lambda (use) (format "%s %s" (nth 1 use) (efrit-review--input-string (nth 2 use))))
+          (efrit-review-reviewable-uses content)))
+
+(defun efrit-review-describe-batch (content &optional advisor-lines)
   "The reviewable tool calls in CONTENT as numbered text for the reviewer.
 Tool outputs are never included: see the commentary.  Calls the
-reviewer should look at twice carry a FLAG line."
+reviewer should look at twice carry a FLAG line.  ADVISOR-LINES, one
+per call (or nil), are the decision model's second opinion
+\(efrit-review-advisor), shown under the call."
   (let ((n 0))
     (mapconcat
      (lambda (use)
@@ -454,9 +467,9 @@ reviewer should look at twice carry a FLAG line."
        (concat (format "%d. %s %s" n (nth 1 use) (efrit-review--input-string (nth 2 use)))
                (when-let* ((flag (efrit-review--flags use))) (concat "\n   " flag))
                (when-let* ((lines (ignore-errors (efrit-review-confidence-describe use))))
-                 (concat "\n   " (mapconcat #'identity lines "\n   ")))))
-     (cl-remove-if-not (lambda (use) (efrit-review--reviewable-p (nth 1 use) use))
-                       (efrit-review--tool-uses content))
+                 (concat "\n   " (mapconcat #'identity lines "\n   ")))
+               (when-let* ((advice (nth (1- n) advisor-lines))) (concat "\n   " advice))))
+     (efrit-review-reviewable-uses content)
      "\n")))
 
 ;;; The review request
@@ -514,6 +527,15 @@ counts the facts, you only lower it when the request itself gives reason (an odd
 the task, a command whose output the task does not need).  At or above the user's threshold
 your vouching replaces their keypress for this turn, so vouch only when you would bet on it.
 A call with no SANDBOX line needs no confidence.
+
+A line [ADVISOR: asked P, risk LEVEL S …] under a call is a second opinion from a separate,
+smaller decision model that read only the request, the standing instructions and that one
+call: P is its probability that the request covers the action, LEVEL/S its estimate of the
+harm if the action were unwanted (none 0 .. high 3).  It is an advisor, not a reviewer: it
+has no memory of the turn, no flags, no grant history, and it is sometimes wrong.  You
+decide.  Use it as a prompt to look twice when it disagrees with you, and say so in your
+reason when it changed your mind; never approve or reject on its word alone.  An
+[ADVISOR: unavailable …] line means no opinion this time.
 
 Starting another Emacs (a [FLAG shell: starts another Emacs] line, or an eval_sexp whose form
 runs emacs --batch) is refused by efrit without asking the user: everything the agent needs is
@@ -652,15 +674,30 @@ CLASSES are the permission classes of the batch under review."
                          (and (memq class (efrit-review-effective-classes)) class)))
                      (efrit-review--tool-uses content)))))
 
+(declare-function efrit-review-advisor-ask "efrit-review-advisor" (intent standing call-texts callback))
+
 (defun efrit-review-turn (session-id messages content callback)
   "Review the reviewable tool calls in CONTENT for SESSION-ID, asynchronously.
 MESSAGES is the conversation so far (used only to find the user's
 request).  CALLBACK is called with (VERDICT . REASON), VERDICT being
-`approve' or `reject'.  It is called exactly once, on the main loop."
+`approve' or `reject'.  It is called exactly once, on the main loop.
+When a decision backend is configured, the advisor is asked first,
+for at most `efrit-review-advisor-timeout' seconds; its lines go under
+the calls in the reviewer's view and never decide anything."
+  (let ((intent (efrit-review-user-intent messages))
+        (texts (efrit-review-call-texts content)))
+    (if (and texts (require 'efrit-review-advisor nil t))
+        (efrit-review-advisor-ask
+         intent (efrit-review--standing-instructions) texts
+         (lambda (lines) (efrit-review--turn-1 session-id messages content callback lines)))
+      (efrit-review--turn-1 session-id messages content callback nil))))
+
+(defun efrit-review--turn-1 (session-id messages content callback advisor-lines)
+  "The review request proper; see `efrit-review-turn'.  ADVISOR-LINES per call, or nil."
   (let* ((intent (efrit-review-user-intent messages))
          (recap (efrit-review-turn-recap messages))
          (proposer (efrit-review--proposer-text content))
-         (batch (efrit-review-describe-batch content))
+         (batch (efrit-review-describe-batch content advisor-lines))
          (classes (efrit-review--batch-classes content))
          (request (efrit-review--request-data intent proposer batch recap))
          (done nil)

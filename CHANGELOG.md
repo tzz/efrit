@@ -27,6 +27,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `efrit-do-async`: Use `efrit-do` (now the primary interface)
 - `efrit-api-url`: Use `efrit-api-base-url` in efrit-common.el instead. The legacy variable still works as an override but is deprecated.
 
+## [0.18.0] - 2026-11-10
+
+The reviewer's advisor.
+
+### Added
+
+- `efrit-review-advisor`: when a decision backend is configured, each reviewable call also goes to the decision model with two fixed questions (does the request cover this action; how much harm if not), and the answers appear under the call in the reviewer's view as `[ADVISOR: asked P, risk LEVEL S]`, beside the FLAG lines.  The reviewer decides; the advisor informs: it never approves, rejects, or raises a confidence, and a slow or absent advisor (`efrit-review-advisor-timeout`, 3 s) leaves an `unavailable` line and the review goes on
+
+### Fixed (0.17.1 – 0.17.3)
+
+- `decide`, `generate_image`, `generate_video` stay registered without a backend; the description says so and a call names the fix
+- Tools that wait on their own request wait with `sit-for`: Emacs stayed responsive-looking frozen for an image generation; `C-c C-c` cancels such requests too
+- A generated image's line is a result, not work: it stays visible when the turn folds; the fold summary counts rows by id (two adjacent tool rows read as one)
+
 ## [0.17.0] - 2026-11-10
 
 Decision models.

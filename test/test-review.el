@@ -203,6 +203,84 @@ completes an earlier addition then reads as one move (2026-10-20)."
 
 ;;; Verdicts
 
+(ert-deftest test-review-advisor-lines-inform-the-reviewer-only ()
+  "With a decision backend, each reviewable call carries an [ADVISOR …]
+line in the reviewer's request, built from the decision model's
+answers; the verdict is whatever the reviewer says, whether or not the
+advisor agrees.  Without a backend the request is unchanged.  A slow
+advisor leaves an unavailable line within the timeout."
+  (require 'efrit-review-advisor)
+  (require 'efrit-decisions)
+  (let* ((content (vector (test-review--text "Editing.")
+                          (test-review--tool-use "1" "edit_file" '(("path" . "a.el") ("new_string" . "x")))
+                          (test-review--tool-use "2" "shell_exec" '(("command" . "rm -rf /tmp/x")))))
+         (messages (list '((role . "user") (content . "fix a.el"))))
+         (efrit-review-classes '(write exec))
+         (efrit-review-advisor-enabled t)
+         (efrit-review-advisor-timeout 0.5)
+         (asked nil))
+    ;; no backend: no advisor lines, one review request as before
+    (let ((efrit-decisions-backends nil) (verdict nil))
+      (test-review--with-reviewer (list "{\"verdict\": \"approve\"}")
+        (efrit-review-turn "s1" messages content (lambda (v) (setq verdict v)))
+        (should (equal 'approve (car verdict)))
+        (let ((text (alist-get "content" (aref (alist-get "messages" (car test-review--requests) nil nil #'equal) 0) nil nil #'equal)))
+          (should-not (string-match-p "ADVISOR" text)))))
+    ;; a backend: the advisor is asked once per call, its lines appear,
+    ;; and the reviewer's reject stands though the advisor saw no risk
+    (let ((efrit-decisions-backends (list (efrit-decisions-backend--create
+                                           :name "adv" :protocol 'decisions-v1
+                                           :url "https://gw.example.test/v1/decisions" :model "m")))
+          (verdict nil))
+      (cl-letf (((symbol-function 'efrit-decide-many)
+                 (lambda (inputs questions callback &rest _)
+                   (setq asked (list (length inputs) (mapcar (lambda (q) (plist-get q :name)) questions)))
+                   (funcall callback
+                            (list (list (nth 0 inputs)
+                                        (list '((name . "asked") (type . predicate) (probability . 0.95) (value . t))
+                                              '((name . "risk") (type . score) (score . 1.0) (level . "low")))
+                                        nil)
+                                  (list (nth 1 inputs)
+                                        (list '((name . "asked") (type . predicate) (probability . 0.12) (value . nil))
+                                              '((name . "risk") (type . score) (score . 3.0) (level . "high")))
+                                        nil)))
+                   #'ignore)))
+        (test-review--with-reviewer (list "{\"verdict\": \"reject\", \"reason\": \"not asked\"}")
+          (efrit-review-turn "s2" messages content (lambda (v) (setq verdict v)))
+          (should (equal '(2 ("asked" "risk")) asked))
+          (should (equal 'reject (car verdict)))
+          (let ((text (alist-get "content" (aref (alist-get "messages" (car test-review--requests) nil nil #'equal) 0) nil nil #'equal)))
+            (should (string-match-p "1\\. edit_file[^\n]*\n   \\[ADVISOR: asked 0\\.95, risk low 1\\.0\\]" text))
+            ;; after the call's FLAG lines, before the next call
+            (should (string-match-p "2\\. shell_exec[^\n]*\n\\(   \\[FLAG[^\n]*\n\\)*   \\[ADVISOR: asked 0\\.12, risk high 3\\.0 — the request does not seem to cover this and it could hurt; look closely\\]" text))
+            ;; the advisor's own input had the request and the one call
+            (should (string-match-p "USER REQUEST:\nfix a.el" text)))))
+      ;; the advisor approves, the reviewer approves: still the reviewer's verdict
+      (cl-letf (((symbol-function 'efrit-decide-many)
+                 (lambda (inputs _questions callback &rest _)
+                   (funcall callback (mapcar (lambda (in) (list in nil "down")) inputs))
+                   #'ignore)))
+        (test-review--with-reviewer (list "{\"verdict\": \"approve\"}")
+          (efrit-review-turn "s3" messages content (lambda (v) (setq verdict v)))
+          (should (equal 'approve (car verdict)))
+          (let ((text (alist-get "content" (aref (alist-get "messages" (car test-review--requests) nil nil #'equal) 0) nil nil #'equal)))
+            (should (string-match-p "\\[ADVISOR: unavailable (down)\\]" text)))))
+      ;; a slow advisor: the timeout fires, lines say so, review proceeds
+      (let ((cancelled nil))
+        (cl-letf (((symbol-function 'efrit-decide-many)
+                   (lambda (&rest _) (lambda () (setq cancelled t) 2))))
+          (test-review--with-reviewer (list "{\"verdict\": \"approve\"}")
+            (setq verdict nil)
+            (efrit-review-turn "s4" messages content (lambda (v) (setq verdict v)))
+            (should-not verdict)
+            (let ((deadline (+ (float-time) 3)))
+              (while (and (not verdict) (< (float-time) deadline))
+                (sit-for 0.05)))
+            (should (equal 'approve (car verdict)))
+            (should cancelled)
+            (let ((text (alist-get "content" (aref (alist-get "messages" (car test-review--requests) nil nil #'equal) 0) nil nil #'equal)))
+              (should (string-match-p "\\[ADVISOR: unavailable (no answer in 0.5 s)\\]" text)))))))))
+
 (ert-deftest test-review-parse-verdict ()
   (should (equal (efrit-review-parse-verdict "{\"verdict\": \"approve\"}") '(approve . nil)))
   (should (equal (efrit-review-parse-verdict
