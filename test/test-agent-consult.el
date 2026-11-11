@@ -35,9 +35,10 @@
          (sent nil) (notes nil))
     (unwind-protect
         (progn
+          ;; oldest first, as the session keeps it
           (setf (efrit-repl-session-conversation sb)
-                (list (list :role 'assistant :content "Added six retry tests in test/queue; shutdown is covered by two.")
-                      (list :role 'user :content "Add tests for the retry queue consumer")))
+                (list (list :role 'user :content "Add tests for the retry queue consumer")
+                      (list :role 'assistant :content "Added six retry tests in test/queue; shutdown is covered by two.")))
           ;; list: the asking session is not a peer of itself
           (let ((listing (efrit-tool-registry-dispatch "list_sessions" (test-consult--hash))))
             (should (string-match-p "beta:fix" listing))
@@ -57,6 +58,8 @@
               (let ((prompt (alist-get "content" (aref (alist-get "messages" sent nil nil #'equal) 0) nil nil #'equal)))
                 (should (string-match-p "USER: Add tests for the retry queue" prompt))
                 (should (string-match-p "ASSISTANT: Added six retry tests" prompt))
+                ;; in reading order
+                (should (< (string-match "USER: Add tests" prompt) (string-match "ASSISTANT: Added" prompt)))
                 (should (string-match-p "Question from a peer agent: Do the tests cover shutdown" prompt)))
               (should (seq-some (lambda (n) (string-match-p "consulted by" n)) notes))
               ;; the peer's own state is untouched

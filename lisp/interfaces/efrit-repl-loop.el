@@ -502,6 +502,20 @@ carries `held' as its fourth element and is left alone."
          (not (efrit-api-stream-active-p (efrit-repl-session-id session)))
          (not (efrit-repl-session-current-turn-tools session)))))
 
+(defun efrit-repl-loop-idle-between-requests-p (session)
+  "Non-nil when SESSION's turn has nothing in flight that will call back.
+No stream of this session, no tool running (`efrit-repl-loop--tool-session'
+is not this session): the loop is between its own steps, which is
+where a cancel flag would otherwise wait forever.  How a turn gets
+there: a callback died between the model's response and the next
+request, for example a `C-g' inside the reviewer's synchronous
+preparation (2026-11-10, a remote-rooted review).  A held entry is
+never idle."
+  (when-let* ((entry (efrit-repl-loop-active-p session)))
+    (and (not (eq (nth 3 entry) 'held))
+         (not (efrit-api-stream-active-p (efrit-repl-session-id session)))
+         (not (eq efrit-repl-loop--tool-session session)))))
+
 (defun efrit-repl-loop-recover-stale (session)
   "End SESSION's turn when it says `working' but nothing is running it.
 Returns non-nil when it did.  How a session gets there: a reload

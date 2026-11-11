@@ -459,7 +459,11 @@ option N, else nothing (the key falls through and types the digit)."
     (define-key map (kbd "C-c C-q") #'efrit-agent-queue-show)
     (define-key map (kbd "C-c C-c") #'efrit-agent-input-send)
     (define-key map (kbd "C-c C-s") #'efrit-agent-input-send)
-    (define-key map (kbd "C-c C-k") #'efrit-agent-input-clear)
+    ;; C-c C-k stays the major mode's cancel.  Bound here to a clear
+    ;; of the input, it shadowed cancel whenever point was in the
+    ;; input area (where it always is), and the clear was not a kill:
+    ;; 2026-11-11 tzz pressed it to stop a stuck turn and lost his
+    ;; draft.  C-c C-u kills the input to the kill ring.
     ;; Restore standard editing keys while typing in the input region.
     ;; The major-mode map keeps C-k/C-q bound to agent actions as a
     ;; convenience for the read-only conversation region; shadow them here
@@ -1081,13 +1085,10 @@ be reached with the arrows."
     (goto-char (point-max))))
 
 (defun efrit-agent-input-clear ()
-  "Clear the current input."
+  "Clear the current input; it goes to the kill ring (`C-y' brings it back)."
   (interactive)
-  (efrit-agent--clear-input)
-  (when (and efrit-agent--input-start
-             (marker-position efrit-agent--input-start))
-    (goto-char efrit-agent--input-start))
-  (message "Input cleared"))
+  (efrit-agent-input-kill)
+  (message "Input cleared (C-y brings it back)"))
 
 ;;; REPL Session Commands
 

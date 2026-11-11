@@ -177,7 +177,12 @@ template itself and anything under it when the template is a directory."
   "The path templates the instruction files for ROOT name: ((TEMPLATE REGEXP FILE)...).
 Read once per set of files and modification times."
   (when (require 'efrit-instructions nil t)
-    (let* ((located (ignore-errors (efrit-instructions-locate root)))
+    ;; Only local instruction files: a template in a remote host's
+    ;; CLAUDE.md names paths on that host, and `efrit-sandbox-symbolic-instructed'
+    ;; only ever sees local targets.  Reading them here also cost a
+    ;; TRAMP round trip per file per review (2026-11-10).
+    (let* ((located (cl-remove-if (lambda (e) (file-remote-p (car e)))
+                                  (ignore-errors (efrit-instructions-locate root))))
            (key (mapcar (lambda (e) (cons (car e) (file-attribute-modification-time
                                                    (file-attributes (car e)))))
                         located)))

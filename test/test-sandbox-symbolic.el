@@ -123,6 +123,21 @@ placeholders yields none."
       (should (efrit-sandbox-symbolic-instructed (expand-file-name "~/journal/2026/10/16.org") root))
       (should-not (efrit-sandbox-symbolic-instructed (expand-file-name "~/journal/2026/10/16.txt") root)))))
 
+(ert-deftest test-symbolic-templates-skip-remote-instruction-files ()
+  "A remote host's instruction file is never read for templates: its paths
+are on that host, and the read is a TRAMP round trip per review."
+  (test-symbolic--with-instructions "log at ~/journal/YYYY/MM/DD.org\n"
+    (let ((reads nil))
+      (cl-letf (((symbol-function 'efrit-instructions-locate)
+                 (lambda (&optional _root)
+                   (list (cons "/ssh:host:/home/u/CLAUDE.md" 'ancestor)
+                         (cons file 'project))))
+                ((symbol-function 'efrit-instructions--read-file)
+                 (lambda (path) (push path reads) "log at ~/remote/YYYY-MM-DD.org\n")))
+        (let ((templates (efrit-sandbox-symbolic-templates root)))
+          (should (= 1 (length templates)))
+          (should (equal (list file) reads)))))))
+
 (provide 'test-sandbox-symbolic)
 
 ;;; test-sandbox-symbolic.el ends here

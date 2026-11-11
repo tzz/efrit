@@ -38,8 +38,18 @@ The reviewer's advisor.
 ### Fixed (0.17.1 – 0.17.3)
 
 - `decide`, `generate_image`, `generate_video` stay registered without a backend; the description says so and a call names the fix
-- Tools that wait on their own request wait with `sit-for`: Emacs stayed responsive-looking frozen for an image generation; `C-c C-c` cancels such requests too
+- Tools that wait on their own request wait with `sit-for`: Emacs stayed responsive-looking frozen for an image generation; `C-c C-k` cancels such requests too
 - A generated image's line is a result, not work: it stays visible when the turn folds; the fold summary counts rows by id (two adjacent tool rows read as one)
+
+### Fixed (0.18.1 – 0.18.7)
+
+- The reviewer's call count and purpose count uses, not description lines
+- Folding a turn no longer resets a tool row's own folded/unfolded state (arrows and text disagreed)
+- A Gnus agent buffer roots at `efrit-gnus-project-root` (default `efrit-default-project-root`, else `~`), never at the current buffer's remote project; an existing buffer is re-rooted
+- A session rooted on a remote host froze Emacs in every review: the standing instructions and the symbolic-path templates re-walked the remote ancestors and re-read the remote `CLAUDE.md` over TRAMP, inside the curl sentinel.  Remote roots now keep their located files and text for `efrit-instructions-remote-cache-seconds` (300; `efrit-instructions-forget` drops it), and templates come from local instruction files only
+- `C-c C-k` (cancel) on a turn with nothing in flight (no stream, no tool: a callback died between the response and the next request) ends the turn at once instead of setting a flag nothing reads; the buffer had shown `reviewing...` for good
+- `C-c C-k` cancels the turn with point in the input too: the input map bound it to a clear of the input, which shadowed cancel and threw the draft away; `efrit-agent-input-clear` now kills to the kill ring, `C-c C-u` is the key for that
+- Resume: `M-x efrit-resume` lists sessions as `id | time | project | first words`, newest first, and accepts a full id or a unique part of one as typed (`/resume 232956`, `M-x efrit-resume-session`); a restored conversation whose assistant entries are content blocks no longer crashes (`stringp`) and renders its text plus one `⚙ tool, tool` line, oldest first.  `efrit-session-persist-load` returns the conversation in the live order (oldest first); `ask_session` sent a peer's transcript backwards
 
 ## [0.17.0] - 2026-11-10
 

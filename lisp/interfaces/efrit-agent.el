@@ -538,20 +538,27 @@ is active, is cancelled as before."
           (efrit-http-cancel))
         (when session
           (pcase (efrit-repl-session-status session)
-            ;; Between requests or inside a tool: the loop checks the
-            ;; flag before its next request and finishes "paused"
+            ;; Inside a tool: the loop checks the flag before its next
+            ;; request and finishes "paused".  Nothing in flight at
+            ;; all (a turn that never started, or a callback that died
+            ;; between the response and the next request): nothing
+            ;; will ever read the flag, end the turn now
             ('working
-             (if (efrit-repl-loop--entry-dead-p session)
-                 ;; Nothing will ever read the flag: end the turn now
-                 (efrit-repl-loop-abandon-turn session)
-               (setf (efrit-repl-session-interrupt-requested session) t)))
+             (if (or (efrit-repl-loop--entry-dead-p session)
+                     (efrit-repl-loop-idle-between-requests-p session))
+                 (progn (efrit-repl-loop-abandon-turn session)
+                        (message "Efrit: turn ended (nothing was in flight)"))
+               (setf (efrit-repl-session-interrupt-requested session) t)
+               (message "Efrit: stopping; the turn ends when the running %s returns"
+                        (if (eq efrit-repl-loop--tool-session session) "tool" "request"))))
             ;; Waiting on request_user_input: nothing is in flight,
             ;; the loop is gone; just end the turn
             ((or 'waiting 'paused)
              (setf (efrit-repl-session-pending-question session) nil)
              (setq efrit-agent--pending-question nil)
              (efrit-agent--reset-input-prompt)
-             (efrit-repl-loop-abandon-turn session))))
+             (efrit-repl-loop-abandon-turn session)
+             (message "Efrit: turn ended; the question is withdrawn"))))
         ;; The efrit-do session, only when this buffer is its surface
         (when (and (efrit-session-active) (null session) efrit-agent--session-id)
           (efrit-executor-cancel))
@@ -614,50 +621,99 @@ Shows a list of recent agent buffer sessions with timestamps and summaries."
   (interactive)
   (efrit-resume))
 
+(defun efrit-resume--first-user-text (session)
+  "The first human message of SESSION as one line, or nil."
+  (let ((entry (cl-find-if (lambda (e) (and (eq (plist-get e :role) 'user)
+                                            (stringp (plist-get e :content))))
+                           (efrit-repl-session-conversation session))))
+    (and entry (replace-regexp-in-string "[\n\r]+" " " (plist-get entry :content)))))
+
+(defun efrit-resume-candidates ()
+  "The saved sessions as (LABEL . ID), newest activity first.
+LABEL is \"ID | time | project | first words\", so the id and any
+part of it complete; 2026-11-11 the id was not in the label and
+typing it got \"match required\"."
+  (require 'efrit-session-persist)
+  (let ((rows nil))
+    (dolist (s (efrit-session-persist-list))
+      (let* ((id (car s))
+             (session (ignore-errors (efrit-session-persist-load id)))
+             (project (and session (efrit-repl-session-project-root session)))
+             (preview (or (and session (efrit-resume--first-user-text session)) "(empty)")))
+        (push (cons (format "%s | %s | %s | %s"
+                            id
+                            (or (nth 2 s) (nth 1 s) "?")
+                            (or (and project (not (string-empty-p project))
+                                     (abbreviate-file-name project))
+                                "?")
+                            (truncate-string-to-width preview 40 nil nil "…"))
+                    id)
+              rows)))
+    (sort rows (lambda (a b) (string> (car a) (car b))))))
+
+(defun efrit-resume-match-session-id (input &optional choices)
+  "The saved session id INPUT names: a candidate label, a full id, or a unique part of one.
+CHOICES defaults to `efrit-resume-candidates'.  Signals a `user-error'
+when nothing or more than one matches."
+  (let ((choices (or choices (efrit-resume-candidates))))
+    (or (cdr (assoc input choices))
+        (and (rassoc input choices) input)
+        (let ((hits (cl-remove-if-not (lambda (c) (string-search input (cdr c))) choices)))
+          (cond ((= 1 (length hits)) (cdar hits))
+                ((null hits) (user-error "No saved session matches %S" input))
+                (t (user-error "%d saved sessions match %S; give more of the id"
+                               (length hits) input)))))))
+
+(defun efrit-resume-read-session-id (&optional prompt)
+  "Read a saved session with completion; return its id.
+Typing a full id, or an unambiguous tail of one such as \"232956\",
+is accepted even when the completion table did not match it."
+  (let ((choices (efrit-resume-candidates)))
+    (efrit-resume-match-session-id
+     (completing-read (or prompt "Resume session: ") choices nil nil)
+     choices)))
+
 ;;;###autoload
 (defun efrit-resume ()
   "Resume a previous Efrit session from disk.
-Shows a list of recent sessions with project and timestamp info.
-Select one to restore it into the current agent buffer."
+Shows a list of recent sessions, newest activity first, as
+\"id | time | project | first words\"; any part of a line completes,
+and a bare id or a unique tail of one is accepted as typed."
   (interactive)
-  (require 'efrit-session-persist)
-  (let* ((sessions (efrit-session-persist-list))
-         (choices (mapcar
-                   (lambda (s)
-                     (let* ((id (car s))
-                            (times (cdr s))
-                            (created (car times))
-                            (last-activity (cadr times))
-                            ;; Load session to get project and preview
-                            (session (efrit-session-persist-load id))
-                            (project (and session
-                                          (efrit-repl-session-project-root session)))
-                            (conv (and session
-                                       (efrit-repl-session-conversation session)))
-                            (first-msg (and conv
-                                            (car (last conv))
-                                            (plist-get (car (last conv)) :content)))
-                            (preview (if first-msg
-                                         (truncate-string-to-width
-                                          (replace-regexp-in-string "[\n\r]+" " " first-msg)
-                                          40)
-                                       "(empty)")))
-                       (cons (format "%s | %s | %s"
-                                     (or last-activity created id)
-                                     (or (and project (abbreviate-file-name project)) "?")
-                                     preview)
-                             id)))
-                   sessions)))
-    (if (null choices)
-        (message "No saved sessions found")
-      (let* ((selection (completing-read "Resume session: " choices nil t))
-             (session-id (cdr (assoc selection choices))))
-        (when session-id
-          (efrit-resume-session session-id))))))
+  (if (null (efrit-resume-candidates))
+      (message "No saved sessions found")
+    (efrit-resume-session (efrit-resume-read-session-id))))
+
+(defun efrit-resume--render-entry (role content)
+  "Draw one restored conversation ENTRY of ROLE in the current agent buffer.
+A string renders as the live turn did.  Assistant content kept as
+blocks (a vector or list of text and tool_use blocks) renders its text
+and one dim line naming the tools; before 2026-11-11 a restore
+crashed on the first such entry (`stringp')."
+  (pcase role
+    ('user (when (stringp content) (efrit-agent--add-user-message content)))
+    ('assistant
+     (cond
+      ((stringp content) (efrit-agent--add-claude-message content))
+      ((or (vectorp content) (listp content))
+       (let ((text (string-trim (efrit-repl-session--content-text content)))
+             (tools (delq nil (mapcar (lambda (b)
+                                        (and (equal (efrit-repl-session--block-get b "type") "tool_use")
+                                             (efrit-repl-session--block-get b "name")))
+                                      (append content nil)))))
+         (unless (string-empty-p text)
+           (efrit-agent--add-claude-message text)
+           (efrit-agent--stream-end-message))
+         (when tools
+           (efrit-agent--append-to-conversation
+            (concat "  ⚙ " (mapconcat #'identity (delete-dups tools) ", ") "\n")
+            '(face shadow)))))))))
 
 (defun efrit-resume-session (session-id)
   "Resume session with SESSION-ID.
-Loads the session from disk and restores it into the agent buffer."
+Loads the session from disk and restores it into the agent buffer.
+Interactively, reads the id with completion (`efrit-resume-read-session-id')."
+  (interactive (list (efrit-resume-read-session-id)))
   (require 'efrit-session-persist)
   (let* ((session (efrit-session-persist-load session-id))
          (worktree (and session (fboundp 'efrit-repl-session-meta-get)
@@ -684,16 +740,23 @@ Loads the session from disk and restores it into the agent buffer."
           ;; Restore the REPL session
           (setq efrit-agent--repl-session session)
           (setf (efrit-repl-session-buffer session) buffer)
+          ;; A buffer that was never shown has no regions yet; the
+          ;; user-line renderer draws nothing without them and the
+          ;; first Claude line then set them up by erasing the buffer
+          (unless (and efrit-agent--conversation-end
+                       (marker-position efrit-agent--conversation-end))
+            (efrit-agent--init-regions)
+            (efrit-agent--setup-regions))
           ;; Clear existing conversation display
           (efrit-agent--clear-conversation)
-          ;; Restore conversation to display
-          (dolist (entry (reverse (efrit-repl-session-conversation session)))
-            (let ((role (plist-get entry :role))
-                  (content (plist-get entry :content)))
-              (pcase role
-                ('user (efrit-agent--add-user-message content))
-                ('assistant (efrit-agent--add-claude-message content))
-                (_ nil))))
+          ;; Restore conversation to display.  The conversation is
+          ;; kept oldest first (add-* append); the old `reverse' here
+          ;; drew it backwards, which went unnoticed while the
+          ;; first block entry crashed the loop.
+          (dolist (entry (efrit-repl-session-conversation session))
+            (efrit-resume--render-entry (plist-get entry :role)
+                                        (plist-get entry :content)))
+          (efrit-agent--stream-end-message)
           ;; Set status to idle (ready for more input)
           (setq efrit-agent--status 'idle)
           (when (fboundp 'efrit-agent-set-status)
@@ -994,7 +1057,7 @@ Input (when in input region):
   S-<arrows>     Extend the selection (shift-select works in the input)
   C-c C-c        Send input
   C-c C-s        Send input
-  C-c C-k        Clear input
+  C-c C-u        Kill the input (C-y brings it back); C-c C-k cancels the turn
   M-p            Previous input history
   M-n            Next input history (or restore what you were typing)
   TAB            Context-aware completion

@@ -76,6 +76,8 @@
 (declare-function efrit-scope-insert-prompt "efrit-scope" (prompt))
 (declare-function efrit-permissions "efrit-permissions-ui")
 (declare-function efrit-resume "efrit-agent")
+(declare-function efrit-resume-session "efrit-agent" (session-id))
+(declare-function efrit-resume-match-session-id "efrit-agent" (input))
 (declare-function efrit-doctor "efrit-doctor")
 (defvar efrit-agent--input-start)
 
@@ -448,7 +450,12 @@ typo should not cost a turn."
   (efrit-agent-define-slash-command "keys" "The agent buffer's keys" (lambda (_) (efrit-agent-help)))
   (efrit-agent-define-slash-command "new" "Fresh conversation in this buffer" (lambda (_) (efrit-agent-new-conversation)))
   (efrit-agent-define-slash-command "restart" "Fresh session, same windows" (lambda (_) (efrit-agent-restart)))
-  (efrit-agent-define-slash-command "resume" "Pick a saved session" (lambda (_) (efrit-resume)))
+  (efrit-agent-define-slash-command "resume" "Resume a saved session (/resume ID, or choose)"
+                                    (lambda (arg)
+                                      (if (and arg (not (string-empty-p (string-trim arg))))
+                                          (efrit-resume-session
+                                           (efrit-resume-match-session-id (string-trim arg)))
+                                        (efrit-resume))))
   (efrit-agent-define-slash-command "cancel" "Cancel the running turn" (lambda (_) (efrit-agent-cancel)))
   (efrit-agent-define-slash-command "queue" "Show or drop queued inputs" (lambda (_) (efrit-agent-queue-show)))
   (efrit-agent-define-slash-command "copy" "Copy the last answer" (lambda (_) (efrit-agent-copy-last-output)))

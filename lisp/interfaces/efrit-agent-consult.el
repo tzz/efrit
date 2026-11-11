@@ -105,7 +105,8 @@
                 (efrit-agent-consult-peers)))))
 
 (defun efrit-agent-consult--last-ask (session)
-  (let ((conv (efrit-repl-session-conversation session)))
+  ;; the conversation is oldest first: the last ask is the last user entry
+  (let ((conv (reverse (efrit-repl-session-conversation session))))
     (when-let* ((user (seq-find (lambda (e) (eq (plist-get e :role) 'user)) conv)))
       (truncate-string-to-width (replace-regexp-in-string "[\n\r]+" " " (or (plist-get user :content) ""))
                                 80 nil nil "…"))))
@@ -136,8 +137,10 @@
 ;;;; Asking
 
 (defun efrit-agent-consult--transcript (session)
-  "SESSION's conversation as text, newest `efrit-agent-consult-max-chars' kept."
-  (let* ((entries (reverse (efrit-repl-session-conversation session)))
+  "SESSION's conversation as text, newest `efrit-agent-consult-max-chars' kept.
+The conversation is oldest first already; the `reverse' that was here
+sent live sessions to the peer model backwards (2026-11-11)."
+  (let* ((entries (efrit-repl-session-conversation session))
          (text (mapconcat (lambda (e)
                             (format "%s: %s" (upcase (symbol-name (plist-get e :role)))
                                     (or (plist-get e :content) "")))

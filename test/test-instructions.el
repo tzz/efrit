@@ -162,5 +162,92 @@ scoped so nothing outside `top' is read."
       (should (string-match-p "PROJECT-SPECIFIC INSTRUCTIONS" prompt))
       (should (string-match-p "USE-TABS-NEVER" prompt)))))
 
+;;; Remote roots: one walk per TTL
+
+(defvar test-instr--remote-ops nil
+  "File operations the fake remote handler answered, newest first.")
+
+(defun test-instr--remote-handler (op &rest args)
+  "A file-name handler for /instr-test: paths: a tiny host with one CLAUDE.md.
+Every call is recorded; the host has /home/u/proj/ as the project and
+/home/u/CLAUDE.md above it."
+  (push op test-instr--remote-ops)
+  (let ((path (car args))
+        (inhibit-file-name-handlers (cons 'test-instr--remote-handler inhibit-file-name-handlers))
+        (inhibit-file-name-operation op))
+    (pcase op
+      ('file-remote-p (if (memq (nth 1 args) '(nil host)) "/instr-test:" nil))
+      ('expand-file-name
+       (let ((dir (nth 1 args)))
+         (cond ((string-prefix-p "/instr-test:" path) path)
+               ((and dir (string-prefix-p "/instr-test:" dir))
+                (concat "/instr-test:" (expand-file-name path (substring dir (length "/instr-test:")))))
+               (t (concat "/instr-test:" (expand-file-name path "/"))))))
+      ('file-readable-p (equal path "/instr-test:/home/u/CLAUDE.md"))
+      ('file-directory-p (and (member path '("/instr-test:/" "/instr-test:/home/" "/instr-test:/home/u/"
+                                             "/instr-test:/home/u/proj/"))
+                              t))
+      ('file-attributes (and (equal path "/instr-test:/home/u/CLAUDE.md")
+                             (list nil 1 0 0 '(0 0) '(0 0) '(0 0) 20 "-rw-r--r--" t 1 0)))
+      ('insert-file-contents (insert "REMOTE-ANCESTOR-RULES\n") (list path 22))
+      ('file-truename path)
+      ('abbreviate-file-name path)
+      (_ (apply op args)))))
+
+(defmacro test-instr--with-remote (&rest body)
+  "Run BODY with the fake remote host mounted and `root' its project directory."
+  (declare (indent 0))
+  `(let* ((file-name-handler-alist (cons '("\\`/instr-test:" . test-instr--remote-handler)
+                                         file-name-handler-alist))
+          (root "/instr-test:/home/u/proj/")
+          (efrit-instructions-user-files nil)
+          (efrit-instructions-ancestors t)
+          (efrit-instructions-remote-cache-seconds 300)
+          (efrit-instructions--remote-cache nil)
+          (test-instr--remote-ops nil))
+     ,@body))
+
+(defun test-instr--remote-reads ()
+  "How many file-system questions the fake host answered so far."
+  (cl-count-if (lambda (op) (memq op '(file-readable-p file-directory-p file-attributes
+                                                      insert-file-contents)))
+               test-instr--remote-ops))
+
+(ert-deftest test-instr-remote-root-is-walked-once-per-ttl ()
+  "On a remote root the second locate and text within the TTL touch the host
+zero times; forgetting or expiry walks again."
+  (test-instr--with-remote
+    (let ((located (efrit-instructions-locate root)))
+      (should (equal (mapcar #'cdr located) '(ancestor)))
+      (should (equal (caar located) "/instr-test:/home/u/CLAUDE.md")))
+    (let ((after-locate (test-instr--remote-reads)))
+      (should (> after-locate 0))
+      (efrit-instructions-locate root)
+      (should (= after-locate (test-instr--remote-reads)))
+      ;; the first text reads the file once, the second not at all
+      (should (string-match-p "REMOTE-ANCESTOR-RULES" (efrit-instructions-text root)))
+      (let ((after-text (test-instr--remote-reads)))
+        (should (> after-text after-locate))
+        (should (string-match-p "REMOTE-ANCESTOR-RULES" (efrit-instructions-text root)))
+        (should (= after-text (test-instr--remote-reads)))
+        ;; expiry
+        (setf (nth 1 (car efrit-instructions--remote-cache)) (time-subtract (current-time) 400))
+        (efrit-instructions-locate root)
+        (should (> (test-instr--remote-reads) after-text)))
+      ;; forget
+      (let ((before (test-instr--remote-reads)))
+        (efrit-instructions-forget)
+        (efrit-instructions-text root)
+        (should (> (test-instr--remote-reads) before))))))
+
+(ert-deftest test-instr-local-root-is-not-cached ()
+  "A local root follows edits at once: no TTL entry is made for it."
+  (test-instr--with-tree
+    (test-instr--write (expand-file-name "CLAUDE.md" proj) "first")
+    (should (string-match-p "first" (efrit-instructions-text proj)))
+    (should (null efrit-instructions--remote-cache))
+    (test-instr--write (expand-file-name "CLAUDE.md" proj) "second")
+    (should (string-match-p "second" (efrit-instructions-text proj)))))
+
 (provide 'test-instructions)
 ;;; test-instructions.el ends here

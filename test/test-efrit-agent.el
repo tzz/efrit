@@ -664,6 +664,117 @@ session it sets the interrupt flag for the loop."
           (dolist (fn (cdr (assq 'turn-complete efrit-events--subscribers)))
             (unless (symbolp fn) (efrit-unsubscribe 'turn-complete fn))))))))
 
+(ert-deftest test-efrit-agent-cancel-ends-a-turn-with-nothing-in-flight ()
+  "A working session whose loop sent a request (iteration 1) but has no
+stream in flight and no tool running has nothing left to read a cancel
+flag: cancel ends the turn at once.  With a stream in flight, or inside
+a tool, cancel only sets the flag.  2026-11-10: a C-g inside the
+reviewer's preparation killed the callback and the buffer showed
+`reviewing...' for good; C-c C-k then said nothing."
+  (with-efrit-agent-test-buffer
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions)
+    (let* ((session (efrit-agent-repl-session))
+           (id (efrit-repl-session-id session))
+           (ended nil)
+           (listener (lambda (e) (push (alist-get :stop-reason e) ended))))
+      (cl-letf (((symbol-function 'efrit-api-stream-cancel) #'ignore)
+                ((symbol-function 'efrit-session-active) (lambda () nil))
+                ((symbol-function 'efrit-agent--refresh-status-line) #'ignore))
+        (efrit-subscribe 'turn-complete listener)
+        (unwind-protect
+            (progn
+              ;; nothing in flight: the turn ends
+              (puthash id (list session nil 1) efrit-repl-loop--active)
+              (efrit-repl-session-set-status session 'working)
+              (setq efrit-agent--status 'working)
+              (efrit-agent-cancel)
+              (should (equal '("interrupted") ended))
+              (should (eq 'idle (efrit-repl-session-status session)))
+              (should-not (efrit-repl-loop-active-p session))
+              ;; a stream of this session in flight: only the flag
+              (puthash id (list session nil 1) efrit-repl-loop--active)
+              (efrit-repl-session-set-status session 'working)
+              (setq efrit-agent--status 'working)
+              (cl-letf (((symbol-function 'efrit-api-stream-active-p)
+                         (lambda (sid) (equal sid id))))
+                (efrit-agent-cancel))
+              (should (efrit-repl-session-interrupt-requested session))
+              (should (eq 'working (efrit-repl-session-status session)))
+              (should (= 1 (length ended)))
+              ;; inside a tool of this session: only the flag
+              (setf (efrit-repl-session-interrupt-requested session) nil)
+              (let ((efrit-repl-loop--tool-session session))
+                (efrit-agent-cancel))
+              (should (efrit-repl-session-interrupt-requested session))
+              (should (eq 'working (efrit-repl-session-status session)))
+              (should (= 1 (length ended))))
+          (remhash id efrit-repl-loop--active)
+          (efrit-repl-session-set-status session 'idle)
+          (efrit-unsubscribe 'turn-complete listener))))))
+
+(ert-deftest test-efrit-agent-resume-renders-block-entries-and-matches-ids ()
+  "A saved session whose assistant entries are content blocks (text and
+tool_use) resumes: the text shows, the tools show as one dim line, the
+order is oldest first.  2026-11-11 the first such entry crashed the
+restore (`stringp') and the id could not be typed at the chooser.
+`efrit-resume-match-session-id' takes a label, a full id or a unique
+part of one, and refuses an ambiguous part."
+  (require 'efrit-session-persist)
+  (let* ((efrit-session-persist-dir (make-temp-file "efrit-resume-" t))
+         (efrit-agent-instances-mode nil)
+         (efrit-agent-auto-show nil)
+         (session (efrit-repl-session-create default-directory))
+         (id (efrit-repl-session-id session))
+         (block (lambda (type &rest kv)
+                  (let ((h (make-hash-table :test 'equal)))
+                    (puthash "type" type h)
+                    (while kv (puthash (pop kv) (pop kv) h))
+                    h))))
+    (unwind-protect
+        (progn
+          (efrit-repl-session-add-user-message session "analyze the articles")
+          (efrit-repl-session-add-assistant-message
+           session (vector (funcall block "text" "text" "The articles are bare links.")
+                           (funcall block "tool_use" "id" "t1" "name" "fetch_url" "input" (make-hash-table))
+                           (funcall block "tool_use" "id" "t2" "name" "fetch_url" "input" (make-hash-table))))
+          (efrit-repl-session-add-assistant-message session "Here is the list:\n1. mdired")
+          (should (efrit-session-persist-save session))
+          ;; matching
+          (should (equal id (efrit-resume-match-session-id id)))
+          (should (equal id (efrit-resume-match-session-id (substring id -6))))
+          (should (equal id (efrit-resume-match-session-id (car (car (efrit-resume-candidates))))))
+          (should-error (efrit-resume-match-session-id "no-such-session") :type 'user-error)
+          (let ((twin (efrit-repl-session-create default-directory)))
+            (efrit-repl-session-add-user-message twin "other")
+            (efrit-session-persist-save twin)
+            (should-error (efrit-resume-match-session-id "repl-") :type 'user-error))
+          ;; the candidate label carries the id and the first words
+          (let ((label (car (rassoc id (efrit-resume-candidates)))))
+            (should (string-prefix-p id label))
+            (should (string-match-p "analyze the articles" label)))
+          ;; restore
+          (cl-letf (((symbol-function 'efrit-agent-display) #'ignore))
+            (efrit-resume-session id))
+          (with-current-buffer (efrit-agent--get-buffer)
+            (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+              (should (string-match-p "analyze the articles" text))
+              (should (string-match-p "The articles are bare links\\." text))
+              (should (string-match-p "⚙ fetch_url" text))
+              (should (string-match-p "1\\. mdired" text))
+              (should (< (string-match "analyze the articles" text)
+                         (string-match "bare links" text)
+                         (string-match "mdired" text))))
+            (should (eq 'idle efrit-agent--status))
+            (should (equal id (efrit-repl-session-id efrit-agent--repl-session)))))
+      ;; the restored session must not leak into the next test's default buffer
+      (when-let* ((buf (get-buffer efrit-agent-buffer-name)))
+        (with-current-buffer buf
+          (setq efrit-agent--repl-session nil)
+          (remove-hook 'kill-buffer-query-functions #'efrit-agent--kill-buffer-query t))
+        (kill-buffer buf))
+      (ignore-errors (delete-directory efrit-session-persist-dir t)))))
+
 (ert-deftest test-efrit-agent-cancel-offers-the-queue ()
   "A turn that ends as interrupted with inputs queued asks whether to
 send them: yes sends (merged), no keeps them for `efrit-agent-queue-resume'.
@@ -1622,6 +1733,24 @@ through to the next map (the major mode's RET, self-insert for digits)."
     (efrit-agent-input-mode -1)
     (goto-char (point-min))
     (should (eq (key-binding (kbd "RET")) #'efrit-agent-toggle-expand))))
+
+(ert-deftest test-efrit-agent-cancel-key-is-not-shadowed-in-the-input ()
+  "C-c C-k cancels the turn wherever point is.  The input map used to
+bind it to a clear of the input, which shadowed cancel where point
+always is and threw the draft away (2026-11-11).  C-c C-u kills the
+input to the kill ring, and the clear command is a kill too."
+  (with-efrit-agent-test-buffer
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions)
+    (goto-char (point-max))
+    (efrit-agent-input-mode 1)
+    (should (eq (key-binding (kbd "C-c C-k")) #'efrit-agent-cancel))
+    (should (eq (key-binding (kbd "C-c C-u")) #'efrit-agent-input-kill))
+    (let ((kill-ring nil))
+      (insert "a long draft")
+      (efrit-agent-input-clear)
+      (should (equal "" (efrit-agent--get-input)))
+      (should (equal "a long draft" (car kill-ring))))))
 
 (ert-deftest test-efrit-agent-regenerate-rewinds-before-the-human-message-not-a-tool-result ()
   "The rewind mark is the last HUMAN message; tool_result user messages

@@ -159,14 +159,20 @@
          (conversation-data (cdr (assoc "conversation" data)))
          (api-messages-data (cdr (assoc "api_messages" data)))
          
-         ;; Build conversation history
+         ;; Build conversation history.  The file holds it newest
+         ;; first (the serializer reverses); a live session keeps it
+         ;; oldest first (`efrit-repl-session-add-user-message'
+         ;; appends).  Give the loaded session the live order, so
+         ;; every reader sees one order (2026-11-11: resume drew a
+         ;; restored conversation backwards).
          (conversation
-          (mapcar (lambda (entry)
-                    (list
-                     :role (intern (cdr (assoc "role" entry)))
-                     :content (cdr (assoc "content" entry))
-                     :timestamp (parse-time-string (cdr (assoc "timestamp" entry)))))
-                  conversation-data))
+          (nreverse
+           (mapcar (lambda (entry)
+                     (list
+                      :role (intern (cdr (assoc "role" entry)))
+                      :content (cdr (assoc "content" entry))
+                      :timestamp (parse-time-string (cdr (assoc "timestamp" entry)))))
+                   conversation-data)))
          
          ;; Build API messages, in the shape the session keeps them:
          ;; symbol keys, content blocks as vectors (json-read gave lists)

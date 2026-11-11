@@ -288,7 +288,8 @@ I'll help you refactor the login function.
 | `RET` | Send message (or newline if shift) |
 | `S-RET` | Insert newline |
 | `C-c C-c` | Send message |
-| `C-c C-k` | Cancel/clear input |
+| `C-c C-u` | Kill the input (to the kill ring) |
+| `C-c C-k` | Cancel the running turn |
 | `M-p` | Previous input history |
 | `M-n` | Next input history |
 | `C-c C-x` | Cancel session |

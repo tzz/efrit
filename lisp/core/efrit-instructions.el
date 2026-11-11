@@ -46,6 +46,11 @@
 ;;
 ;; Remote projects: the ancestor walk and project files are read on
 ;; the project's host; user files are read on the local machine.
+;; Each remote directory is listed once, and the located files and the
+;; assembled text are kept for `efrit-instructions-remote-cache-seconds'.
+;; The callers (system prompt, reviewer, sandbox) run inside process
+;; sentinels, where a TRAMP round trip per ancestor per call froze
+;; Emacs (2026-11-10).  `efrit-instructions-forget' drops the cache.
 ;;
 ;; These reads are efrit acting for the user, not a tool acting for
 ;; the model, so they do not pass through the sandbox -- the same
@@ -107,6 +112,37 @@ checkouts reaches every one of them."
   :type 'integer
   :group 'efrit-instructions)
 
+(defcustom efrit-instructions-remote-cache-seconds 300
+  "Seconds the located files and text of a remote project root are reused.
+Local roots are not cached: a stat per candidate file is cheap and an
+edit shows at once.  On a remote root every candidate is a TRAMP round
+trip, and the callers run inside process sentinels."
+  :type 'number
+  :group 'efrit-instructions)
+
+(defvar efrit-instructions--remote-cache nil
+  "Alist ROOT -> (TIME LOCATED TEXT-CELL) for remote roots.
+TEXT-CELL is nil until `efrit-instructions-text' ran, then (TEXT).")
+
+(defun efrit-instructions-forget ()
+  "Drop the remote cache: the next call reads the files again."
+  (interactive)
+  (setq efrit-instructions--remote-cache nil))
+
+(defun efrit-instructions--remote-entry (root)
+  "The live cache entry for remote ROOT, or nil when absent or stale."
+  (let ((entry (assoc root efrit-instructions--remote-cache)))
+    (and entry
+         (< (float-time (time-since (nth 1 entry))) efrit-instructions-remote-cache-seconds)
+         entry)))
+
+(defun efrit-instructions--remote-remember (root located)
+  "Record LOCATED for remote ROOT; returns the new entry."
+  (setq efrit-instructions--remote-cache
+        (cons (list root (current-time) located nil)
+              (assoc-delete-all root efrit-instructions--remote-cache)))
+  (car efrit-instructions--remote-cache))
+
 (defconst efrit-instructions--import-regexp
   "^@\\([^[:space:]@][^[:space:]]*\\)[[:space:]]*$"
   "A line that is only @PATH imports PATH.  Email-like @word inside prose does not match.")
@@ -135,9 +171,18 @@ checkouts reaches every one of them."
 (defun efrit-instructions-locate (&optional root)
   "The instruction files that apply to ROOT (default the project root), in reading order.
 Each element is (PATH . LAYER), LAYER one of `user', `ancestor',
-`project', `local'.  Nothing is read."
-  (let* ((root (file-name-as-directory (or root (efrit-tool--get-project-root))))
-         (found nil))
+`project', `local'.  Nothing is read.  A remote ROOT's list is reused
+for `efrit-instructions-remote-cache-seconds'."
+  (let ((root (file-name-as-directory (or root (efrit-tool--get-project-root)))))
+    (if (not (file-remote-p root))
+        (efrit-instructions--locate-1 root)
+      (nth 2 (or (efrit-instructions--remote-entry root)
+                 (efrit-instructions--remote-remember
+                  root (efrit-instructions--locate-1 root)))))))
+
+(defun efrit-instructions--locate-1 (root)
+  "`efrit-instructions-locate' for directory ROOT, uncached."
+  (let ((found nil))
     (dolist (f efrit-instructions-user-files)
       (let ((path (expand-file-name f)))
         (when (and (file-readable-p path) (not (file-directory-p path)))
@@ -237,15 +282,23 @@ Earlier sections are cut first, each to a stub that names what was dropped."
   "The assembled instructions block for ROOT, or nil when no file applies.
 Sections are ordered least to most specific; the preamble tells the
 model that later sections take precedence."
-  (let* ((located (efrit-instructions-locate root))
-         (sections (delq nil (mapcar (lambda (e) (efrit-instructions--section (car e) (cdr e)))
-                                     located))))
-    (when sections
-      (concat
-       "PROJECT-SPECIFIC INSTRUCTIONS\n"
-       "These come from the user's instruction files, listed from most general to most\n"
-       "specific.  Where they conflict, the later (more specific) file wins.  Follow them.\n\n"
-       (string-join (efrit-instructions--fit sections) "\n")))))
+  (let* ((root (file-name-as-directory (or root (efrit-tool--get-project-root))))
+         (entry (and (file-remote-p root)
+                     (progn (efrit-instructions-locate root)
+                            (efrit-instructions--remote-entry root)))))
+    (if (and entry (nth 3 entry))
+        (car (nth 3 entry))
+      (let* ((located (efrit-instructions-locate root))
+             (sections (delq nil (mapcar (lambda (e) (efrit-instructions--section (car e) (cdr e)))
+                                         located)))
+             (text (when sections
+                     (concat
+                      "PROJECT-SPECIFIC INSTRUCTIONS\n"
+                      "These come from the user's instruction files, listed from most general to most\n"
+                      "specific.  Where they conflict, the later (more specific) file wins.  Follow them.\n\n"
+                      (string-join (efrit-instructions--fit sections) "\n")))))
+        (when entry (setf (nth 3 entry) (list text)))
+        text))))
 
 (defun efrit-instructions-for-prompt (&optional root)
   "The instructions block wrapped for the system prompt, or an empty string."
