@@ -83,7 +83,10 @@ nil: never ask, keep retrying with the last backoff."
     "HTTP error: (error http 5[0-9][0-9])" "\"type\": *\"overloaded_error\""
     "\\b5[0-9][0-9]\\b.*\\(?:Bad Gateway\\|Service Unavailable\\|Gateway Time-out\\|Internal Server Error\\)"
     "Bad Gateway" "Service Unavailable" "Gateway Time-?out" "\\b429\\b" "\\b529\\b"
-    "rate_limit_error" "api_error")
+    "rate_limit_error" "api_error"
+    ;; a gateway dropped the upstream stream before the final event
+    "provider_connection_failed" "closed the stream" "ended mid-stream"
+    "connection ended" "stream ended")
   "Error texts that mean the request never got a real answer and may be repeated.")
 
 (defconst efrit-reconnect--permanent-regexps

@@ -22,6 +22,9 @@
   (should (efrit-reconnect-transient-p "HTTP error: (error http 502)"))
   (should (efrit-reconnect-transient-p "{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}"))
   (should (efrit-reconnect-transient-p "Could not resolve host"))
+  ;; 2026-11-11: a gateway closed the stream mid-answer; the turn ended
+  ;; as a hard failure and the user had to resend by hand
+  (should (efrit-reconnect-transient-p "API Error (provider_connection_failed): provider closed the stream before sending a completion marker (upstream connection ended mid-stream)"))
   (should-not (efrit-reconnect-transient-p "API Error: {\"type\":\"invalid_request_error\",\"message\":\"Output blocked by content filtering policy\"} 400"))
   (should-not (efrit-reconnect-transient-p "HTTP error: (error http 401)"))
   (should-not (efrit-reconnect-transient-p "interrupted"))
