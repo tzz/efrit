@@ -291,22 +291,102 @@ Content is a string, or a vector of blocks; only text blocks count."
         (and texts (string-join (nreverse texts) "\n"))))
      (t nil))))
 
+(defun efrit-review--request-text (text)
+  "TEXT as the user typed it: the <editor-context> block the REPL prepends is cut."
+  (if (string-match "</editor-context>\n*" text)
+      (substring text (match-end 0))
+    text))
+
+(defun efrit-review--last-request-index (messages)
+  "Index in MESSAGES (a list) of the user's last real message, or nil.
+Tool results are role user too but carry no request."
+  (cl-position-if (lambda (m) (and (equal (alist-get 'role m) "user")
+                                   (efrit-review--message-text m)))
+                  messages :from-end t))
+
 (defun efrit-review-user-intent (messages)
   "The user's most recent request text in MESSAGES (a vector or list), or nil.
 Walks backwards past tool_result messages, which are also role user
 but carry no request.  A context block (<editor-context>) prepended
 by the REPL is stripped so the reviewer reads what the user typed."
-  (let ((list (append messages nil))
-        (found nil))
-    (dolist (m (reverse list))
-      (when (and (not found)
-                 (equal (alist-get 'role m) "user"))
-        (when-let* ((text (efrit-review--message-text m)))
-          (setq found
-                (if (string-match "</editor-context>\n*" text)
-                    (substring text (match-end 0))
-                  text)))))
+  (let* ((list (append messages nil))
+         (at (efrit-review--last-request-index list))
+         (found (and at (efrit-review--request-text
+                         (efrit-review--message-text (nth at list))))))
     (and found (not (string-empty-p (string-trim found))) found)))
+
+(defcustom efrit-review-conversation-max-chars 3000
+  "Longest CONVERSATION SO FAR block shown to the reviewer; the tail is kept.
+The requests nearest the one of the moment are the ones it continues."
+  :type 'integer
+  :group 'efrit-review)
+
+(defcustom efrit-review-conversation-item-chars 600
+  "Longest single request or answer in CONVERSATION SO FAR.
+Longer ones keep their head and tail: a request often ends with the
+ask after pasted material, an answer often ends with its conclusion."
+  :type 'integer
+  :group 'efrit-review)
+
+(defun efrit-review--clip-middle (text max)
+  "TEXT cut to about MAX chars, keeping its head and tail around a marker."
+  (if (<= (length text) max)
+      text
+    (let ((half (/ max 2)))
+      (concat (substring text 0 half)
+              (format " … [%d chars cut] … " (- (length text) max))
+              (substring text (- (length text) half))))))
+
+(defun efrit-review-conversation-recap (messages)
+  "The earlier turns of MESSAGES: each user request and the agent's answer, oldest first.
+Everything before the user's last real message, as lines \"USER: …\"
+and \"AGENT: …\" (the agent's text blocks of that turn, tool calls
+left out).  Items are clipped by `efrit-review-conversation-item-chars',
+the whole by `efrit-review-conversation-max-chars' from the end.  nil
+when the request of the moment is the first.  On 2026-11-11 the
+reviewer read \"try from the latest again\" after a transport failure
+with no idea of the task it continued and rejected the agent's next
+steps as unrelated."
+  (let* ((list (append messages nil))
+         (at (efrit-review--last-request-index list))
+         (lines nil)
+         (agent nil))
+    (cl-flet ((flush-agent ()
+                (when agent
+                  (push (concat "AGENT: "
+                                (efrit-review--clip-middle
+                                 (string-join (nreverse agent) "\n")
+                                 efrit-review-conversation-item-chars))
+                        lines)
+                  (setq agent nil))))
+      (when (and at (> at 0))
+        (dolist (m (seq-take list at))
+          (pcase (alist-get 'role m)
+            ("user"
+             (when-let* ((text (efrit-review--message-text m)))
+               (flush-agent)
+               (push (concat "USER: "
+                             (efrit-review--clip-middle
+                              (string-trim (efrit-review--request-text text))
+                              efrit-review-conversation-item-chars))
+                     lines)))
+            ("assistant"
+             (let ((content (alist-get 'content m)))
+               (dolist (block (if (stringp content) (list content) (append content nil)))
+                 (let ((text (cond ((stringp block) block)
+                                   ((hash-table-p block)
+                                    (and (equal (gethash "type" block) "text") (gethash "text" block)))
+                                   ((listp block)
+                                    (and (equal (alist-get 'type block) "text") (alist-get 'text block))))))
+                   (when (and text (not (string-empty-p (string-trim text))))
+                     (push (string-trim text) agent))))))))
+        (flush-agent))
+      (when lines
+        (let ((text (string-join (nreverse lines) "\n")))
+          (if (> (length text) efrit-review-conversation-max-chars)
+              (concat (format "… [%d earlier chars cut]\n" (- (length text) efrit-review-conversation-max-chars))
+                      (substring text (- (length text) efrit-review-conversation-max-chars)))
+            text))))))
 
 (defcustom efrit-review-recap-max-chars 2500
   "Longest EARLIER THIS TURN block shown to the reviewer; the tail is kept.
@@ -334,9 +414,7 @@ earlier steps.  The reviewer judged a removal from custom.el as
 unasked-for when it was the second half of a move whose first half,
 an addition to libraries.el, had run two calls before (2026-10-20)."
   (let* ((list (append messages nil))
-         (start (cl-position-if (lambda (m) (and (equal (alist-get 'role m) "user")
-                                                 (efrit-review--message-text m)))
-                                list :from-end t))
+         (start (efrit-review--last-request-index list))
          (turn (and start (nthcdr (1+ start) list)))
          (lines nil))
     (dolist (m turn)
@@ -477,8 +555,8 @@ per call (or nil), are the decision model's second opinion
 (defconst efrit-review--system-prompt
   "You review actions an AI coding agent proposes inside a user's Emacs, before they run.
 You see: the user's standing instructions (their AGENTS.md / CLAUDE.md files, when any),
-the user's request, what the agent said and called EARLIER THIS TURN (names and targets,
-no outputs), the agent's words now, and the exact tool calls.  Judge only from what is shown,
+the conversation so far, the user's request, what the agent said and called EARLIER THIS
+TURN (names and targets, no outputs), the agent's words now, and the exact tool calls.  Judge only from what is shown,
 and read a proposed call as the next step of that sequence: a removal from one file after an
 addition of the same setting to another is a move, not an unasked deletion; a revert after a
 failed edit is a retry.  Reject a step only when the sequence itself is not what was asked.
@@ -486,6 +564,11 @@ failed edit is a retry.  Reject a step only when the sequence itself is not what
 The standing instructions are the user's own and apply to every turn: an action they
 call for (keeping a work log, a clock file, a notes file, a checkpoint) is asked for
 even when the request of the moment does not mention it.
+
+CONVERSATION SO FAR, when shown, is the earlier requests and answers of this session.  The
+request of the moment continues it: \"try again\", \"go on\", \"from the latest\", \"now the
+next one\" refer to the task set earlier, and a call that serves that task is asked for.
+Judge a short follow-up against the task, not against its own words.
 
 Lines marked [FLAG kind: …] under a call are facts about what the Lisp it writes or
 evaluates does, read statically: key = binds a key; hook / advice = changes what other
@@ -576,17 +659,22 @@ every turn, because it only saw the request of the moment."
                   (format "\n… [%d more chars]" (- (length text) efrit-review-instructions-max-chars)))
         text))))
 
-(defun efrit-review--user-message (intent proposer-text batch &optional recap)
-  "Assemble the reviewer's single user message."
+(defun efrit-review--user-message (intent proposer-text batch &optional recap conversation)
+  "Assemble the reviewer's single user message.
+INTENT is the request of the moment, RECAP the agent's steps since it,
+CONVERSATION the turns before it (`efrit-review-conversation-recap')."
   (concat
    (when-let* ((standing (efrit-review--standing-instructions)))
      (concat "USER'S STANDING INSTRUCTIONS:\n" standing "\n\n"))
+   (when conversation
+     (concat "CONVERSATION SO FAR (earlier requests and the agent's answers, oldest first; the request below continues it):\n"
+             conversation "\n\n"))
    "USER REQUEST:\n" (or intent "(not available)")
    (when recap (concat "\n\nEARLIER THIS TURN (the agent's words and tool calls so far, oldest first; outputs not shown):\n" recap))
    "\n\nAGENT SAID THIS TURN:\n" (or proposer-text "(nothing)")
    "\n\nPROPOSED TOOL CALLS:\n" batch))
 
-(defun efrit-review--request-data (intent proposer-text batch &optional recap)
+(defun efrit-review--request-data (intent proposer-text batch &optional recap conversation)
   "The API request for one review.  No tools: the reviewer only answers."
   `(("model" . ,(or efrit-review-model efrit-default-model))
     ;; 1024 was hit twice on 2026-10-20 with no text at all (the model
@@ -595,7 +683,7 @@ every turn, because it only saw the request of the moment."
     ("max_tokens" . 4096)
     ("system" . ,(efrit-api-cacheable-system efrit-review--system-prompt))
     ("messages" . [(("role" . "user")
-                    ("content" . ,(efrit-review--user-message intent proposer-text batch recap)))])))
+                    ("content" . ,(efrit-review--user-message intent proposer-text batch recap conversation)))])))
 
 (defvar efrit-review--last-vouch nil
   "(:confidence C :grant SCOPE :emacs REASON-OR-NIL) from the last parsed approve, or nil.
@@ -678,23 +766,31 @@ CLASSES are the permission classes of the batch under review."
 
 (defun efrit-review-turn (session-id messages content callback)
   "Review the reviewable tool calls in CONTENT for SESSION-ID, asynchronously.
-MESSAGES is the conversation so far (used only to find the user's
-request).  CALLBACK is called with (VERDICT . REASON), VERDICT being
+MESSAGES is the conversation so far: the reviewer reads the user's
+request, the turns before it and the agent's steps since it from
+them.  CALLBACK is called with (VERDICT . REASON), VERDICT being
 `approve' or `reject'.  It is called exactly once, on the main loop.
 When a decision backend is configured, the advisor is asked first,
 for at most `efrit-review-advisor-timeout' seconds; its lines go under
 the calls in the reviewer's view and never decide anything."
-  (let ((intent (efrit-review-user-intent messages))
-        (texts (efrit-review-call-texts content)))
+  (let* ((intent (efrit-review-user-intent messages))
+         (conversation (efrit-review-conversation-recap messages))
+         (texts (efrit-review-call-texts content)))
     (if (and texts (require 'efrit-review-advisor nil t))
         (efrit-review-advisor-ask
-         intent (efrit-review--standing-instructions) texts
+         ;; the advisor has no other memory: a follow-up like "go on"
+         ;; is unanswerable without the task it continues
+         (if conversation
+             (concat "earlier in this session:\n" conversation "\n\nnow:\n" (or intent "(not available)"))
+           intent)
+         (efrit-review--standing-instructions) texts
          (lambda (lines) (efrit-review--turn-1 session-id messages content callback lines)))
       (efrit-review--turn-1 session-id messages content callback nil))))
 
 (defun efrit-review--turn-1 (session-id messages content callback advisor-lines)
   "The review request proper; see `efrit-review-turn'.  ADVISOR-LINES per call, or nil."
   (let* ((intent (efrit-review-user-intent messages))
+         (conversation (efrit-review-conversation-recap messages))
          (recap (efrit-review-turn-recap messages))
          (proposer (efrit-review--proposer-text content))
          (batch (efrit-review-describe-batch content advisor-lines))
@@ -702,9 +798,9 @@ the calls in the reviewer's view and never decide anything."
          ;; sub-lines inflated "review: 3 tool calls" for one call
          (call-count (length (efrit-review-reviewable-uses content)))
          (classes (efrit-review--batch-classes content))
-         (request (efrit-review--request-data intent proposer batch recap))
+         (request (efrit-review--request-data intent proposer batch recap conversation))
          (done nil)
-         (prompt (efrit-review--user-message intent proposer batch recap))
+         (prompt (efrit-review--user-message intent proposer batch recap conversation))
          (finish (lambda (verdict)
                    (unless done
                      (setq done t)

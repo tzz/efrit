@@ -126,6 +126,59 @@ received in `test-review--requests'.  A string starting with
     (should (equal (efrit-review-user-intent (vconcat messages)) "rename foo to bar"))
     (should-not (efrit-review-user-intent nil))))
 
+(ert-deftest test-review-conversation-recap-carries-the-earlier-task ()
+  "A short follow-up (\"try from the latest again\" after a dropped
+stream, 2026-11-11) is judged against the task set in earlier turns:
+the reviewer's message carries those requests and answers, oldest
+first, clipped, before USER REQUEST; the turn's own steps are not
+in it; nil for a first request."
+  (let* ((tr (let ((h (make-hash-table :test 'equal)))
+               (puthash "type" "tool_result" h) (puthash "content" "ok" h) h))
+         (long-answer (concat "Checked this Emacs: " (make-string 2000 ?a) " the conclusion"))
+         (messages
+          (list '((role . "user") (content . "<editor-context>\nBuffer: x\n</editor-context>\n\nanalyze 10 articles from group INBOX"))
+                `((role . "assistant") (content . ,(vector (test-review--text long-answer)
+                                                           (test-review--tool-use "1" "fetch_url" '(("url" . "https://example.invalid/a"))))))
+                `((role . "user") (content . ,(vector tr)))
+                `((role . "assistant") (content . ,(vector (test-review--text "Editor: 1 Embark commit target, 4 mdired. Shell: 1 atuin keymap."))))
+                '((role . "user") (content . "do Editor 1-4; shell: check my atuin config"))
+                `((role . "assistant") (content . ,(vector (test-review--text "Reading the config.")
+                                                           (test-review--tool-use "2" "read_file" '(("path" . "~/x/libraries.el"))))))
+                `((role . "user") (content . ,(vector tr)))
+                '((role . "user") (content . "try from the latest again"))
+                `((role . "assistant") (content . ,(vector (test-review--text "Resuming.")
+                                                           (test-review--tool-use "3" "read_file" '(("path" . "~/x/git-link.el"))))))
+                `((role . "user") (content . ,(vector tr))))))
+    (should (equal (efrit-review-user-intent messages) "try from the latest again"))
+    (let ((conv (efrit-review-conversation-recap messages)))
+      (should (string-match-p "\\`USER: analyze 10 articles from group INBOX" conv))
+      (should-not (string-match-p "editor-context" conv))
+      (should (string-match-p "AGENT: Checked this Emacs" conv))
+      ;; a long answer keeps its head and tail
+      (should (string-match-p "chars cut\\] … a+ the conclusion" conv))
+      (should (string-match-p "USER: do Editor 1-4; shell: check my atuin config" conv))
+      (should (string-match-p "AGENT: Reading the config\\." conv))
+      ;; this turn's own words belong to EARLIER THIS TURN, not here
+      (should-not (string-match-p "Resuming" conv))
+      (should-not (string-match-p "try from the latest" conv))
+      (should-not (string-match-p "fetch_url\\|read_file" conv))
+      (should (< (string-match "analyze 10" conv) (string-match "do Editor" conv)))
+      ;; the whole is clipped from the front
+      (let ((efrit-review-conversation-max-chars 80))
+        (let ((short (efrit-review-conversation-recap messages)))
+          (should (string-match-p "\\`… \\[[0-9]+ earlier chars cut\\]" short))
+          (should (string-match-p "atuin config" short))))
+      ;; placement in the reviewer's message
+      (let ((msg (efrit-review--user-message "try from the latest again" "Resuming." "1. fetch_url {}"
+                                             (efrit-review-turn-recap messages) conv)))
+        (should (string-match-p "CONVERSATION SO FAR" msg))
+        (should (< (string-match "CONVERSATION SO FAR" msg)
+                   (string-match "USER REQUEST:\ntry from the latest again" msg)
+                   (string-match "EARLIER THIS TURN" msg)))))
+    ;; a first request has nothing before it
+    (should-not (efrit-review-conversation-recap (list '((role . "user") (content . "first ask")))))
+    (should-not (string-match-p "CONVERSATION SO FAR" (efrit-review--user-message "x" nil "y")))))
+
 (ert-deftest test-review-batch-excludes-reads-and-outputs ()
   (let* ((efrit-review-classes '(write exec))
          (content (vector (test-review--text "I'll edit it.")

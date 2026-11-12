@@ -41,7 +41,7 @@ The reviewer's advisor.
 - Tools that wait on their own request wait with `sit-for`: Emacs stayed responsive-looking frozen for an image generation; `C-c C-k` cancels such requests too
 - A generated image's line is a result, not work: it stays visible when the turn folds; the fold summary counts rows by id (two adjacent tool rows read as one)
 
-### Fixed (0.18.1 – 0.18.9)
+### Fixed (0.18.1 – 0.18.10)
 
 - The reviewer's call count and purpose count uses, not description lines
 - Folding a turn no longer resets a tool row's own folded/unfolded state (arrows and text disagreed)
@@ -55,6 +55,7 @@ The reviewer's advisor.
 - `web_search` asks the sandbox for the engine's host (`efrit-web-search-host`), which is a configured host: a search no longer prompts as "a host your request did not name"
 - A local buffer with no visited file (`*scratch*`, a temp or help buffer) needs no `buffer` grant: nothing the file sandbox protects is behind it.  The kinds in `efrit-sandbox-guarded-buffer-regexps` (the message log, shells, mail readers, eww) still ask, and the prompt says which kind instead of "visits a file outside the project"
 - A gateway that closes the stream before the final event (`provider_connection_failed`, "connection ended mid-stream") is a transport failure: efrit-reconnect retries the same request instead of ending the turn as a hard error
+- The reviewer reads the conversation so far (earlier requests and the agent's answers, clipped by `efrit-review-conversation-max-chars`), not only the request of the moment: "try from the latest again" is judged against the task it continues.  The advisor gets the same context
 - A remote project root is walked with one `directory-files` per ancestor instead of a stat per candidate instruction file: five names over nine ancestors was 45 TRAMP round trips before the first review could start
 
 ## [0.17.0] - 2026-11-10
