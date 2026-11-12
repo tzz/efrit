@@ -27,6 +27,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `efrit-do-async`: Use `efrit-do` (now the primary interface)
 - `efrit-api-url`: Use `efrit-api-base-url` in efrit-common.el instead. The legacy variable still works as an override but is deprecated.
 
+
+## [0.19.0] - 2026-11-11
+
+Fewer prompts, fewer reviews, one bug class closed (tzz: "super super
+slow and prompting a LOT ... prompt only for actually important or
+dangerous things").
+
+### Changed
+
+- Writes where Emacs keeps its own state are expected, not asked about: backups (`backup-directory-alist`), auto-saves, `package-user-dir` and the archives under it, `efrit-data-directory`, undo-fu-session, recentf, savehist, save-place, bookmarks, the Tramp cache, `url-configuration-directory`, transient history, the eln cache (`efrit-sandbox--housekeeping-directories`, on `efrit-sandbox-expected-write-roots`).  The home directory itself never qualifies.  One reload from an eval had asked seven times
+- The reviewer judges an edit to a file once per turn: after it approves an edit to F under a request, plain later edits to F under the same request run without a review call.  An edit that adds a FLAG (key, hook, advice, `:vc`, load, process), one the sandbox would ask about, an edit to another file, and every exec call are still reviewed.  The transcript says `not reviewed: covered by the review of F earlier this turn`.  Design: `docs/designs/review-per-file.md`
+- `cl-letf` over the function cell of an ordinary symbol is allowed in `eval_sexp`: the form is rewritten to `efrit-eval-with-function`, which restores the definition however the body ends.  efrit's own symbols stay refused, and so does a bare `fset`.  The model's test fixtures were refused twice on 2026-11-11 and the diagnosis cost a question to the user
+
+### Fixed
+
+- A package install reached at run time inside an eval (`use-package … :ensure` under a reload: two macro layers the static inspector cannot see) is refused when `package-install` is called, before anything downloads or `package-review` can prompt.  Before, `package-review`'s `read-multiple-choice` hit the input stub and use-package posted a `*Warnings*` error the user had to dismiss by hand
+- `load_project_file` compares truenames: a project reached through a symlink (`~/autodist` → a checkout elsewhere) refused its own files four times in one turn
+- The non-blocking chooser (`request_user_input` with options) waits for an open modal prompt to close instead of opening over it; the two shared one menu's state and the second died with `Wrong type argument: stringp, nil` (`efrit-choice-open`)
+- Tool rows chopped to a narrow side window are re-cut when the buffer is shown in a wider existing window (`window-buffer-change-functions`), not only on a frame resize
 ## [0.18.0] - 2026-11-10
 
 The reviewer's advisor.

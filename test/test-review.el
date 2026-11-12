@@ -115,6 +115,64 @@ received in `test-review--requests'.  A string starting with
 
 ;;; What the reviewer sees
 
+(ert-deftest test-review-approved-file-covers-later-plain-edits-this-turn ()
+  "After the reviewer approves an edit to F, further plain edits to F in
+the same turn are covered (no review call); an edit to another file,
+one that adds a FLAG (a key binding), one the sandbox would ask about,
+an exec call, or a batch after the turn ends is reviewed again.  The
+skip reason names the file.  2026-11-11: 13 reviews for 13 edits to
+two files under one request, every verdict approve."
+  (let* ((efrit-review-enabled t)
+         (efrit-review-classes '(write exec))
+         (efrit-review-auto-grant-threshold nil)
+         (efrit-review--covered (make-hash-table :test 'equal))
+         (sid "repl-test-cover")
+         (dir (file-name-as-directory (make-temp-file "efrit-rv-" t)))
+         (a (expand-file-name "a.el" dir))
+         (b (expand-file-name "b.el" dir))
+         (edit (lambda (file &optional new)
+                 (vector (test-review--tool-use "1" "edit_file"
+                                                `(("path" . ,file) ("old_str" . "x")
+                                                  ("new_str" . ,(or new "(setq y 1)"))))))))
+    (unwind-protect
+        (cl-letf (((symbol-function 'efrit-review-confidence-describe) (lambda (_use) nil)))
+          (efrit-review-forget-session sid)
+          ;; nothing approved yet: reviewed
+          (should (efrit-review-applies-p (funcall edit a) sid))
+          (should-not (efrit-review-skip-reason (funcall edit a) sid))
+          ;; the reviewer approved an edit to a.el
+          (efrit-review-remember-approved sid (funcall edit a))
+          ;; a plain second edit to a.el: covered, and the reason says so
+          (should-not (efrit-review-applies-p (funcall edit a) sid))
+          (should (equal "covered by the review of a.el earlier this turn"
+                         (efrit-review-skip-reason (funcall edit a) sid)))
+          ;; the same file through a symlink-free relative spelling is the same target
+          (should-not (efrit-review-applies-p (funcall edit (concat dir "./a.el")) sid))
+          ;; another file: reviewed
+          (should (efrit-review-applies-p (funcall edit b) sid))
+          ;; a.el again but with a key binding in the new text: a FLAG, reviewed
+          (should (efrit-review-applies-p
+                   (funcall edit a "(global-set-key (kbd \"C-c z\") #'ignore)") sid))
+          ;; a batch mixing a covered edit and an exec: reviewed
+          (should (efrit-review-applies-p
+                   (vector (test-review--tool-use "1" "edit_file" `(("path" . ,a) ("old_str" . "x") ("new_str" . "y")))
+                           (test-review--tool-use "2" "eval_sexp" '(("expr" . "(+ 1 2)"))))
+                   sid))
+          ;; an eval alone is never covered, approved or not
+          (efrit-review-remember-approved sid (vector (test-review--tool-use "1" "eval_sexp" '(("expr" . "(+ 1 2)")))))
+          (should (efrit-review-applies-p (vector (test-review--tool-use "1" "eval_sexp" '(("expr" . "(+ 1 2)")))) sid))
+          ;; the sandbox would ask about this one: reviewed (the reviewer may vouch)
+          (cl-letf (((symbol-function 'efrit-review-confidence-describe)
+                     (lambda (_use) '("[SANDBOX would ask: write ~/x | computed confidence 0.50 | ]"))))
+            (should (efrit-review-applies-p (funcall edit a) sid)))
+          ;; without a session id nothing is covered
+          (should (efrit-review-applies-p (funcall edit a)))
+          ;; the turn ends: the cover is gone
+          (efrit-review-forget-session sid)
+          (should (efrit-review-applies-p (funcall edit a) sid)))
+      (efrit-review-forget-session sid)
+      (delete-directory dir t))))
+
 (ert-deftest test-review-user-intent-skips-tool-results-and-context ()
   (let ((messages
          (list '((role . "user") (content . "<editor-context>\nBuffer: x\n</editor-context>\n\nrename foo to bar"))

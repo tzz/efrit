@@ -142,12 +142,109 @@ belong in a batch Emacs via run_program, or in the user's hands.")
 (defun efrit-sandbox-eval--blocking-p (sym)
   (and (symbolp sym) (memq sym efrit-sandbox-eval--blocking-symbols)))
 
+(defconst efrit-sandbox-eval--install-fns
+  '(package-install package-install-file package-vc-install package-vc-install-from-checkout
+    package-upgrade package-upgrade-all package-reinstall package-refresh-contents
+    package-download-transaction)
+  "The package operations guarded at run time, not only by inspection.
+The static inspector sees only the form; `(use-package foo :ensure t)'
+under a `tzz-reload' reaches `package-install' two macro layers and a
+reload deep.  On 2026-11-11 that got as far as `package-review', whose
+`read-multiple-choice' hit the input stub, and use-package posted the
+stub's error as a *Warnings* entry the user had to dismiss by hand.")
+
+(defvar efrit-sandbox-eval--denied)
+(defvar efrit-sandbox-eval--active)
+(defvar efrit-sandbox-eval--in-guard)
+(declare-function package-desc-p "package" (x))
+(declare-function package-desc-name "package" (x))
+
+(defun efrit-sandbox-eval--guard-install (op orig &rest args)
+  "Around package operation OP inside a sandboxed eval: refuse before anything downloads.
+The denial names OP and the package and tells the model to ask the
+user or to use run_program.  It is recorded as the eval's denial
+\(`efrit-sandbox-eval--denied'), so a `condition-case' around the
+install, use-package's for one, cannot carry on past it."
+  (if (or (not efrit-sandbox-eval--active) efrit-sandbox-eval--in-guard)
+      (apply orig args)
+    (let* ((arg (car args))
+           (what (cond ((null arg) nil)
+                       ((symbolp arg) (symbol-name arg))
+                       ((stringp arg) arg)
+                       ((and (fboundp 'package-desc-p) (package-desc-p arg))
+                        (symbol-name (package-desc-name arg)))
+                       (t (format "%S" arg))))
+           (why (format "the form reached `%s'%s at run time (through a macro or a reload the inspector could not see). A package operation freezes the user's Emacs and may prompt them from inside the eval. Ask the user to run it (M-x package-install), or run it in a batch Emacs with run_program; then verify with package-installed-p."
+                        op (if what (format " for %s" what) "")))
+           (req (efrit-sandbox-request-create :cap 'elisp :target t :tool "eval_sexp" :detail why)))
+      (efrit-log 'warn "sandbox: refused %s%s reached at run time inside eval_sexp" op
+                 (if what (format " for %s" what) ""))
+      (setq efrit-sandbox-eval--denied req)
+      (signal 'efrit-sandbox-denied (list req)))))
+
+(defun efrit-eval-with-function (symbol definition body)
+  "Call BODY (a thunk) with SYMBOL's function cell set to DEFINITION, then restore it.
+What `cl-letf' on `(symbol-function SYMBOL)' expands to, done by the
+sandbox: SYMBOL may not be one of efrit's own or any symbol the
+inspector refuses, and the old definition comes back however BODY
+ends.  The model's test fixtures need this (stub the function under
+test's collaborator, run, compare); the general `fset' stays refused.
+Named outside the `efrit-sandbox' prefix on purpose: the rewritten
+form must pass the same walk as any other."
+  (when (efrit-sandbox-eval--forbidden-p symbol)
+    (signal 'efrit-sandbox-denied
+            (list (efrit-sandbox-request-create
+                   :cap 'elisp :target t :tool "eval_sexp"
+                   :detail (format "`%s' may not be rebound from eval_sexp, not even for the extent of a cl-letf" symbol)))))
+  (let ((old (symbol-function symbol)))
+    (unwind-protect
+        (progn (fset symbol definition) (funcall body))
+      (fset symbol old))))
+
+(defun efrit-sandbox-eval--letf-binding-p (binding)
+  "Non-nil when BINDING, from a `cl-letf', is ((symbol-function \='SYM) VALUE) with SYM allowed."
+  (pcase binding
+    (`((symbol-function (quote ,(and sym (pred symbolp)))) ,_value)
+     (not (efrit-sandbox-eval--forbidden-p sym)))
+    (`((symbol-function (function ,(and sym (pred symbolp)))) ,_value)
+     (not (efrit-sandbox-eval--forbidden-p sym)))))
+
+(defun efrit-sandbox-eval--rewrite-letf (form)
+  "FORM with each allowed `cl-letf' function binding turned into `efrit-eval-with-function'.
+Done before macroexpansion, so the inspector never sees the `fset'
+and `symbol-function' the macro would produce for them.  A `cl-letf'
+with any other kind of binding (a place, a variable, a refused
+symbol) is left for the macro and the walker to judge as before.
+Quoted data is not rewritten."
+  (cond
+   ((not (consp form)) form)
+   ((memq (car form) '(quote function)) form)
+   ((and (eq (car form) 'cl-letf) (listp (cadr form)) (cadr form)
+         (cl-every #'efrit-sandbox-eval--letf-binding-p (cadr form)))
+    (let ((body (mapcar #'efrit-sandbox-eval--rewrite-letf (cddr form))))
+      (dolist (binding (reverse (cadr form)))
+        ;; binding = ((symbol-function 'SYM) VALUE)
+        (let ((sym (cadr (cadr (car binding))))
+              (value (efrit-sandbox-eval--rewrite-letf (cadr binding))))
+          (setq body `((efrit-eval-with-function ',sym ,value (lambda () ,@body))))))
+      (car body)))
+   (t (let ((out nil) (rest form))
+        (while (consp rest)
+          (push (efrit-sandbox-eval--rewrite-letf (car rest)) out)
+          (setq rest (cdr rest)))
+        (let ((result (nreverse out)))
+          (when rest (setcdr (last result) rest))
+          result)))))
+
 (defun efrit-sandbox-eval-inspect (form)
   "Return nil if FORM is acceptable, else a string saying why not.
 Expands macros first so nothing hides behind a macro.  Two kinds of
 refusal: symbols the sandbox never permits (its own machinery), and
-symbols that freeze the user's Emacs (`efrit-sandbox-eval--blocking-symbols')."
-  (let* ((expanded (condition-case err
+symbols that freeze the user's Emacs (`efrit-sandbox-eval--blocking-symbols').
+A `cl-letf' over the function cell of an ordinary symbol is allowed
+\(`efrit-sandbox-eval--rewrite-letf'); `fset' itself is not."
+  (let* ((form (efrit-sandbox-eval--rewrite-letf form))
+         (expanded (condition-case err
                        (macroexpand-all form)
                      (error (list 'efrit-sandbox--unexpandable
                                   (error-message-string err)))))
@@ -734,6 +831,15 @@ current buffer is where eval already runs."
   (dolist (fn '(require load))
     (unless (advice-member-p #'efrit-sandbox-eval--guard-load fn)
       (advice-add fn :around #'efrit-sandbox-eval--guard-load)))
+  (dolist (fn efrit-sandbox-eval--install-fns)
+    ;; one named wrapper per operation, so the denial can name it
+    (let ((wrapper (intern (format "efrit-sandbox-eval--guard-%s" fn))))
+      (unless (fboundp wrapper)
+        (fset wrapper (lambda (orig &rest args) (apply #'efrit-sandbox-eval--guard-install fn orig args)))
+        (put wrapper 'function-documentation
+             (format "The eval sandbox's package guard around `%s'." fn)))
+      (unless (advice-member-p wrapper fn)
+        (advice-add fn :around wrapper))))
   (dolist (fn efrit-sandbox-eval--read-buffer-fns)
     (unless (advice-member-p #'efrit-sandbox-eval--guard-read-buffer fn)
       (advice-add fn :around #'efrit-sandbox-eval--guard-read-buffer))))
@@ -776,6 +882,8 @@ instead of `eval' (the caller's timeout/input-blocking wrapper)."
     (signal 'efrit-sandbox-denied
             (list (efrit-sandbox-request-create :cap 'elisp :target t :tool "eval_sexp"
                                                 :detail why))))
+  ;; what passed inspection is what runs: the cl-letf rewrite included
+  (setq form (efrit-sandbox-eval--rewrite-letf form))
   (efrit-sandbox-eval--install-advice)
   ;; efrit's handler entry goes onto the GLOBAL alist for the eval's
   ;; duration, not into a `let' binding: a library that registers

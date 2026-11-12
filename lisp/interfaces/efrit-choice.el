@@ -273,14 +273,44 @@ and notifications.  Waits as long as the user takes."
       (setq efrit-choice--on-answer nil)
       (funcall fn answer))))
 
+(defvar efrit-choice--deferred nil
+  "A non-blocking chooser waiting for the open modal prompt to close:
+\(HEADING ITEMS ON-ANSWER DETAIL MULTI ALLOW-TYPED), or nil.")
+
+(defun efrit-choice--open-deferred (&rest _)
+  "`prompt-closed' subscriber: open the chooser that waited for the prompt."
+  (when-let* ((args efrit-choice--deferred))
+    (setq efrit-choice--deferred nil)
+    (efrit-unsubscribe 'prompt-closed #'efrit-choice--open-deferred)
+    (run-at-time 0 nil (lambda ()
+                         (apply #'efrit-choice-open (nth 0 args) (nth 1 args) (nth 2 args)
+                                :detail (nth 3 args) :multi (nth 4 args) :allow-typed (nth 5 args))))))
+
 (cl-defun efrit-choice-open (heading items on-answer &key detail multi (allow-typed t))
   "Open the chooser for HEADING and ITEMS without waiting; call ON-ANSWER later.
 ON-ANSWER gets the same values `efrit-choice-read' returns, or
 `typed' when the user chose to type (the caller then reads from its
 own input).  A menu closed unanswered is not reopened here: the agent
 buffer keeps the question in its prompt and 1-9 keys, so the user can
-answer there.  Returns non-nil when a menu was opened."
-  (when (and (efrit-choice--menu-available-p) (<= (length items) efrit-choice-menu-max))
+answer there.  Returns non-nil when a menu was opened.
+
+While a modal prompt is up (`efrit-prompt--owner': the sandbox menu,
+a blocking `efrit-choice-read'), the chooser is not opened: the two
+would share this file's state and the keyboard, and the second menu
+failed to define itself (2026-11-11: \"choice: Wrong type argument:
+stringp, nil\" while a grant prompt was open).  It opens when that
+prompt closes; the question stays answerable in the agent buffer
+meanwhile."
+  (cond
+   ((or (not (efrit-choice--menu-available-p)) (> (length items) efrit-choice-menu-max))
+    nil)
+   ((or (bound-and-true-p efrit-prompt--owner)
+        (and efrit-choice--on-answer (eq efrit-choice--answer 'pending)))
+    (setq efrit-choice--deferred (list heading items on-answer detail multi allow-typed))
+    (efrit-subscribe 'prompt-closed #'efrit-choice--open-deferred)
+    (efrit-log 'info "choice: menu for %S waits for the open prompt to close" heading)
+    nil)
+   (t
     (setq efrit-choice--heading heading
           efrit-choice--detail detail
           efrit-choice--items (efrit-choice--assign-keys items)
@@ -293,10 +323,14 @@ answer there.  Returns non-nil when a menu was opened."
     (add-hook 'transient-post-exit-hook #'efrit-choice--deliver)
     (run-at-time 0 nil (lambda () (condition-case err (call-interactively #'efrit-choice-menu)
                                     (error (efrit-log 'warn "choice: %s" (error-message-string err))))))
-    t))
+    t)))
 
 (defun efrit-choice-close ()
-  "Close an open non-blocking chooser without an answer (the question was answered elsewhere)."
+  "Close an open non-blocking chooser without an answer (the question was answered elsewhere).
+A chooser still waiting for a modal prompt to close is forgotten."
+  (when efrit-choice--deferred
+    (setq efrit-choice--deferred nil)
+    (efrit-unsubscribe 'prompt-closed #'efrit-choice--open-deferred))
   (when efrit-choice--on-answer
     (setq efrit-choice--on-answer nil)
     (remove-hook 'transient-post-exit-hook #'efrit-choice--deliver)

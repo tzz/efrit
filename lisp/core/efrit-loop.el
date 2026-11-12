@@ -499,7 +499,7 @@ response's stop_reason."
           (t
            ;; Say why there is no review row, so a missing one is
            ;; never mistaken for a missed review
-           (when-let* ((why (efrit-review-skip-reason content)))
+           (when-let* ((why (efrit-review-skip-reason content session-id)))
              (efrit-publish 'review-skipped `((:session-id . ,session-id) (:reason . ,why))))
            (funcall (efrit-loop-adapter-execute-tools-fn adapter)
                     session content))))
@@ -574,6 +574,9 @@ the turn is handed to the user instead."
                                                (efrit-review-batch-signature content))))
          (pcase (car verdict)
            ('approve
+            ;; later plain edits to these files this turn need no new
+            ;; review (docs/designs/review-per-file.md)
+            (efrit-review-remember-approved session-id content)
             ;; the reviewer may have vouched for requests the sandbox
             ;; would otherwise ask the user about (0.12.12)
             (when-let* ((vouch (and (boundp 'efrit-review--last-vouch) efrit-review--last-vouch)))

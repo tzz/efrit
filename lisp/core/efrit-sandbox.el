@@ -1058,12 +1058,56 @@ temporary directory and the pasted-images directory by default."
   :type '(repeat (choice directory function))
   :group 'efrit-sandbox)
 
+(defun efrit-sandbox--housekeeping-directories ()
+  "Where Emacs and its packages keep their own state, as a list of directories.
+The places a `save-buffer', a `package-refresh-contents' or an idle
+timer writes to on the user's behalf: backups, auto-saves, the
+package archives and installs, undo history, recentf and savehist,
+efrit's own data directory.  Each is read from the option that
+names it, at call time, so the user's settings are followed.  On
+2026-11-11 one `tzz-reload' from an eval asked seven times, once per
+such directory (`~/.emacs.d/elpa/archives/gnu/', `~/backups/',
+`~/.emacs.d/undo-fu-session/', ...), each a grant the user had no
+reason to refuse."
+  (delq nil
+        (append
+         (mapcar #'cdr (bound-and-true-p backup-directory-alist))
+         (list (and (boundp 'auto-save-list-file-prefix) auto-save-list-file-prefix
+                    (file-name-directory auto-save-list-file-prefix))
+               (bound-and-true-p package-user-dir)
+               (and (boundp 'package-gnupghome-dir) package-gnupghome-dir)
+               (bound-and-true-p efrit-data-directory)
+               (bound-and-true-p undo-fu-session-directory)
+               (and (boundp 'recentf-save-file) recentf-save-file
+                    (file-name-directory recentf-save-file))
+               (and (boundp 'savehist-file) savehist-file
+                    (file-name-directory savehist-file))
+               (and (boundp 'save-place-file) save-place-file
+                    (file-name-directory save-place-file))
+               (and (boundp 'bookmark-default-file) bookmark-default-file
+                    (file-name-directory bookmark-default-file))
+               (and (boundp 'tramp-persistency-file-name) tramp-persistency-file-name
+                    (file-name-directory tramp-persistency-file-name))
+               (and (boundp 'url-configuration-directory) url-configuration-directory)
+               (and (boundp 'transient-history-file) transient-history-file
+                    (file-name-directory transient-history-file))
+               (and (boundp 'native-comp-eln-load-path) (car native-comp-eln-load-path)))
+         ;; (REGEXP REPLACEMENT [UNIQUIFY]): the replacement is the directory
+         (mapcar #'cadr (bound-and-true-p auto-save-file-name-transforms)))))
+
 (defcustom efrit-sandbox-expected-write-roots
-  (list (lambda () temporary-file-directory))
+  (list (lambda () temporary-file-directory)
+        #'efrit-sandbox--housekeeping-directories)
   "Directories the model may write under without asking.
-Same shape as `efrit-sandbox-expected-read-roots'.  Scratch files
-under `temporary-file-directory' by default: a `write-region' to /tmp
-inside an eval is transport, not intent."
+Same shape as `efrit-sandbox-expected-read-roots'; a function may
+also return a list of directories.  Scratch files under
+`temporary-file-directory', and Emacs's own housekeeping places
+\(`efrit-sandbox--housekeeping-directories'), by default: a
+`write-region' to /tmp inside an eval is transport, not intent, and a
+backup or an archive refresh is Emacs doing its job.  The user's home
+itself is never one of these: a `backup-directory-alist' entry of
+\"~/\" would make every file a backup target, so an entry that is the
+home directory or above is ignored."
   :type '(repeat (choice directory function))
   :group 'efrit-sandbox)
 
@@ -1122,11 +1166,19 @@ on every turn is transport, not the model reaching somewhere new
                 (efrit-sandbox--configured-hosts))))
 
 (defun efrit-sandbox--expected-roots (option)
-  "The directories OPTION (a list of dirs or thunks) names, canonical."
-  (delq nil (mapcar (lambda (x)
-                      (let ((d (if (functionp x) (ignore-errors (funcall x)) x)))
-                        (and (stringp d) (file-name-as-directory (efrit-sandbox-canonical d)))))
-                    option)))
+  "The directories OPTION (a list of dirs or thunks) names, canonical.
+A thunk may return one directory or a list of them.  The home
+directory and anything above it are dropped: a root that wide would
+make the whole option meaningless."
+  (let ((home (file-name-as-directory (efrit-sandbox-canonical "~/"))))
+    (delq nil
+          (mapcar (lambda (d)
+                    (and (stringp d)
+                         (let ((dir (file-name-as-directory (efrit-sandbox-canonical d))))
+                           (and (not (string-prefix-p dir home)) dir))))
+                  (cl-loop for x in option
+                           for v = (if (functionp x) (ignore-errors (funcall x)) x)
+                           if (listp v) append v else collect v)))))
 
 (defun efrit-sandbox--shell-line-plain-p (line)
   "Non-nil when shell LINE has no redirection, substitution or background job.
@@ -1237,14 +1289,17 @@ The reason is a short string for the transcript note."
            (cl-some (lambda (d) (efrit-sandbox--under-p target d))
                     (efrit-sandbox--expected-roots efrit-sandbox-expected-read-roots)))
       "a read under the Emacs installation or the temporary directory")
-     ;; a scratch write: under the temporary directory, but not inside a
+     ;; a scratch or housekeeping write: under the temporary directory
+     ;; or one of Emacs's own state directories, but not inside a
      ;; repository that happens to live there (a checkout under /tmp is
      ;; still a project)
      ((and (eq cap 'write) (stringp target)
-           (not (efrit-sandbox-repo-of target))
-           (cl-some (lambda (d) (efrit-sandbox--under-p target d))
-                    (efrit-sandbox--expected-roots efrit-sandbox-expected-write-roots)))
-      "a scratch write under the temporary directory")
+           (not (efrit-sandbox-repo-of target)))
+      (when-let* ((root (cl-find-if (lambda (d) (efrit-sandbox--under-p target d))
+                                    (efrit-sandbox--expected-roots efrit-sandbox-expected-write-roots))))
+        (if (efrit-sandbox--under-p root (efrit-sandbox-canonical temporary-file-directory))
+            "a scratch write under the temporary directory"
+          (format "Emacs housekeeping under %s" (efrit-sandbox-abbreviate root)))))
      ;; a file in a repository the user already granted this session
      ;; (any capability on it): the repo is in play
      ((and (memq cap '(read write buffer)) (stringp target))

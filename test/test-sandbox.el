@@ -408,6 +408,74 @@ them and points at run_program.  Reading package state is fine."
                   (assq 'embark package-alist)))
     (should-not (efrit-sandbox-eval-inspect form))))
 
+(ert-deftest test-sb-eval-package-install-reached-at-run-time-is-refused ()
+  "A package install the inspector cannot see (called through a function
+the form only names) is refused when reached, before anything downloads;
+the denial names the operation and the package, and a `condition-case'
+around it (use-package's) does not let the eval end well.  2026-11-11:
+`(use-package mdired)' under a reload got as far as package-review's
+read-multiple-choice."
+  (test-sb--in-project
+    (efrit-sandbox-grant 'elisp t 'session)
+    (let ((downloaded nil))
+      (cl-letf (((symbol-function 'package-download-transaction) (lambda (&rest _) (setq downloaded t))))
+        (defun test-sb--ensure-pkg (name)
+          (condition-case nil (package-install name) (error 'swallowed)))
+        (unwind-protect
+            (progn
+              ;; the inspector sees only the wrapper: no static refusal
+              (should-not (efrit-sandbox-eval-inspect '(test-sb--ensure-pkg 'mdired)))
+              (let ((err (should-error (efrit-sandbox-eval-form '(test-sb--ensure-pkg 'mdired))
+                                       :type 'efrit-sandbox-denied)))
+                (let ((detail (efrit-sandbox-request-detail (cadr err))))
+                  (should (string-match-p "package-install" detail))
+                  (should (string-match-p "mdired" detail))
+                  (should (string-match-p "run_program" detail))))
+              (should-not downloaded)
+              ;; outside an eval the operation is not touched
+              (should-not efrit-sandbox-eval--active))
+          (fmakunbound 'test-sb--ensure-pkg))))))
+
+(ert-deftest test-sb-eval-cl-letf-on-ordinary-functions-is-allowed ()
+  "A `cl-letf' over the function cell of an ordinary symbol passes
+inspection and runs with the stub in place, restored after; one over
+an efrit symbol, or a bare `fset', is still refused.  2026-11-11: two
+test fixtures of the model were refused for `symbol-function' and the
+diagnosis took a question to the user instead."
+  (test-sb--in-project
+    (efrit-sandbox-grant 'elisp t 'session)
+    (defun test-sb--collab (x) (* x 2))
+    (unwind-protect
+        (progn
+          (let ((form '(cl-letf (((symbol-function 'test-sb--collab) (lambda (x) (+ x 100))))
+                         (test-sb--collab 1))))
+            (should-not (efrit-sandbox-eval-inspect form))
+            (should (= 101 (efrit-sandbox-eval-form form)))
+            ;; restored
+            (should (= 2 (test-sb--collab 1))))
+          ;; nested, and #'sym spelling
+          (let ((ignore-was (symbol-function 'ignore)))
+            (should (= 3 (efrit-sandbox-eval-form
+                          '(cl-letf (((symbol-function #'test-sb--collab) (lambda (_x) 3)))
+                             (cl-letf (((symbol-function 'ignore) (lambda (&rest _) 'no)))
+                               (test-sb--collab 0))))))
+            (should (eq ignore-was (symbol-function 'ignore))))
+          ;; restored even when the body signals
+          (should-error (efrit-sandbox-eval-form
+                         '(cl-letf (((symbol-function 'test-sb--collab) (lambda (_x) (error "boom"))))
+                            (test-sb--collab 1))))
+          (should (= 2 (test-sb--collab 1)))
+          ;; efrit's own functions: refused, by name
+          (dolist (form '((cl-letf (((symbol-function 'efrit-sandbox-check) #'ignore)) 1)
+                          (cl-letf (((symbol-function 'efrit-review-turn) #'ignore)) 1)
+                          (fset 'test-sb--collab #'ignore)))
+            (should (efrit-sandbox-eval-inspect form)))
+          ;; quoted data is not rewritten: the walker still sees the
+          ;; symbol-function inside it and refuses, as for any quoted
+          ;; forbidden symbol (a quoted form can be `eval'ed)
+          (should (efrit-sandbox-eval-inspect '(quote (cl-letf (((symbol-function 'x) 1)) 2)))))
+      (fmakunbound 'test-sb--collab))))
+
 (ert-deftest test-sb-eval-inspect-accepts-ordinary-code ()
   (dolist (form '((+ 1 2)
                   (with-current-buffer "*scratch*" (buffer-string))
@@ -1492,6 +1560,67 @@ outside any repo still ask."
             (should (cl-every #'null (hash-table-values efrit-sandbox--project-grants))))
         (efrit-unsubscribe 'note listener)
         (delete-directory repo t)))))
+
+(defvar undo-fu-session-directory)
+(defvar package-user-dir)
+(defvar efrit-data-directory)
+
+(ert-deftest test-sb-housekeeping-writes-are-expected ()
+  "Writes where Emacs keeps its own state (backups, package archives,
+undo history, efrit's data directory) pass with a note; a
+`backup-directory-alist' entry of the home directory is ignored; a
+checkout living under such a directory still asks.  2026-11-11: one
+reload from an eval asked seven times for these."
+  (test-sb--in-project
+    (let* ((base (file-name-as-directory (make-temp-file "efrit-sb-hk-" t)))
+           ;; the fixtures must not sit under the temporary directory, or
+           ;; the scratch-write rule claims them first; point it elsewhere
+           (temporary-file-directory (file-name-as-directory (expand-file-name "tmp" base)))
+           (backups (file-name-as-directory (expand-file-name "backups" base)))
+           (elpa (file-name-as-directory (expand-file-name "elpa" base)))
+           (undo (file-name-as-directory (expand-file-name "undo" base)))
+           (data (file-name-as-directory (expand-file-name "efrit-data" base)))
+           (backup-directory-alist `(("." . ,backups) ("secret" . "~/")))
+           (package-user-dir elpa)
+           (undo-fu-session-directory undo)
+           (efrit-data-directory data)
+           (efrit-sandbox-expected-write-roots
+            (eval (car (get 'efrit-sandbox-expected-write-roots 'standard-value)) t))
+           (asked nil) (notes nil)
+           (efrit-sandbox-request-function
+            (lambda (req) (push (efrit-sandbox-request-target req) asked) nil))
+           (listener (lambda (e) (when (string-match-p "allowed without asking" (alist-get :text e))
+                                   (push (alist-get :text e) notes)))))
+      (dolist (d (list backups elpa undo data temporary-file-directory)) (make-directory d t))
+      (efrit-subscribe 'note listener)
+      (unwind-protect
+          (cl-letf (((symbol-function 'efrit-sandbox--git-toplevel) (lambda (_dir) nil)))
+            (let ((roots (efrit-sandbox--expected-roots efrit-sandbox-expected-write-roots))
+                  (home (file-name-as-directory (efrit-sandbox-canonical "~/"))))
+              ;; the home entry is dropped, the others are there
+              (should-not (member home roots))
+              (should (member (efrit-sandbox-canonical backups) roots))
+              (should (member (efrit-sandbox-canonical undo) roots)))
+            (should (efrit-sandbox-check 'write (expand-file-name "a.el~" backups) "eval_sexp"))
+            (should (efrit-sandbox-check 'write (expand-file-name "archives/gnu/archive-contents" elpa) "eval_sexp"))
+            (should (efrit-sandbox-check 'write (expand-file-name "x.el.gz" undo) "eval_sexp"))
+            (should (efrit-sandbox-check 'write (expand-file-name "logs/efrit.log" data) "eval_sexp"))
+            (should (null asked))
+            (should (= 4 (length notes)))
+            (should (cl-every (lambda (n) (string-match-p "Emacs housekeeping under" n)) notes))
+            ;; a file in the home directory itself is not housekeeping
+            (should-error (efrit-sandbox-check 'write (expand-file-name "~/notes.txt") "create_file")
+                          :type 'efrit-sandbox-denied)
+            (should (= 1 (length asked)))
+            ;; a checkout under the elpa directory is a project, not housekeeping
+            (cl-letf (((symbol-function 'efrit-sandbox--git-toplevel)
+                       (lambda (dir) (and (string-prefix-p (expand-file-name "src" elpa) dir)
+                                          (file-name-as-directory (expand-file-name "src" elpa))))))
+              (make-directory (expand-file-name "src" elpa) t)
+              (should-error (efrit-sandbox-check 'write (expand-file-name "src/a.el" elpa) "edit_file")
+                            :type 'efrit-sandbox-denied)))
+        (efrit-unsubscribe 'note listener)
+        (delete-directory base t)))))
 
 (ert-deftest test-sb-expected-hosts-are-the-configured-gateways ()
   "A net request to efrit's API host, to a media backend's host, or to a

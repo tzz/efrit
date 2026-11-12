@@ -34,6 +34,7 @@
 (require 'subr-x)
 (require 'ert)
 (require 'efrit-tool-utils)
+(require 'efrit-sandbox)
 
 (declare-function efrit-review-flags--text-effects "efrit-review-flags")
 
@@ -61,12 +62,16 @@ load provided and the top-level definitions the file holds."
     (let* ((path-input (or (alist-get 'path args) ""))
            (info (efrit-resolve-path path-input 'read "load_project_file"))
            (path (plist-get info :path))
-           (root (file-name-as-directory (efrit-tool--get-project-root))))
+           ;; the resolved :path has symlinks followed; the root must
+           ;; too, or a project reached through a symlink (~/autodist
+           ;; -> ~/ai_workspace/source/autodist) refuses its own files
+           ;; (2026-11-11: four refusals of one load)
+           (root (efrit-sandbox-canonical (efrit-tool--get-project-root))))
       (when (string-empty-p path-input) (signal 'user-error (list "path is required")))
       (unless (file-exists-p path) (signal 'file-error (list "File not found" path)))
       (unless (string-match-p "\\.el\\'" path)
         (signal 'user-error (list "Only Emacs Lisp source files (.el) can be loaded" path)))
-      (unless (string-prefix-p root (expand-file-name path))
+      (unless (string-prefix-p root (efrit-sandbox-canonical path))
         (signal 'user-error (list (format "%s is outside the project (%s); load_project_file loads project files only"
                                           (plist-get info :path-relative) (abbreviate-file-name root)))))
       (let ((before (copy-sequence features))

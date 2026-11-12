@@ -34,6 +34,44 @@ and returns the value(s); multi preselects; C-g is `cancelled'."
   (cl-letf (((symbol-function 'read-multiple-choice) (lambda (&rest _) (signal 'quit nil))))
     (should (eq 'cancelled (efrit-choice-read "Install?" '(("y" "yes" yes) ("n" "no" no)))))))
 
+(ert-deftest test-choice-open-waits-for-the-modal-prompt ()
+  "A non-blocking chooser asked for while a modal prompt is up does not
+open (the two would share the menu state and the keyboard; 2026-11-11
+the second one died with `stringp, nil').  It opens when the prompt
+closes, once; a close in between forgets it."
+  (let ((opened nil) (efrit-choice--deferred nil) (efrit-choice--on-answer nil)
+        (efrit-choice--answer nil))
+    (cl-letf (((symbol-function 'efrit-choice--menu-available-p) (lambda () t))
+              ((symbol-function 'efrit-choice--define-menu) (lambda () (push 'defined opened) t))
+              ((symbol-function 'run-at-time) (lambda (&rest _) nil)))
+      (unwind-protect
+          (progn
+            ;; a prompt is open: deferred, nothing defined
+            (let ((efrit-prompt--owner "other-session"))
+              (should-not (efrit-choice-open "Which?" '(("a" a) ("b" b)) #'ignore))
+              (should efrit-choice--deferred)
+              (should (null opened)))
+            ;; the prompt closes: the chooser opens now
+            (efrit-publish 'prompt-closed '((:label . "x")))
+            (should (null efrit-choice--deferred))
+            ;; run-at-time is stubbed: call the opener as the timer would
+            (should (null opened))
+            (efrit-choice--open-deferred)
+            ;; (nothing left to open: it was consumed by the publish)
+            (should (null opened))
+            ;; direct: with no prompt it opens at once
+            (should (efrit-choice-open "Which?" '(("a" a) ("b" b)) #'ignore))
+            (should (equal '(defined) opened))
+            (efrit-choice-close)
+            ;; deferred then closed: forgotten
+            (let ((efrit-prompt--owner "other-session"))
+              (efrit-choice-open "Again?" '(("a" a)) #'ignore)
+              (should efrit-choice--deferred)
+              (efrit-choice-close)
+              (should (null efrit-choice--deferred))))
+        (efrit-choice-close)
+        (efrit-unsubscribe 'prompt-closed #'efrit-choice--open-deferred)))))
+
 (ert-deftest test-confirm-action-goes-through-the-chooser ()
   "confirm_action asks with efrit-choice-read: yes confirms, no declines
 with a note, cancel is user_cancelled; danger offers Y not y."

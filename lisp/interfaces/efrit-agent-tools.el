@@ -723,13 +723,19 @@ row's other properties kept."
                 (set-marker beg nil) (set-marker end nil)))))))))
 
 (defun efrit-agent--rechop-on-resize (frame)
-  "`window-size-change-functions' entry: re-cut the agent buffers shown in FRAME."
+  "`window-size-change-functions' entry: re-cut the agent buffers shown in FRAME.
+Also on `window-buffer-change-functions': rows cut while the buffer
+sat in a narrow side window stayed short after it moved to a
+full-frame window, which is a buffer change in an existing window,
+not a size change (tzz, 2026-11-11: \"cut off again way before the
+edge\")."
   (dolist (win (window-list frame 'no-minibuf))
     (with-current-buffer (window-buffer win)
       (when (derived-mode-p 'efrit-agent-mode)
         (efrit-agent--rechop-rows)))))
 
 (add-hook 'window-size-change-functions #'efrit-agent--rechop-on-resize)
+(add-hook 'window-buffer-change-functions #'efrit-agent--rechop-on-resize)
 
 (defun efrit-agent--format-wrapped-paragraph (text indent face)
   "TEXT filled to the window width, every line prefixed with INDENT, in FACE."

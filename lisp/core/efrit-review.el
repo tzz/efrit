@@ -85,12 +85,13 @@ says so for each turn, so silence never means \"forgot\"."
   :type '(set (const write) (const exec) (const net) (const read))
   :group 'efrit-review)
 
-(defun efrit-review-skip-reason (content)
+(defun efrit-review-skip-reason (content &optional session-id)
   "Why CONTENT is not reviewed: a short phrase, or nil when nothing needs saying.
 Published as `review-skipped' by the loop so the transcript can show it.
 Nil for a reviewed turn, a turn with no tools, and a turn of only
 efrit's control tools (session_complete, todo_write): those never
-carry an action worth judging, and a note there is noise."
+carry an action worth judging, and a note there is noise.  With
+SESSION-ID, a batch covered by an earlier approval says so."
   (let* ((uses (efrit-review--tool-uses content))
          (judgeable (cl-remove-if
                      (lambda (u) (eq (efrit-permission-tool-class (nth 1 u)) 'control))
@@ -98,6 +99,7 @@ carry an action worth judging, and a note there is noise."
     (cond
      ((null judgeable) nil)
      ((not (efrit-review-enabled-p)) "review off")
+     ((and session-id (efrit-review-covered-reason session-id content)))
      ((not (efrit-review-applies-p content))
       (format "read-only turn (%s)"
               (mapconcat #'identity
@@ -265,11 +267,77 @@ other text is the user's own steer, passed through."
 (defun efrit-review-applies-p (content &optional session-id)
   "Non-nil if CONTENT (a response content vector) has a reviewable tool call.
 With SESSION-ID, a batch the user allowed after an escalation passes
-without review, once."
+without review, once; and a batch of edits to files the reviewer
+already approved this turn is covered (`efrit-review-covered-p')."
   (and (efrit-review-enabled-p)
        (cl-some (lambda (use) (efrit-review--reviewable-p (nth 1 use) use))
                 (efrit-review--tool-uses content))
-       (not (and session-id (efrit-review--user-allowed-p session-id content)))))
+       (not (and session-id (efrit-review--user-allowed-p session-id content)))
+       (not (and session-id (efrit-review-covered-p session-id content)))))
+
+;;; One review per file per turn
+;;
+;; See docs/designs/review-per-file.md.  The reviewer judged 13 edits
+;; to two files under one request on 2026-11-11, one call each; the
+;; question (is an edit to this file what the user asked for) did not
+;; change between them.
+
+(defconst efrit-review--file-edit-tools '("edit_file" "edit_buffer" "create_file" "write_file")
+  "Tools whose approval covers later calls on the same target this turn.
+Exec tools are never covered: two evals are never the same question.")
+
+(defvar efrit-review--covered (make-hash-table :test 'equal)
+  "Session ID -> list of (TOOL . TARGET) the reviewer approved this turn.
+Cleared with the rejection record at the start and end of a turn.")
+
+(defun efrit-review--use-target (use)
+  "The path or buffer a file-edit USE works on, canonical, or nil."
+  (let* ((input (nth 2 use))
+         (get (lambda (k) (and (hash-table-p input) (gethash k input)))))
+    (or (when-let* ((path (funcall get "path")))
+          (and (stringp path) (efrit-sandbox-canonical path)))
+        (when-let* ((buffer (funcall get "buffer")))
+          (and (stringp buffer) (cons 'buffer buffer))))))
+
+(defun efrit-review-remember-approved (session-id content)
+  "Record the file edits in CONTENT as approved for SESSION-ID's turn."
+  (dolist (use (efrit-review--tool-uses content))
+    (when (member (nth 1 use) efrit-review--file-edit-tools)
+      (when-let* ((target (efrit-review--use-target use)))
+        (cl-pushnew target (gethash session-id efrit-review--covered) :test #'equal)))))
+
+(defun efrit-review--use-covered-p (session-id use)
+  "Non-nil when USE is a plain file edit to a target approved this turn.
+Plain: no FLAG line (`efrit-review-flags-for-use') and nothing the
+sandbox would stop to ask about (`efrit-review-confidence-describe').
+Either is a new question for the reviewer."
+  (and (member (nth 1 use) efrit-review--file-edit-tools)
+       (let ((target (efrit-review--use-target use)))
+         (and target (member target (gethash session-id efrit-review--covered))))
+       (not (and (require 'efrit-review-flags nil t)
+                 (ignore-errors (efrit-review-flags-for-use use))))
+       (not (and (require 'efrit-review-confidence nil t)
+                 (ignore-errors (efrit-review-confidence-describe use))))))
+
+(defun efrit-review-covered-p (session-id content)
+  "Non-nil when every reviewable call in CONTENT is covered by an earlier approval.
+Control tools and reads in the same batch do not count against it."
+  (let ((reviewable (cl-remove-if-not (lambda (use) (efrit-review--reviewable-p (nth 1 use) use))
+                                      (efrit-review--tool-uses content))))
+    (and reviewable
+         (cl-every (lambda (use) (efrit-review--use-covered-p session-id use)) reviewable))))
+
+(defun efrit-review-covered-reason (session-id content)
+  "The `review-skipped' reason for a covered CONTENT, or nil."
+  (when (efrit-review-covered-p session-id content)
+    (let ((names (delete-dups
+                  (mapcar (lambda (use)
+                            (let ((target (efrit-review--use-target use)))
+                              (if (consp target) (cdr target)
+                                (file-name-nondirectory (directory-file-name target)))))
+                          (cl-remove-if-not (lambda (use) (member (nth 1 use) efrit-review--file-edit-tools))
+                                            (efrit-review--tool-uses content))))))
+      (format "covered by the review of %s earlier this turn" (mapconcat #'identity names ", ")))))
 
 ;;; What the reviewer sees
 
@@ -939,8 +1007,10 @@ An approval of anything clears the turn's record.  Without SIGNATURE
       0)))
 
 (defun efrit-review-forget-session (session-id)
-  "Drop SESSION-ID's rejection record.  Called when a turn begins or ends."
-  (remhash session-id efrit-review--rejections))
+  "Drop SESSION-ID's rejection record and its approved-file cover.
+Called when a turn begins or ends."
+  (remhash session-id efrit-review--rejections)
+  (remhash session-id efrit-review--covered))
 
 ;;; What the proposer is told
 

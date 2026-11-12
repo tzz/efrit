@@ -53,6 +53,30 @@ project is refused; an unknown selector says to load first."
       (ignore-errors (delete-file outside))
       (delete-directory root t))))
 
+(ert-deftest test-lisp-dev-load-through-a-symlinked-root ()
+  "A project root reached through a symlink loads its own files.
+The resolved path has the symlink followed; the root is compared in
+the same form.  2026-11-11: ~/autodist -> ~/ai_workspace/source/autodist
+refused every load_project_file of its files, four times in a row."
+  (let* ((real (file-name-as-directory (make-temp-file "efrit-ld-real-" t)))
+         (link (concat (make-temp-file "efrit-ld-link-") "-l"))
+         (efrit-project-root (file-name-as-directory link))
+         (default-directory efrit-project-root))
+    (make-symbolic-link (directory-file-name real) link)
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "ld-sym.el" real)
+            (insert ";;; ld-sym.el -*- lexical-binding: t; -*-\n(defun ld-sym-one () 1)\n(provide 'ld-sym)\n"))
+          ;; through the link, by relative name, and by the real path
+          (dolist (path (list (expand-file-name "ld-sym.el" link) "ld-sym.el" (expand-file-name "ld-sym.el" real)))
+            (let ((r (efrit-tool-load-project-file `((path . ,path)))))
+              (should (eq t (alist-get 'success r)))))
+          (should (fboundp 'ld-sym-one)))
+      (fmakunbound 'ld-sym-one)
+      (setq features (delq 'ld-sym features))
+      (ignore-errors (delete-file link))
+      (delete-directory real t))))
+
 (defun test-lisp-dev--boom ()
   (interactive)
   (test-lisp-dev--inner (list 1 2)))
