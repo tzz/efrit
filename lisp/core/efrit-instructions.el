@@ -151,12 +151,39 @@ TEXT-CELL is nil until `efrit-instructions-text' ran, then (TEXT).")
 
 ;;; Finding files
 
-(defun efrit-instructions--first-in (dir names)
-  "The first of NAMES that is a readable file in DIR, as an absolute path, or nil."
-  (cl-some (lambda (name)
-             (let ((path (expand-file-name name dir)))
-               (and (file-readable-p path) (not (file-directory-p path)) path)))
-           names))
+(defun efrit-instructions--listing (dir)
+  "What one round trip says DIR holds: `local' for a local DIR, else its entry names.
+A remote directory that cannot be listed yields nil: nothing under it."
+  (if (file-remote-p dir)
+      (ignore-errors (directory-files dir))
+    'local))
+
+(defun efrit-instructions--candidate-paths (dir names &optional listing)
+  "Those of NAMES that can exist in DIR, as absolute paths, in order.
+Local DIR: all of them; a stat each is cheap.  Remote DIR: only the
+names whose first component (`CLAUDE.md', or `.claude' of
+`.claude/CLAUDE.md') is in DIR's LISTING (fetched here when not given).
+Most ancestors hold none, so a walk up a remote tree costs one round
+trip per directory instead of one per candidate name: five names over
+nine ancestors was 45 TRAMP round trips before the first review of a
+remote-rooted session could start (2026-11-11)."
+  (let ((listing (or listing (efrit-instructions--listing dir))))
+    (mapcar (lambda (name) (expand-file-name name dir))
+            (if (eq listing 'local)
+                names
+              (cl-remove-if-not
+               (lambda (name) (member (car (split-string name "/" t)) listing))
+               names)))))
+
+(defun efrit-instructions--readable-file-p (path)
+  "Non-nil when PATH is a readable file, not a directory."
+  (and (file-readable-p path) (not (file-directory-p path))))
+
+(defun efrit-instructions--first-in (dir names &optional listing)
+  "The first of NAMES that is a readable file in DIR, as an absolute path, or nil.
+LISTING is DIR's `efrit-instructions--listing' when the caller has it."
+  (cl-some (lambda (path) (and (efrit-instructions--readable-file-p path) path))
+           (efrit-instructions--candidate-paths dir names listing)))
 
 (defun efrit-instructions--ancestors (root)
   "Directories strictly above ROOT, outermost first, on ROOT's host."
@@ -185,17 +212,18 @@ for `efrit-instructions-remote-cache-seconds'."
   (let ((found nil))
     (dolist (f efrit-instructions-user-files)
       (let ((path (expand-file-name f)))
-        (when (and (file-readable-p path) (not (file-directory-p path)))
+        (when (efrit-instructions--readable-file-p path)
           (push (cons path 'user) found))))
     (when efrit-instructions-ancestors
       (dolist (dir (efrit-instructions--ancestors root))
         (when-let* ((path (efrit-instructions--first-in dir efrit-instructions-files)))
           (push (cons path 'ancestor) found))))
-    (when-let* ((path (efrit-instructions--first-in root efrit-instructions-files)))
-      (push (cons path 'project) found))
-    (dolist (name efrit-instructions-local-files)
-      (let ((path (expand-file-name name root)))
-        (when (and (file-readable-p path) (not (file-directory-p path)))
+    ;; the project directory is listed once for both its layers
+    (let ((listing (efrit-instructions--listing root)))
+      (when-let* ((path (efrit-instructions--first-in root efrit-instructions-files listing)))
+        (push (cons path 'project) found))
+      (dolist (path (efrit-instructions--candidate-paths root efrit-instructions-local-files listing))
+        (when (efrit-instructions--readable-file-p path)
           (push (cons path 'local) found))))
     ;; A user file that is also an ancestor (project under ~) would
     ;; appear twice; keep the first occurrence.

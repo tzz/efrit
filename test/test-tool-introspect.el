@@ -117,9 +117,9 @@ ones and those the sandbox refuses; caps the total; rejects a bad regexp."
             (with-current-buffer a (insert "one\nkill-ring first\nthree\nfour\nkill-ring second\nsix\n"))
             (with-current-buffer b (insert "kill-ring in b\n"))
             (with-current-buffer hidden (insert "kill-ring hidden\n"))
-            ;; fileless non-target buffers need a grant: give it for these
-            (efrit-sandbox-grant 'buffer '(buffer . "*scan-a*") 'session root)
-            (efrit-sandbox-grant 'buffer '(buffer . "*scan-b*") 'session root)
+            ;; fileless local buffers need no grant (0.18.8); the
+            ;; guarded kinds still do, and the scan skips a refusal
+            (should (efrit-sandbox-buffer-allowed-p a))
             (let* ((r (efrit-tool-buffer-scan '((pattern . "kill-ring") (buffer . "*scan-a*") (context . 1))))
                    (res (alist-get 'result r))
                    (m (append (alist-get 'matches (aref (alist-get 'results res) 0)) nil)))
@@ -139,8 +139,9 @@ ones and those the sandbox refuses; caps the total; rejects a bad regexp."
                    (res (alist-get 'result r)))
               (should (= 2 (alist-get 'buffers_scanned res)))
               (should (= 3 (alist-get 'total_matches res))))
-            ;; a buffer without a grant is skipped and named in a warning
-            (let ((c (generate-new-buffer "*scan-c*")))
+            ;; a guarded kind (a shell) without a grant is skipped and
+            ;; named in a warning
+            (let ((c (generate-new-buffer "*shell scan-c*")))
               (unwind-protect
                   (let ((r (efrit-tool-buffer-scan '((pattern . "kill-ring") (buffer_regexp . "scan-c")))))
                     (should (= 0 (alist-get 'buffers_scanned (alist-get 'result r))))

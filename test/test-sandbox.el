@@ -1227,16 +1227,32 @@ on a file under it still asked (2026-10-20)."
         (kill-buffer buf)
         (delete-directory outside t)))))
 
-(ert-deftest test-sb-buffer-fileless-nontarget-needs-grant ()
+(ert-deftest test-sb-buffer-fileless-local-is-free-guarded-kinds-ask ()
+  "A local buffer with no visited file needs no grant (*scratch*, a temp
+buffer: tzz 2026-11-11).  The named kinds in
+`efrit-sandbox-guarded-buffer-regexps' (the message log, shells, mail,
+eww) still ask, and a grant on one of them stands.  A fileless buffer
+whose directory is remote asks."
   (test-sb--in-project
     (test-sb--with-buffers
-      (let ((buf (get-buffer-create "*Messages-like*")))
+      (let ((scratch (get-buffer-create "*scratch-like*"))
+            (log (get-buffer-create "*Messages*"))
+            (shell (get-buffer-create "*shell*<2>"))
+            (remote (get-buffer-create "*remote-notes*")))
         (unwind-protect
             (progn
-              (should-not (efrit-sandbox-buffer-allowed-p buf))
-              (efrit-sandbox-grant 'buffer '(buffer . "*Messages-like*") 'session)
-              (should (efrit-sandbox-buffer-allowed-p buf)))
-          (kill-buffer buf))))))
+              (should (efrit-sandbox-buffer-allowed-p scratch))
+              (should-not (efrit-sandbox-buffer-allowed-p log))
+              (should-not (efrit-sandbox-buffer-allowed-p shell))
+              (efrit-sandbox-grant 'buffer '(buffer . "*Messages*") 'session)
+              (should (efrit-sandbox-buffer-allowed-p log))
+              (with-current-buffer remote (setq default-directory "/ssh:host:/home/u/"))
+              (should-not (efrit-sandbox-buffer-allowed-p remote))
+              ;; the reason names the kind, not a file
+              (let ((efrit-sandbox-request-function
+                     (lambda (req) (should (string-match-p "mail, shell or log" (efrit-sandbox-request-detail req))) nil)))
+                (should-error (efrit-sandbox-check-buffer shell "read_buffer") :type 'efrit-sandbox-denied)))
+          (kill-buffer scratch) (kill-buffer log) (kill-buffer shell) (kill-buffer remote))))))
 
 (ert-deftest test-sb-buffer-hidden-exempt ()
   (test-sb--in-project
@@ -1499,8 +1515,14 @@ with a note; any other host asks."
             (should (efrit-sandbox-check 'net '(host . "images.example.test") "generate_image"))
             (should (efrit-sandbox-check 'net '(host . "api.docs.example.org") "fetch_url"))
             (should (efrit-sandbox-check 'net '(host . "cdn.example.net") "fetch_url"))
+            ;; the search engine is configured too: a web_search is
+            ;; not "a host your request did not name" (2026-11-11)
+            (require 'efrit-tool-web-search)
+            (let ((efrit-web-search-backend 'duckduckgo))
+              (should (equal "html.duckduckgo.com" (efrit-web-search-host)))
+              (should (efrit-sandbox-check 'net (cons 'host (efrit-web-search-host)) "web_search")))
             (should (null asked))
-            (should (= 4 (length notes)))
+            (should (= 5 (length notes)))
             (should (string-match-p "a gateway efrit is configured to use" (car notes)))
             (should-error (efrit-sandbox-check 'net '(host . "evil.example.com") "fetch_url")
                           :type 'efrit-sandbox-denied)

@@ -177,7 +177,12 @@ Toggled by ? in the menu; reset for each new request.")
      ((eq cap 'write)
       (if (efrit-sandbox-repo-of target) "a write in a repository not granted this session"
         "a write outside any repository"))
-     ((eq cap 'buffer) "a live buffer outside the project")
+     ((eq cap 'buffer)
+      (cond ((stringp target) "a buffer visiting a file outside the project")
+            ((and (consp target) (get-buffer (cdr target))
+                  (efrit-sandbox-guarded-buffer-p (get-buffer (cdr target))))
+             "a buffer that shows mail, a shell or a log")
+            (t "a buffer on a remote host")))
      ((eq cap 'read)
       (if (efrit-sandbox-repo-of target) "a repository not granted this session"
         "a read outside the project and the Emacs installation"))

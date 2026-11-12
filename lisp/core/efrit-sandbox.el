@@ -482,6 +482,36 @@ Its visited file's canonical path when it has one, else (buffer . NAME)."
         (efrit-sandbox-canonical file)
       (cons 'buffer (buffer-name buffer)))))
 
+(defcustom efrit-sandbox-guarded-buffer-regexps
+  '("\\`\\*Messages\\*\\'"           ; echoes of passwords and tokens
+    "\\`\\*\\(?:shell\\|eshell\\|terminal\\|vterm\\|ansi-term\\)"
+    "\\`\\*eww"                       ; pages the user is logged in to
+    "\\`\\*Article"                   ; Gnus article buffers
+    "\\`\\*mu4e\\|\\`\\*notmuch"
+    "\\`\\*Org Agenda\\*\\'")
+  "Fileless buffers that still need a `buffer' grant, by name.
+A buffer with no visited file is otherwise free to touch: it holds
+nothing the file sandbox protects (tzz, 2026-11-11: \"the scratch
+buffer should be fair game\").  These are the exceptions: buffers that
+show the user's mail, shells with their history, pages they are
+logged in to, and the message log."
+  :type '(repeat regexp)
+  :group 'efrit-sandbox)
+
+(defun efrit-sandbox-guarded-buffer-p (buffer)
+  "Non-nil when fileless BUFFER matches `efrit-sandbox-guarded-buffer-regexps'."
+  (let ((name (buffer-name buffer)))
+    (cl-some (lambda (re) (string-match-p re name)) efrit-sandbox-guarded-buffer-regexps)))
+
+(defun efrit-sandbox--fileless-local-buffer-p (buffer)
+  "Non-nil when BUFFER's grant target is a buffer, not a file, and it is not remote.
+Judged by `efrit-sandbox-buffer-target', the same source the rest of
+the sandbox uses for the buffer, so a file target from anywhere else
+is not mistaken for a scratch buffer."
+  (and (consp (efrit-sandbox-buffer-target buffer))
+       (let ((dir (buffer-local-value 'default-directory buffer)))
+         (not (and (stringp dir) (file-remote-p dir))))))
+
 ;;; Canonical paths
 
 (defun efrit-sandbox-canonical (path)
@@ -693,6 +723,13 @@ an explicit grant (checked by `efrit-sandbox-check-buffer')."
           (eq buffer (condition-case nil
                          (funcall efrit-sandbox-target-buffer-function)
                        (error nil))))
+     ;; a local buffer with no file: *scratch*, a temp buffer, a help
+     ;; or compilation buffer.  Nothing the file sandbox protects is
+     ;; behind it, so it is free, except the named kinds that show the
+     ;; user's mail, shells or logins (`efrit-sandbox-guarded-buffer-regexps').
+     ;; A buffer that visits a file is judged by that file, below.
+     (and (efrit-sandbox--fileless-local-buffer-p buffer)
+          (not (efrit-sandbox-guarded-buffer-p buffer)))
      ;; a buffer visiting a file inside the project root.  A remote
      ;; file is not "inside" for this purpose: its host policy decides
      ;; (allow = free, anything else = a buffer grant is asked for)
@@ -1064,11 +1101,13 @@ on every turn is transport, not the model reaching somewhere new
        (ignore-errors (url-host (url-generic-parse-url url)))))
 
 (defun efrit-sandbox--configured-hosts ()
-  "The hosts efrit is configured to talk to: its API, the media backends, the option."
+  "The hosts efrit is configured to talk to: its API, the search engine, the media backends, the option."
   (delq nil
         (append
          (list (and (fboundp 'efrit-common-get-base-url)
-                    (efrit-sandbox--url-host (ignore-errors (efrit-common-get-base-url)))))
+                    (efrit-sandbox--url-host (ignore-errors (efrit-common-get-base-url))))
+               (and (fboundp 'efrit-web-search-host)
+                    (ignore-errors (efrit-web-search-host))))
          (and (boundp 'efrit-media-backends) (fboundp 'efrit-media-backend-url)
               (mapcar (lambda (b) (efrit-sandbox--url-host (efrit-media-backend-url b)))
                       efrit-media-backends))
@@ -1540,8 +1579,15 @@ buffers visiting a file inside the project are allowed without asking."
          'buffer (efrit-sandbox-buffer-target buffer)
          (or tool "buffer")
          (or detail
-             (format "the buffer %s visits a file outside the project"
-                     (buffer-name buffer)))))))))
+             (let ((target (efrit-sandbox-buffer-target buffer)))
+               (cond ((and (stringp target) (efrit-sandbox-remote-p target))
+                      (format "the buffer %s visits a remote file" (buffer-name buffer)))
+                     ((stringp target)
+                      (format "the buffer %s visits a file outside the project" (buffer-name buffer)))
+                     ((efrit-sandbox-guarded-buffer-p buffer)
+                      (format "the buffer %s is one that shows the user's mail, shell or log (efrit-sandbox-guarded-buffer-regexps)"
+                              (buffer-name buffer)))
+                     (t (format "the buffer %s has no file and is on a remote host" (buffer-name buffer))))))))))))
 
 (defun efrit-sandbox-describe-request (req)
   "One-line human description of REQ for prompts and tool results."

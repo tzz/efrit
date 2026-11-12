@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.18.7
+;; Version: 0.18.8
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -57,6 +57,7 @@
 (declare-function efrit-agent--format-header-line "efrit-agent-render")
 (declare-function efrit-agent--usage-segment "efrit-agent-render")
 (declare-function efrit-agent-input-hint "efrit-agent-render")
+(declare-function efrit-agent-agents-hint "efrit-agent-render")
 (declare-function efrit-context-describe "efrit-context-sources")
 (declare-function efrit-repl-session-id "efrit-repl-session")
 (declare-function efrit-tool--get-project-root "efrit-tool-utils")
@@ -200,6 +201,8 @@ kept coarse so the cache repeats: see `efrit-agent-header-elapsed-step'."
       ;; Key hint while nothing is running: the chat-client convention
       ;; is not the Emacs one, so say it where the eye lands
       (:hint . ,(and (not efrit-agent--thinking-label) (efrit-agent-input-hint)))
+      ;; several agents: how to move between them (row 2, after the session)
+      (:agents . ,(and (fboundp 'efrit-agent-agents-hint) (efrit-agent-agents-hint)))
       (:directory . ,(and root (abbreviate-file-name root)))
       (:status . ,(substring-no-properties status))
       (:status-face . ,(or (get-text-property 0 'face status) 'default))
@@ -350,7 +353,8 @@ square centred on the letters beside it (baseline minus ~0.35em)."
                         (,(and (alist-get :mode model) (format "[%s]" (alist-get :mode model)))
                          . font-lock-comment-face)
                         (,(alist-get :context model) . efrit-agent-header-directory)
-                        (,(alist-get :session model) . font-lock-comment-face))))
+                        (,(alist-get :session model) . font-lock-comment-face)
+                        (,(alist-get :agents model) . efrit-agent-header-hint))))
     (efrit-agent-svg--place-spinners svg fs)
     ;; The canvas is the window's width: the border runs to the edge
     ;; and text wider than Emacs's measurement (the rasteriser's own

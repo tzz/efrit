@@ -67,6 +67,7 @@
 ;; "why did that fail?" has an answer
 (efrit-last-error-mode 1)
 (require 'efrit-repl-loop)
+(require 'efrit-choice)   ; efrit-resume--choose-directory
 (declare-function efrit-session-active "efrit-session")
 (require 'efrit-agent-integration)
 (require 'efrit-agent-fold)
@@ -709,12 +710,54 @@ crashed on the first such entry (`stringp')."
             (concat "  ⚙ " (mapconcat #'identity (delete-dups tools) ", ") "\n")
             '(face shadow)))))))))
 
+(defcustom efrit-resume-directory 'ask
+  "Where a resumed session works when its saved directory is not the current one.
+`saved': the directory the session worked in.  `current': the
+directory of the buffer you resume from (a remote root saved with a
+Gnus analysis would otherwise come back with it, 2026-11-11).  `ask':
+choose each time; this is the default.  When the two are the same, or
+the saved one no longer exists, nothing is asked."
+  :type '(choice (const :tag "Ask when they differ" ask)
+                 (const :tag "The session's saved directory" saved)
+                 (const :tag "The current directory" current))
+  :group 'efrit-agent)
+
+(defun efrit-resume--choose-directory (session)
+  "The directory the resumed SESSION works in, per `efrit-resume-directory'."
+  (let* ((saved (let ((r (efrit-repl-session-project-root session)))
+                  (and r (not (string-empty-p r)) (file-directory-p r)
+                       (file-name-as-directory (expand-file-name r)))))
+         (current (file-name-as-directory (expand-file-name default-directory))))
+    (cond
+     ((null saved) current)
+     ;; the same place under two spellings (a symlinked home, "~/"
+     ;; against the expanded form) is not a choice
+     ((or (equal saved current)
+          (equal (file-truename saved) (file-truename current)))
+      saved)
+     ((eq efrit-resume-directory 'saved) saved)
+     ((eq efrit-resume-directory 'current) current)
+     (t
+      (let ((answer (efrit-choice-read
+                     "Resume where?"
+                     (list (list "s" (format "its saved directory  %s" (abbreviate-file-name saved)) saved)
+                           (list "c" (format "the current directory  %s" (abbreviate-file-name current)) current))
+                     :detail "The session's tools, grants and shell run there; /cd changes it later."
+                     :allow-typed nil
+                     :label "where a resumed session works")))
+        (if (stringp answer) answer (user-error "Resume cancelled")))))))
+
 (defun efrit-resume-session (session-id)
-  "Resume session with SESSION-ID.
-Loads the session from disk and restores it into the agent buffer.
-Interactively, reads the id with completion (`efrit-resume-read-session-id')."
+  "Resume session with SESSION-ID in a new agent buffer.
+The buffer the command was given in is left as it is (tzz,
+2026-11-11: a resume into the current buffer lost it).  Where the new
+buffer works is the session's saved directory, or the one you are in,
+per `efrit-resume-directory'; when they differ and the option is
+`ask', you choose.  Interactively, reads the id with completion
+\(`efrit-resume-read-session-id')."
   (interactive (list (efrit-resume-read-session-id)))
   (require 'efrit-session-persist)
+  (require 'efrit-agent-instances)
   (let* ((session (efrit-session-persist-load session-id))
          (worktree (and session (fboundp 'efrit-repl-session-meta-get)
                         (efrit-repl-session-meta-get session :worktree))))
@@ -728,26 +771,14 @@ Interactively, reads the id with completion (`efrit-resume-read-session-id')."
       (user-error "Session %s worked in %s, which no longer exists; M-x efrit-agent-relocate-session to point it elsewhere"
                   session-id (abbreviate-file-name worktree)))
      (t
-      ;; A buffer of its own when instances are on (the default buffer
-      ;; may be mid-conversation); else the default buffer
-      (let ((buffer (if (bound-and-true-p efrit-agent-instances-mode)
-                        (efrit-agent-instance-create (efrit-repl-session-project-root session)
-                                                     (substring session-id -6))
-                      (efrit-agent--get-buffer))))
+      (let* ((root (efrit-resume--choose-directory session))
+             (buffer (efrit-agent-instance-create root (substring session-id -6))))
         (with-current-buffer buffer
-          (unless (derived-mode-p 'efrit-agent-mode)
-            (efrit-agent-mode))
-          ;; Restore the REPL session
+          ;; Restore the REPL session into the fresh buffer; the
+          ;; session's own buffer and root follow the choice
           (setq efrit-agent--repl-session session)
           (setf (efrit-repl-session-buffer session) buffer)
-          ;; A buffer that was never shown has no regions yet; the
-          ;; user-line renderer draws nothing without them and the
-          ;; first Claude line then set them up by erasing the buffer
-          (unless (and efrit-agent--conversation-end
-                       (marker-position efrit-agent--conversation-end))
-            (efrit-agent--init-regions)
-            (efrit-agent--setup-regions))
-          ;; Clear existing conversation display
+          (setf (efrit-repl-session-project-root session) root)
           (efrit-agent--clear-conversation)
           ;; Restore conversation to display.  The conversation is
           ;; kept oldest first (add-* append); the old `reverse' here

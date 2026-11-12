@@ -753,27 +753,87 @@ part of one, and refuses an ambiguous part."
           (let ((label (car (rassoc id (efrit-resume-candidates)))))
             (should (string-prefix-p id label))
             (should (string-match-p "analyze the articles" label)))
-          ;; restore
-          (cl-letf (((symbol-function 'efrit-agent-display) #'ignore))
-            (efrit-resume-session id))
-          (with-current-buffer (efrit-agent--get-buffer)
-            (let ((text (buffer-substring-no-properties (point-min) (point-max))))
-              (should (string-match-p "analyze the articles" text))
-              (should (string-match-p "The articles are bare links\\." text))
-              (should (string-match-p "⚙ fetch_url" text))
-              (should (string-match-p "1\\. mdired" text))
-              (should (< (string-match "analyze the articles" text)
-                         (string-match "bare links" text)
-                         (string-match "mdired" text))))
-            (should (eq 'idle efrit-agent--status))
-            (should (equal id (efrit-repl-session-id efrit-agent--repl-session)))))
-      ;; the restored session must not leak into the next test's default buffer
-      (when-let* ((buf (get-buffer efrit-agent-buffer-name)))
-        (with-current-buffer buf
-          (setq efrit-agent--repl-session nil)
-          (remove-hook 'kill-buffer-query-functions #'efrit-agent--kill-buffer-query t))
-        (kill-buffer buf))
+          ;; restore: a new buffer, the one we are in is left alone
+          (let ((before (efrit-agent-buffers)) (restored nil))
+            (cl-letf (((symbol-function 'efrit-agent-display)
+                       (lambda (buf &rest _) (setq restored buf))))
+              (efrit-resume-session id))
+            (should (buffer-live-p restored))
+            (should-not (memq restored before))
+            (should (string-match-p (substring id -6) (buffer-name restored)))
+            (with-current-buffer restored
+              (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+                (should (string-match-p "analyze the articles" text))
+                (should (string-match-p "The articles are bare links\\." text))
+                (should (string-match-p "⚙ fetch_url" text))
+                (should (string-match-p "1\\. mdired" text))
+                (should (< (string-match "analyze the articles" text)
+                           (string-match "bare links" text)
+                           (string-match "mdired" text))))
+              (should (eq 'idle efrit-agent--status))
+              (should (equal id (efrit-repl-session-id efrit-agent--repl-session))))
+            (with-current-buffer restored
+              (setq efrit-agent--repl-session nil)
+              (remove-hook 'kill-buffer-query-functions #'efrit-agent--kill-buffer-query t))
+            (kill-buffer restored)))
       (ignore-errors (delete-directory efrit-session-persist-dir t)))))
+
+(ert-deftest test-efrit-agent-resume-directory-choice ()
+  "A resumed session works in its saved directory or the current one per
+`efrit-resume-directory'; with `ask' and two different directories the
+user chooses, and nothing is asked when they are the same or the saved
+one is gone."
+  (require 'efrit-session-persist)
+  (let* ((saved (file-name-as-directory (make-temp-file "efrit-resume-saved-" t)))
+         (here (file-name-as-directory (make-temp-file "efrit-resume-here-" t)))
+         (session (efrit-repl-session-create saved))
+         (asked 0) (answer nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'efrit-choice-read)
+                   (lambda (&rest _) (cl-incf asked) answer)))
+          (let ((default-directory here))
+            (let ((efrit-resume-directory 'saved))
+              (should (equal saved (efrit-resume--choose-directory session))))
+            (let ((efrit-resume-directory 'current))
+              (should (equal here (efrit-resume--choose-directory session))))
+            (let ((efrit-resume-directory 'ask))
+              (setq answer saved)
+              (should (equal saved (efrit-resume--choose-directory session)))
+              (setq answer here)
+              (should (equal here (efrit-resume--choose-directory session)))
+              (should (= 2 asked))
+              (setq answer 'cancelled)
+              (should-error (efrit-resume--choose-directory session) :type 'user-error)))
+          ;; same directory: no question
+          (let ((default-directory saved) (efrit-resume-directory 'ask) (asked 0))
+            (should (equal saved (efrit-resume--choose-directory session)))
+            (should (= 0 asked)))
+          ;; saved directory gone: the current one, no question
+          (let ((default-directory here) (efrit-resume-directory 'ask) (asked 0))
+            (setf (efrit-repl-session-project-root session) (concat saved "gone/"))
+            (should (equal here (efrit-resume--choose-directory session)))
+            (should (= 0 asked))))
+      (ignore-errors (delete-directory saved t))
+      (ignore-errors (delete-directory here t)))))
+
+(ert-deftest test-efrit-agent-agents-hint-appears-with-a-second-agent ()
+  "The header's agent-switching hint is absent with one agent buffer and
+names the keys and the count once a second exists."
+  (with-efrit-agent-test-buffer
+    (let ((others (cl-remove (current-buffer) (efrit-agent-buffers))))
+      (skip-unless (null others))
+      (should-not (efrit-agent-agents-hint))
+      (let ((second (generate-new-buffer "*efrit[other]*")))
+        (unwind-protect
+            (progn
+              (with-current-buffer second (efrit-agent-mode))
+              (let ((hint (efrit-agent-agents-hint)))
+                (should hint)
+                (should (string-match-p "C-c \\]/\\[" hint))
+                (should (string-match-p "of 2 agents" hint))))
+          (with-current-buffer second
+            (remove-hook 'kill-buffer-query-functions #'efrit-agent--kill-buffer-query t))
+          (kill-buffer second))))))
 
 (ert-deftest test-efrit-agent-cancel-offers-the-queue ()
   "A turn that ends as interrupted with inputs queued asks whether to

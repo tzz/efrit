@@ -104,6 +104,18 @@ Options:
     (let ((key (efrit-web-search--cache-key query site)))
       (puthash key (cons (float-time) results) efrit-web-search--cache))))
 
+;;; The engine's host
+
+(defconst efrit-web-search--engine-hosts
+  '((duckduckgo . "html.duckduckgo.com")
+    (brave . "api.search.brave.com"))
+  "The host each `efrit-web-search-backend' talks to.")
+
+(defun efrit-web-search-host ()
+  "The host the configured search engine runs on."
+  (or (alist-get efrit-web-search-backend efrit-web-search--engine-hosts)
+      "unknown-host"))
+
 ;;; DuckDuckGo HTML search
 
 (defun efrit-web-search--duckduckgo-url (query site)
@@ -242,7 +254,10 @@ Returns standard tool response with search results.
 Note: Search queries are sent to external services.
 Do not include sensitive user data in queries."
   (efrit-tool-execute web_search args
-    (efrit-sandbox-check 'net t "web_search"
+    ;; The target is the engine's host, which the sandbox knows as a
+    ;; configured one: a search is not "a host your request did not
+    ;; name" (2026-11-11, every search prompted as unusual)
+    (efrit-sandbox-check 'net (cons 'host (efrit-web-search-host)) "web_search"
                          (format "search %S%s" (or (alist-get 'query args) "")
                                  (if-let* ((site (alist-get 'site args)))
                                      (format " (site: %s)" site) "")))

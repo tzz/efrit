@@ -467,7 +467,9 @@ Shows: status │ elapsed │ mode │ verbosity │ tool count │ hints"
        ('working
         (concat sep (propertize "k:cancel  C-c ?:menu"
                                 'face 'efrit-agent-timestamp)))
-       (_ "")))))
+       (_ ""))
+     (when-let* ((agents (efrit-agent-agents-hint)))
+       (concat sep (propertize agents 'face 'efrit-agent-timestamp))))))
 
 (defvar efrit-agent--input-hint-cache nil
   "(MAP . HINT): the hint last computed and the keymap it was computed from.
@@ -508,6 +510,15 @@ who rebinds them sees their own keys; the result is cached per keymap."
             (funcall key 'efrit-agent-input-send-override "M-RET")
             (funcall key 'efrit-agent-input-history-prev "M-p")
             (funcall key 'efrit-agent-input-history-next "M-n"))))
+
+(defun efrit-agent-agents-hint ()
+  "How to move between agent buffers, or nil when this is the only one.
+Shown in the header beside the key hint once a second agent exists
+\(tzz, 2026-11-11: with several sessions open the keys were not
+discoverable).  N counts every agent buffer, this one included."
+  (let ((n (length (efrit-agent-buffers))))
+    (when (> n 1)
+      (format "C-c ]/[ next/prev of %d agents · C-c }/{ needs attention · C-c ? l switch" n))))
 
 (defun efrit-agent--usage-segment ()
   "Token usage indicator for this buffer's session, or nil."

@@ -190,6 +190,13 @@ Every call is recorded; the host has /home/u/proj/ as the project and
       ('file-attributes (and (equal path "/instr-test:/home/u/CLAUDE.md")
                              (list nil 1 0 0 '(0 0) '(0 0) '(0 0) 20 "-rw-r--r--" t 1 0)))
       ('insert-file-contents (insert "REMOTE-ANCESTOR-RULES\n") (list path 22))
+      ;; one listing per directory: /home/u holds the file, the rest
+      ;; hold only unrelated names
+      ('directory-files (pcase path
+                          ("/instr-test:/home/u/" '("." ".." "CLAUDE.md" "source"))
+                          ("/instr-test:/home/u/proj/" '("." ".." "salt"))
+                          ((or "/instr-test:/" "/instr-test:/home/") '("." ".." "u"))
+                          (_ (signal 'file-missing (list "Opening directory" path)))))
       ('file-truename path)
       ('abbreviate-file-name path)
       (_ (apply op args)))))
@@ -210,7 +217,7 @@ Every call is recorded; the host has /home/u/proj/ as the project and
 (defun test-instr--remote-reads ()
   "How many file-system questions the fake host answered so far."
   (cl-count-if (lambda (op) (memq op '(file-readable-p file-directory-p file-attributes
-                                                      insert-file-contents)))
+                                                      insert-file-contents directory-files)))
                test-instr--remote-ops))
 
 (ert-deftest test-instr-remote-root-is-walked-once-per-ttl ()
@@ -239,6 +246,23 @@ zero times; forgetting or expiry walks again."
         (efrit-instructions-forget)
         (efrit-instructions-text root)
         (should (> (test-instr--remote-reads) before))))))
+
+(ert-deftest test-instr-remote-walk-lists-each-directory-once ()
+  "On a remote root, locating asks each directory for its listing once
+and stats only the names the listing holds: here three ancestors and
+the project, one listing each, plus the stat of the one CLAUDE.md.
+Before 2026-11-11 every candidate name in every directory was a
+round trip (five names, four directories: 20 or more)."
+  (test-instr--with-remote
+    (let ((located (efrit-instructions-locate root)))
+      (should (equal (mapcar #'car located) '("/instr-test:/home/u/CLAUDE.md"))))
+    (let ((listings (cl-count 'directory-files test-instr--remote-ops))
+          (stats (cl-count-if (lambda (op) (memq op '(file-readable-p file-directory-p)))
+                              test-instr--remote-ops)))
+      ;; /, /home/, /home/u/, /home/u/proj/
+      (should (= 4 listings))
+      ;; readable-p and directory-p of the one file found; nothing else
+      (should (<= stats 2)))))
 
 (ert-deftest test-instr-local-root-is-not-cached ()
   "A local root follows edits at once: no TTL entry is made for it."

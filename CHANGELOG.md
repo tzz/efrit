@@ -41,7 +41,7 @@ The reviewer's advisor.
 - Tools that wait on their own request wait with `sit-for`: Emacs stayed responsive-looking frozen for an image generation; `C-c C-k` cancels such requests too
 - A generated image's line is a result, not work: it stays visible when the turn folds; the fold summary counts rows by id (two adjacent tool rows read as one)
 
-### Fixed (0.18.1 – 0.18.7)
+### Fixed (0.18.1 – 0.18.8)
 
 - The reviewer's call count and purpose count uses, not description lines
 - Folding a turn no longer resets a tool row's own folded/unfolded state (arrows and text disagreed)
@@ -50,6 +50,11 @@ The reviewer's advisor.
 - `C-c C-k` (cancel) on a turn with nothing in flight (no stream, no tool: a callback died between the response and the next request) ends the turn at once instead of setting a flag nothing reads; the buffer had shown `reviewing...` for good
 - `C-c C-k` cancels the turn with point in the input too: the input map bound it to a clear of the input, which shadowed cancel and threw the draft away; `efrit-agent-input-clear` now kills to the kill ring, `C-c C-u` is the key for that
 - Resume: `M-x efrit-resume` lists sessions as `id | time | project | first words`, newest first, and accepts a full id or a unique part of one as typed (`/resume 232956`, `M-x efrit-resume-session`); a restored conversation whose assistant entries are content blocks no longer crashes (`stringp`) and renders its text plus one `⚙ tool, tool` line, oldest first.  `efrit-session-persist-load` returns the conversation in the live order (oldest first); `ask_session` sent a peer's transcript backwards
+- Resume opens a new agent buffer; the one you resume from is left alone.  When the session's saved directory differs from the current one you choose which the restored session works in (`efrit-resume-directory`: `ask`, `saved`, `current`)
+- The header names the agent-switching keys (`C-c ]/[`, `C-c }/{`, `C-c ? l`) and the count once a second agent buffer exists
+- `web_search` asks the sandbox for the engine's host (`efrit-web-search-host`), which is a configured host: a search no longer prompts as "a host your request did not name"
+- A local buffer with no visited file (`*scratch*`, a temp or help buffer) needs no `buffer` grant: nothing the file sandbox protects is behind it.  The kinds in `efrit-sandbox-guarded-buffer-regexps` (the message log, shells, mail readers, eww) still ask, and the prompt says which kind instead of "visits a file outside the project"
+- A remote project root is walked with one `directory-files` per ancestor instead of a stat per candidate instruction file: five names over nine ancestors was 45 TRAMP round trips before the first review could start
 
 ## [0.17.0] - 2026-11-10
 
