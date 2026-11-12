@@ -434,11 +434,14 @@ edited command line, eval_sexp reads the edited form."
 
 (defun efrit-sandbox-request-editable-p (req)
   "Non-nil if REQ is one whose input the user can edit before allowing:
-a shell command line or an elisp form."
-  (and (memq (efrit-sandbox-request-cap req) '(shell elisp))
-       (stringp (efrit-sandbox-request-detail req))
+a shell command line, an elisp form, or a tool definition (define_tool's
+detail is the definition's JSON; the edited text is what gets defined)."
+  (and (stringp (efrit-sandbox-request-detail req))
        (not (string-empty-p (efrit-sandbox-request-detail req)))
-       (member (efrit-sandbox-request-tool req) '("shell_exec" "eval_sexp"))))
+       (or (and (memq (efrit-sandbox-request-cap req) '(shell elisp))
+                (member (efrit-sandbox-request-tool req) '("shell_exec" "eval_sexp")))
+           (and (eq (efrit-sandbox-request-cap req) 'write)
+                (equal (efrit-sandbox-request-tool req) "define_tool")))))
 
 (defvar efrit-sandbox--session-grants (make-hash-table :test 'equal)
   "Project root -> list of grant plists valid for this Emacs session.")
@@ -1581,6 +1584,40 @@ With `efrit-sandbox-enabled' nil this is a no-op that returns t."
               (efrit-publish 'sandbox-denied `((:cap . ,cap) (:target . ,ctarget) (:tool . ,tool))))
             (signal 'efrit-sandbox-denied (list req)))))))))
 
+(defun efrit-sandbox-approve-once (cap target tool detail)
+  "Ask the user about CAP on TARGET for TOOL, DETAIL in view, with no grant recorded.
+For requests no grant must ever cover, each approved on its own: a
+tool definition (`define_tool' writes under `.efrit/', which
+`efrit-sandbox-always-deny' keeps out of every grant).  The turn's
+standing answers apply (N denies, q aborts), a question turn refuses,
+unattended mode answers as it does any prompt.  Returns the text the
+user edited at the prompt, else t.  Signals `efrit-sandbox-denied' on
+a refusal.  With `efrit-sandbox-enabled' nil, t."
+  (if (not efrit-sandbox-enabled)
+      t
+    (let ((req (efrit-sandbox-request-create :cap cap :target target :tool tool :detail detail)))
+      (when (and (fboundp 'efrit-sandbox-question-turn-p) (efrit-sandbox-question-turn-p cap))
+        (setf (efrit-sandbox-request-detail req)
+              "the user asked a question this turn: answer it; do not change, run or evaluate anything")
+        (signal 'efrit-sandbox-denied (list req)))
+      (let ((scope (and (efrit-sandbox--request-function)
+                        (not (eq (efrit-sandbox-turn-answer) 'deny-all))
+                        (efrit-sandbox--ask-without-clock req))))
+        (when (eq (efrit-sandbox-turn-answer) 'abort)
+          (efrit-sandbox--turn-set :answer nil)
+          (efrit-log 'info "sandbox: turn aborted by the user at %s (%s)" tool target)
+          (when (fboundp 'efrit-publish)
+            (efrit-publish 'sandbox-denied `((:cap . ,cap) (:target . ,target) (:tool . ,tool) (:abort . t))))
+          (signal 'quit nil))
+        (if (memq scope '(once session project))
+            (progn
+              (efrit-log 'info "sandbox: %s approved once by the user (%s)" tool target)
+              (or (efrit-sandbox-request-edited req) t))
+          (efrit-log 'info "sandbox: denied %s %s (%s)" cap target tool)
+          (when (fboundp 'efrit-publish)
+            (efrit-publish 'sandbox-denied `((:cap . ,cap) (:target . ,target) (:tool . ,tool))))
+          (signal 'efrit-sandbox-denied (list req)))))))
+
 (defun efrit-sandbox-request-exact-line-p (req)
   "Non-nil if REQ is an always-ask shell line (granted exactly, once,
 after the line is confirmed)."
@@ -1590,10 +1627,13 @@ after the line is confirmed)."
 
 (defun efrit-sandbox-request-once-only-p (req)
   "Non-nil if REQ can only ever be granted once: an always-ask shell
-line, or a remote file whose host policy is `once'."
+line, a remote file whose host policy is `once', or a tool definition
+\(each definition is approved on its own; a standing write grant on
+the definitions file would let the next one in unseen)."
   (let ((target (efrit-sandbox-request-target req))
         (cap (efrit-sandbox-request-cap req)))
     (or (efrit-sandbox-request-exact-line-p req)
+        (member (efrit-sandbox-request-tool req) '("define_tool" "undefine_tool"))
         (and (memq cap '(read write)) (efrit-sandbox-remote-p target)
              (eq (efrit-sandbox-remote-policy target cap) 'once))
         ;; a shell grant in a remote root whose write policy is once

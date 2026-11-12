@@ -55,7 +55,7 @@
   :prefix "efrit-context-")
 
 (defcustom efrit-context-sources
-  '(buffer position region diagnostic project visible-buffers edit-history pins)
+  '(buffer position region diagnostic project visible-buffers edit-history pins session-diff)
   "Sources of editor context prepended to each REPL turn.
 
 Each element is either a symbol naming a built-in source or a
@@ -71,6 +71,8 @@ function.  Built-ins:
   edit-history    the target buffer's recent edit bursts as diffs
                   (only while `efrit-edit-history-mode' is on there)
   pins            the project's pinned references (`efrit-context-pin')
+  session-diff    one unified diff of every file this session wrote,
+                  against where each started (efrit-session-diff)
 
 A function element is called with one argument, the target buffer,
 inside `with-current-buffer', and returns a string (one or more
@@ -81,7 +83,7 @@ Set to nil to send no proactive context."
   :type '(repeat (choice (const buffer) (const position) (const region)
                          (const diagnostic) (const project)
                          (const visible-buffers) (const recent-files)
-                         (const edit-history) (const pins)
+                         (const edit-history) (const pins) (const session-diff)
                          function))
   :group 'efrit-context)
 
@@ -314,7 +316,14 @@ enclosing node (after ai-code-interface, 2026-09-28)."
     (visible-buffers . efrit-context--source-visible-buffers)
     (recent-files . efrit-context--source-recent-files)
     (edit-history . efrit-context--source-edit-history)
-    (pins . efrit-context--source-pins)))
+    (pins . efrit-context--source-pins)
+    (session-diff . efrit-context--source-session-diff)))
+
+(declare-function efrit-session-diff-context-source "efrit-session-diff" (buf))
+
+(defun efrit-context--source-session-diff (buf)
+  (when (require 'efrit-session-diff nil t)
+    (efrit-session-diff-context-source buf)))
 
 (declare-function efrit-edit-history-text "efrit-edit-history")
 (defvar efrit-edit-history-mode)

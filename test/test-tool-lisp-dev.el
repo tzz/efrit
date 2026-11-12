@@ -77,6 +77,71 @@ refused every load_project_file of its files, four times in a row."
       (ignore-errors (delete-file link))
       (delete-directory real t))))
 
+(defvar test-probe--sent nil)
+(defun test-probe--submit (shown &optional api-input)
+  "The collaborator a probe stubs; the real one would start a turn."
+  (setq test-probe--sent (list shown api-input))
+  'real)
+(defun test-probe--explain (text)
+  "The 2026-11-11 action: an (interactive \"s\") that hands TEXT to the collaborator."
+  (interactive "sRegion: ")
+  (test-probe--submit (format "Explain [%d chars]" (length text)) text))
+(defun test-probe--upcase-region (start end)
+  (interactive "r")
+  (upcase-region start end))
+(defun test-probe--asks ()
+  (interactive)
+  (read-string "Name: "))
+
+(ert-deftest test-lisp-dev-probe-runs-a-command-with-stubs-in-a-throwaway-buffer ()
+  "probe_command applies a function to args with a collaborator stubbed
+and reports the stub's calls (the real one never runs); runs an
+interactive region command on prepared text with mark and point and
+returns the text after; a command that reads input fails instead of
+hanging; a stub on an efrit symbol is refused; the buffer is gone
+afterwards and the stubbed definition is back."
+  (let* ((efrit-sandbox-enabled nil)
+         (before (symbol-function 'test-probe--submit)))
+    (setq test-probe--sent nil)
+    ;; args + stub: the Embark question answered in one call
+    (let* ((r (efrit-tool-probe-command
+               `((command . "test-probe--explain")
+                 (args . ["\"line two\""])
+                 (stubs . [(("symbol" . "test-probe--submit")
+                            ("lambda" . "(lambda (shown &optional api) (list 'stubbed shown))"))]))))
+           (res (alist-get 'result r)))
+      (should (eq t (alist-get 'success r)))
+      (should (eq :json-false (alist-get 'failed res)))
+      (should (equal "(stubbed \"Explain [8 chars]\")" (alist-get 'value res)))
+      (let ((call (aref (alist-get 'stub_calls res) 0)))
+        (should (equal "test-probe--submit" (alist-get 'symbol call)))
+        (should (equal ["\"Explain [8 chars]\"" "\"line two\""] (alist-get 'args call))))
+      ;; the real collaborator did not run, and is back in place
+      (should (null test-probe--sent))
+      (should (eq before (symbol-function 'test-probe--submit))))
+    ;; an interactive region command on prepared text
+    (let* ((r (efrit-tool-probe-command '((command . "test-probe--upcase-region")
+                                          (text . "abc def") (point . 1) (mark . 4) (mode . "text-mode"))))
+           (res (alist-get 'result r)))
+      (should (eq :json-false (alist-get 'failed res)))
+      (should (equal "ABC def" (alist-get 'buffer_after res)))
+      (should (= 1 (alist-get 'point_after res))))
+    ;; a prompting command fails, it does not hang
+    (let ((res (alist-get 'result (efrit-tool-probe-command '((command . "test-probe--asks"))))))
+      (should (eq t (alist-get 'failed res)))
+      (should (string-match-p "read-string.*blocked\\|quit" (alist-get 'error res))))
+    ;; a stub on efrit's own function is refused
+    (let ((r (efrit-tool-probe-command
+              '((command . "test-probe--explain") (args . ["\"x\""])
+                (stubs . [(("symbol" . "efrit-sandbox-check") ("lambda" . "(lambda (&rest _) t)"))])))))
+      (should (string-match-p "efrit-sandbox-check" (format "%s" r)))
+      (should-not (eq :json-false (alist-get 'failed (alist-get 'result r)))))
+    ;; a non-command without args is refused with a hint
+    (should (string-match-p "pass args" (format "%s" (efrit-tool-probe-command '((command . "test-probe--submit"))))))
+    ;; no probe buffer left behind
+    (should-not (cl-some (lambda (b) (and (buffer-live-p b) (string-prefix-p " *efrit-probe*" (buffer-name b))))
+                         (buffer-list)))))
+
 (defun test-lisp-dev--boom ()
   (interactive)
   (test-lisp-dev--inner (list 1 2)))

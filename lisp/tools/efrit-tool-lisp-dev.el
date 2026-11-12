@@ -35,6 +35,9 @@
 (require 'ert)
 (require 'efrit-tool-utils)
 (require 'efrit-sandbox)
+(require 'efrit-tool-last-error)
+(require 'efrit-sandbox-eval)
+(declare-function efrit-tools--call-with-input-blocked "efrit-tools" (thunk))
 
 (declare-function efrit-review-flags--text-effects "efrit-review-flags")
 
@@ -247,6 +250,146 @@ cannot be driven here; use `form' with the arguments spelled out."
             `((ran . ,label) (buffer . ,(buffer-name buf)) (failed . :json-false)
               (value . ,(truncate-string-to-width (format "%S" (cadr outcome)) 600 nil nil "…"))
               (note . "no error this time; if the user still sees one, the trigger differs (buffer, point, region, a prefix arg) — ask which")))))))))
+
+;;;; probe_command
+
+(defcustom efrit-tool-probe-max-text 4000
+  "Longest buffer text `probe_command' returns after the run."
+  :type 'integer
+  :group 'efrit-tool-utils)
+
+(defun efrit-tool-probe--parse-stubs (stubs)
+  "STUBS from the tool input as a list of (SYMBOL . LAMBDA-FORM).
+Each entry is an alist or hash with `symbol' and `lambda' (source
+text of a lambda).  A stub on one of efrit's own symbols is refused
+by `efrit-eval-with-function' when the probe runs."
+  (mapcar (lambda (stub)
+            (let* ((get (lambda (k) (cond ((hash-table-p stub) (gethash k stub))
+                                          ((listp stub) (or (alist-get (intern k) stub)
+                                                            (alist-get k stub nil nil #'equal))))))
+                   (name (funcall get "symbol"))
+                   (text (funcall get "lambda")))
+              (unless (and (stringp name) (not (string-empty-p name)))
+                (signal 'user-error (list "each stub needs a symbol")))
+              (unless (and (stringp text) (not (string-empty-p text)))
+                (signal 'user-error (list (format "stub for %s needs a lambda" name))))
+              (let ((form (condition-case err (car (read-from-string text))
+                            (error (signal 'user-error (list (format "stub for %s: %s" name (error-message-string err))))))))
+                (unless (and (consp form) (memq (car form) '(lambda function closure)))
+                  (signal 'user-error (list (format "stub for %s must be a lambda, got %s" name (car-safe form)))))
+                (cons (intern name) form))))
+          (if (vectorp stubs) (append stubs nil) stubs)))
+
+(defun efrit-tool-probe--form (command args stubs calls-var)
+  "The form the probe evaluates: COMMAND run with ARGS under STUBS.
+Every stub is wrapped so its calls are recorded in CALLS-VAR (a
+symbol bound by the caller) before the stub's own body runs; the
+wrapping goes through `efrit-eval-with-function', the same path a
+`cl-letf' in eval_sexp takes, so the sandbox's refusal of efrit's own
+symbols applies and the definitions come back however the run ends."
+  (let ((call (if args
+                  `(apply #',command (list ,@args))
+                `(let ((this-command ',command) (last-command this-command))
+                   (call-interactively #',command)))))
+    (dolist (stub (reverse stubs))
+      (let ((sym (car stub)) (fn (cdr stub)))
+        (setq call
+              `(efrit-eval-with-function
+                ',sym
+                (lambda (&rest probe-args)
+                  (push (cons ',sym probe-args) ,calls-var)
+                  (apply ,fn probe-args))
+                (lambda () ,call)))))
+    call))
+
+(defun efrit-tool-probe-command (args)
+  "Run a command in a throwaway buffer, with collaborators stubbed, and report what it did.
+ARGS: command (required, an interactive command or any function);
+text (the buffer's initial contents); point and mark (positions in
+that text, 1-based; a mark activates the region); mode (a major mode
+to turn on, default `fundamental-mode'); args (a list of Lisp source
+strings: with it the function is applied to those values instead of
+run through `call-interactively'); stubs (a list of {symbol, lambda}:
+each symbol's function cell is replaced for the run, every call to it
+is recorded).  Returns the value or error, the calls each stub
+received, the messages written, the buffer's text, point and mark
+after, and the names of other buffers whose text changed.  The
+buffer is killed afterwards.  Reviewed as eval_sexp is; synchronous
+user input is blocked, so a command that prompts fails rather than
+hangs; use `args' to pass what the prompt would have read."
+  (efrit-tool-execute probe_command args
+    (let* ((name (or (alist-get 'command args) ""))
+           (command (intern-soft name))
+           (text (or (alist-get 'text args) ""))
+           (point-at (alist-get 'point args))
+           (mark-at (alist-get 'mark args))
+           (mode (let ((m (alist-get 'mode args))) (and m (not (string-empty-p m)) (intern-soft m))))
+           (call-args (let ((a (alist-get 'args args)))
+                        (mapcar (lambda (src) (car (read-from-string src)))
+                                (if (vectorp a) (append a nil) a))))
+           (stubs (efrit-tool-probe--parse-stubs (alist-get 'stubs args)))
+           (calls-var (make-symbol "probe-calls"))
+           (buf nil))
+      (when (string-empty-p name) (signal 'user-error (list "command is required")))
+      (unless (and command (fboundp command))
+        (signal 'user-error (list (format "%s is not a function in this Emacs" name))))
+      (when (and (null call-args) (not (commandp command)))
+        (signal 'user-error (list (format "%s is not interactive; pass args to call it" name))))
+      (when (and (alist-get 'mode args) (not (and mode (fboundp mode))))
+        (signal 'user-error (list (format "no such mode: %s" (alist-get 'mode args)))))
+      ;; the buffer is made after the argument checks, so a refused call
+      ;; leaves nothing behind
+      (setq buf (generate-new-buffer " *efrit-probe*"))
+      (unwind-protect
+          (let ((form `(let ((,calls-var nil))
+                         (cons (condition-case err
+                                   (list 'value ,(efrit-tool-probe--form command call-args stubs calls-var))
+                                 (quit (list 'quit nil))
+                                 (error (list 'error err)))
+                               ,calls-var)))
+                (outcome nil) (observed nil))
+            (with-current-buffer buf
+              (when mode (delay-mode-hooks (funcall mode)))
+              (insert text)
+              (goto-char (if (integerp point-at) (min (max 1 point-at) (point-max)) (point-min)))
+              (when (integerp mark-at)
+                (set-mark (min (max 1 mark-at) (point-max)))
+                (activate-mark))
+              (setq observed
+                    (efrit-eval-observe
+                     (lambda ()
+                       (setq outcome
+                             (if (bound-and-true-p efrit-sandbox-enabled)
+                                 (efrit-sandbox-eval-form
+                                  form
+                                  (lambda (f) (efrit-tools--call-with-input-blocked (lambda () (eval f t)))))
+                               (efrit-tools--call-with-input-blocked (lambda () (eval form t))))))))
+              (let* ((result (car outcome))
+                     (calls (reverse (cdr outcome)))
+                     (after (buffer-substring-no-properties (point-min) (point-max))))
+                (efrit-tool-success
+                 `((command . ,name)
+                   ,@(pcase (car result)
+                       ('value `((failed . :json-false)
+                                 (value . ,(truncate-string-to-width (format "%S" (cadr result)) 600 nil nil "…"))))
+                       ('quit `((failed . t) (error . "quit: the command read input it could not get here; pass args")))
+                       ('error `((failed . t)
+                                 (error . ,(error-message-string (cadr result)))
+                                 (condition . ,(format "%S" (car (cadr result)))))))
+                   (stub_calls . ,(vconcat (mapcar (lambda (c)
+                                                     `((symbol . ,(symbol-name (car c)))
+                                                       (args . ,(vconcat (mapcar (lambda (a) (truncate-string-to-width (format "%S" a) 300 nil nil "…"))
+                                                                                 (cdr c))))))
+                                                   calls)))
+                   (messages . ,(vconcat (nth 1 observed)))
+                   (buffer_after . ,(if (> (length after) efrit-tool-probe-max-text)
+                                        (concat (substring after 0 efrit-tool-probe-max-text)
+                                                (format "… [%d more chars]" (- (length after) efrit-tool-probe-max-text)))
+                                      after))
+                   (point_after . ,(point))
+                   (mark_after . ,(or (mark t) :json-null))
+                   (other_buffers_changed . ,(vconcat (cl-remove (buffer-name buf) (nth 2 observed) :test #'equal))))))))
+        (when (and buf (buffer-live-p buf)) (kill-buffer buf))))))
 
 (provide 'efrit-tool-lisp-dev)
 

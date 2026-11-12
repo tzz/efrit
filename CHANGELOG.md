@@ -28,6 +28,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `efrit-api-url`: Use `efrit-api-base-url` in efrit-common.el instead. The legacy variable still works as an override but is deprecated.
 
 
+## [0.20.0] - 2026-11-12
+
+Results as good as a careful reader's, as fast: ask Emacs about the
+library, verify by running, keep the whole change in view, and let
+efrit grow its own tools (tzz: "take advantage of its higher coupling
+with emacs internals"; "build in a way for efrit to extend itself").
+
+### Added
+
+- `library_contract` tool: what to know before calling, wrapping or rebinding a function, from the loaded definition in one call: kind, signature, the `interactive-only` / obsolete / `pure` declarations with their replacements, the options and variables it reads (and sets), the hooks it runs, what the docstring says it depends on (point, region, current buffer), its advice, and its callers in the user's own code first (`load-history` walk, no project needed).  Read class, not reviewed (`efrit-tool-contract.el`)
+- `probe_command` tool: run a command (or any function) in a throwaway buffer with named collaborators stubbed, under the sandbox with input blocked, and get back the value or error, every call each stub received with its arguments, the messages, the buffer's text/point/mark after and the other buffers changed.  Exec class.  Stubs on efrit's own functions are refused; a stub is a `cl-letf` through `efrit-eval-with-function`
+- The reviewer sees the function an edit leaves, not the fragment: for `edit_file`/`edit_buffer` on Lisp, the batch carries `[AFTER THE EDIT, NAME: …]` with the whole top-level form computed from the current text (visiting buffer first), and `[CALLED BY: …]` with the loaded callers (`efrit-review-after-edit`, `efrit-review-after-edit-max-chars`)
+- The session's change as one diff: every file a write tool touched is tracked per session; a unified diff of all of them against where each started (VC HEAD, else the text before the first write, else nothing for a new file) goes into the editor context of each user turn (`session-diff` source) and into the reviewer's message as CHANGES THIS SESSION.  Most recently touched first, budgeted, omitted files named.  `/diff` shows it; a new conversation forgets it (`efrit-session-diff.el`)
+- Tools defined in JSON by the user and the model: `tools.json` under `efrit-data-directory` (global) and `.efrit/tools.json` (project; shadows a global name), each definition `{name, description, class, input_schema, body: {kind: elisp|template, source}}`, registered through `efrit-register-tool` and re-read when the files change.  An `elisp` body is one form evaluated with `input` bound exactly as `eval_sexp` evaluates; a `template` body is a shell line with `{{field}}` placeholders run as `shell_exec` runs.  `define_tool` (write class; the user approves the definition once at the sandbox prompt and can edit it there), `undefine_tool`, `list_tools`, `/tools`.  When the same 2–4 call sequence repeats three times in a session, a `⚙` note and a `[note: …]` in the result say `define_tool` can make it one call, once per sequence.  Design: `docs/designs/user-defined-tools.md` (`efrit-tool-defs.el`)
+
+### Changed
+
+- System prompt: when to use `library_contract` and `probe_command`, that the session diff is the state to continue from, and how to propose a tool
+- `define_tool` / `undefine_tool` are approved per call, with no grant recorded (`efrit-sandbox-approve-once`): the definitions file is under `.efrit/`, which no grant may cover, and the prompt's `e` edits the definition's JSON before it is written
+
+### Fixed
+
+- `shell_exec` / `run_program` could return output with its tail missing on a loaded machine: the process exit was seen before the last pipe read.  `efrit-do--run-argv` drains the output after the exit
+
 ## [0.19.0] - 2026-11-11
 
 Fewer prompts, fewer reviews, one bug class closed (tzz: "super super

@@ -35,7 +35,7 @@
 
 (defgroup efrit-review-flags nil
   "Static analysis of proposed Lisp changes for the reviewer."
-  :group 'efrit-review)
+  :group 'efrit-review-flags)
 
 (defcustom efrit-review-flags-max 8
   "At most this many FLAG lines per tool call; the rest are counted."
@@ -271,6 +271,141 @@ evals by the effects of the form; shell lines by what they start."
           (append (seq-take lines efrit-review-flags-max)
                   (list (format "[… %d more flag(s)]" (- (length lines) efrit-review-flags-max))))
         lines))))
+
+;;;; The defun after the edit
+;;
+;; old_str/new_str fragments show the reviewer a few lines and nothing
+;; of the function they land in.  On 2026-11-11 a reviewer approved
+;; thirteen fragments of two files one at a time and never saw a whole
+;; function.  For a Lisp edit, this computes the text as it will be
+;; after the replacement, finds the top-level form the change falls
+;; in, and hands the reviewer that form, with the functions that call
+;; it in the loaded code (efrit-tool-contract), so the judgement is
+;; about a function and its users, not a diff hunk.
+
+(defcustom efrit-review-after-edit-max-chars 2500
+  "Longest AFTER THE EDIT form shown to the reviewer; the tail is cut."
+  :type 'integer
+  :group 'efrit-review-flags)
+
+(declare-function efrit-tool-contract--callers "efrit-tool-contract" (symbol))
+
+(defvar efrit-review-flags--callers-cache (make-hash-table :test 'eq)
+  "SYMBOL -> (LOAD-HISTORY-LENGTH . CALLERS): the last caller walk per symbol.
+The walk reads every loaded definition (half a second for 250 files);
+a turn edits the same function several times.")
+
+(defun efrit-review-flags--callers (symbol)
+  "Loaded functions that call SYMBOL, from `efrit-tool-contract--callers', memoized
+until something else is loaded."
+  (let ((hit (gethash symbol efrit-review-flags--callers-cache)))
+    (if (and hit (= (car hit) (length load-history)))
+        (cdr hit)
+      (let ((callers (and (require 'efrit-tool-contract nil t)
+                          (ignore-errors (efrit-tool-contract--callers symbol)))))
+        (puthash symbol (cons (length load-history) callers) efrit-review-flags--callers-cache)
+        callers))))
+
+(defun efrit-review-flags--file-text (path)
+  "The text an edit to PATH starts from: the visiting buffer's, else the file's."
+  (let ((full (expand-file-name path)))
+    (cond
+     ((find-buffer-visiting full)
+      (with-current-buffer (find-buffer-visiting full)
+        (save-restriction (widen) (buffer-substring-no-properties (point-min) (point-max)))))
+     ((file-readable-p full)
+      (with-temp-buffer (insert-file-contents full) (buffer-string))))))
+
+(defun efrit-review-flags--after-edit-file (input)
+  "The text and change position an edit_file INPUT leaves: (TEXT . POSITION), or nil.
+Nil when the old text is missing or, without replace_all, found twice:
+edit_file refuses those itself."
+  (let ((path (gethash "path" input)) (old (gethash "old_str" input))
+        (new (gethash "new_str" input)) (all (gethash "replace_all" input)))
+    (when (and (efrit-review-flags--lisp-text-p path) (stringp old) (stringp new)
+               (not (string-empty-p old)))
+      (when-let* ((text (efrit-review-flags--file-text path))
+                  (at (string-search old text)))
+        (cond
+         ((and all (not (eq all :json-false)))
+          (cons (string-replace old new text) at))
+         ((not (string-search old text (1+ at)))
+          (cons (concat (substring text 0 at) new (substring text (+ at (length old)))) at)))))))
+
+(defun efrit-review-flags--after-edit-buffer (input)
+  "The text and change position an edit_buffer INPUT leaves: (TEXT . POSITION), or nil.
+Only for a live buffer in a Lisp mode."
+  (let ((buffer (get-buffer (or (gethash "buffer" input) "")))
+        (new (gethash "text" input))
+        (replace (gethash "replace" input))
+        (from (gethash "from-pos" input)) (to (gethash "to-pos" input))
+        (position (gethash "position" input)))
+    (when (and buffer (stringp new)
+               (with-current-buffer buffer (derived-mode-p 'emacs-lisp-mode 'lisp-data-mode)))
+      (with-current-buffer buffer
+        (save-restriction
+          (widen)
+          (let* ((text (buffer-substring-no-properties (point-min) (point-max)))
+                 (at (cond
+                      ((and replace (not (eq replace :json-false)))
+                       (and (integerp from) (integerp to) (<= 1 from to (1+ (length text)))
+                            (cons from to)))
+                      ((integerp position) (and (<= 1 position (1+ (length text))) (cons position position)))
+                      ((member position '(nil "end")) (cons (1+ (length text)) (1+ (length text))))
+                      ((equal position "start") (cons 1 1))
+                      ((equal position "point") (cons (point) (point))))))
+            (when at
+              (cons (concat (substring text 0 (1- (car at))) new (substring text (1- (cdr at))))
+                    (1- (car at))))))))))
+
+(defun efrit-review-flags--form-around (text position)
+  "The top-level form of Lisp TEXT that contains POSITION: (NAME-OR-NIL . FORM-TEXT), or nil.
+POSITION is a zero-based string index."
+  (with-temp-buffer
+    (insert text)
+    (delay-mode-hooks (emacs-lisp-mode))
+    (goto-char (min (1+ position) (point-max)))
+    ;; a change that starts at a top-level open paren belongs to that
+    ;; form, not to the one before it
+    (when (and (bolp) (eq (char-after) ?\()) (forward-char))
+    (condition-case nil
+        (progn
+          (beginning-of-defun)
+          (let ((start (point)))
+            (forward-sexp)
+            (let* ((form-text (buffer-substring-no-properties start (point)))
+                   (name (and (string-match "\\`(\\(?:cl-\\)?def[a-z-]*\\s-+'?\\([^][[:space:]()]+\\)" form-text)
+                              (match-string 1 form-text))))
+              (cons name form-text))))
+      (error nil))))
+
+(defun efrit-review-after-edit (use)
+  "Lines describing the function USE's Lisp edit leaves behind, or nil.
+For edit_file (old_str/new_str on a .el file) and edit_buffer (text at
+a position, or a from-pos/to-pos replacement, in a Lisp buffer): the
+enclosing top-level form after the change, and the loaded functions
+that call the one it defines.  Nil for other tools, non-Lisp targets,
+and edits edit_file would refuse (old text missing or found twice)."
+  (let ((name (nth 1 use)) (input (nth 2 use)))
+    (when (hash-table-p input)
+      (when-let* ((after (pcase name
+                           ("edit_file" (efrit-review-flags--after-edit-file input))
+                           ("edit_buffer" (efrit-review-flags--after-edit-buffer input))))
+                  (form (efrit-review-flags--form-around (car after) (cdr after))))
+        (let* ((fname (car form))
+               (body (cdr form))
+               (limit efrit-review-after-edit-max-chars)
+               (shown (if (> (length body) limit)
+                          (format "%s\n… [%d more chars]" (substring body 0 limit) (- (length body) limit))
+                        body))
+               (symbol (and fname (intern-soft fname)))
+               (callers (and symbol (fboundp symbol) (efrit-review-flags--callers symbol))))
+          (delq nil
+                (list (format "[AFTER THE EDIT%s:\n%s]" (if fname (format ", %s" fname) "") shown)
+                      (when callers
+                        (format "[CALLED BY: %s%s]"
+                                (mapconcat (lambda (c) (symbol-name (cdr c))) (seq-take callers 8) ", ")
+                                (if (> (length callers) 8) (format " … +%d" (- (length callers) 8)) ""))))))))))
 
 (provide 'efrit-review-flags)
 

@@ -779,6 +779,10 @@ Use this to start a fresh conversation in the same buffer."
     (setf (efrit-repl-session-steering session) nil)
     (setf (efrit-repl-session-interrupt-requested session) nil)
     (setf (efrit-repl-session-budget session) (efrit-budget-create))
+    (when (fboundp 'efrit-session-diff-forget)
+      (efrit-session-diff-forget (efrit-repl-session-id session)))
+    (when (fboundp 'efrit-tool-defs-forget)
+      (efrit-tool-defs-forget (efrit-repl-session-id session)))
     (efrit-repl-session-set-status session 'idle)
     (efrit-log 'info "REPL session %s: reset" (efrit-repl-session-id session))))
 

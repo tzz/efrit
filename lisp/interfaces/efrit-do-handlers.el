@@ -76,6 +76,8 @@
 (declare-function efrit-tool-run-ert "efrit-tool-lisp-dev")
 (declare-function efrit-tool-reproduce-command "efrit-tool-lisp-dev")
 (declare-function efrit-tool-symbol-info "efrit-tool-introspect")
+(declare-function efrit-tool-library-contract "efrit-tool-contract")
+(declare-function efrit-tool-probe-command "efrit-tool-lisp-dev")
 (declare-function efrit-tool-show-ui-element "efrit-agent-screenshot")
 (declare-function efrit-tool-live-state "efrit-tool-introspect")
 (declare-function efrit-tool-mode-line-report "efrit-tool-introspect")
@@ -415,7 +417,11 @@ blocks inside `call-process'.  This loop checks the clock between
               (when (and (process-live-p proc)
                          (> (float-time) deadline))
                 (delete-process proc)
-                (signal 'efrit-shell-timeout (list (mapconcat #'identity argv " "))))))
+                (signal 'efrit-shell-timeout (list (mapconcat #'identity argv " ")))))
+            ;; the exit can be seen before the last of the output is
+            ;; read from the pipe: drain it, or a loaded machine loses
+            ;; the tail (the test suite at 6 jobs, 2026-11-12)
+            (while (accept-process-output proc 0.05)))
         (when (process-live-p proc) (delete-process proc)))
       (cons (buffer-string) (process-exit-status proc)))))
 
@@ -912,6 +918,13 @@ Returns JSON-encoded list of checkpoint metadata."
   :fn efrit-tool-reproduce-command
   :label "Reproduced")
 
+(efrit-define-simple-tool-handler efrit-do--handle-probe-command "probe_command"
+  :require efrit-tool-lisp-dev
+  :required ("command")
+  :fields ("command" "text" "point" "mark" "mode" "args" "stubs")
+  :fn efrit-tool-probe-command
+  :label "Probe")
+
 (efrit-define-optional-input-handler efrit-do--handle-project-outline "project_outline"
   :require efrit-tool-outline
   :fields ("path" "pattern" "max_files")
@@ -924,6 +937,13 @@ Returns JSON-encoded list of checkpoint metadata."
   :fields ("symbol" "buffer" "include_source" "include_callers")
   :fn efrit-tool-symbol-info
   :label "Symbol Info")
+
+(efrit-define-simple-tool-handler efrit-do--handle-library-contract "library_contract"
+  :require efrit-tool-contract
+  :required ("symbol")
+  :fields ("symbol" "include_callers")
+  :fn efrit-tool-library-contract
+  :label "Library Contract")
 
 (efrit-define-simple-tool-handler efrit-do--handle-live-state "live_state"
   :require efrit-tool-introspect

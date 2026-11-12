@@ -71,6 +71,10 @@
 (declare-function efrit-agent-expand-all "efrit-agent")
 (declare-function efrit-agent-collapse-all "efrit-agent")
 (declare-function efrit-select-model "efrit-models")
+(declare-function efrit-session-diff-show "efrit-session-diff" (&optional session-id))
+(declare-function efrit-tool-defs-show "efrit-tool-defs")
+(declare-function efrit-repl-session-id "efrit-repl-session")
+(defvar efrit-agent--repl-session)
 (declare-function efrit-menu "efrit-menu")
 (declare-function efrit-prompts-manage "efrit-prompts")
 (declare-function efrit-scope-insert-prompt "efrit-scope" (prompt))
@@ -492,6 +496,14 @@ typo should not cost a turn."
   (efrit-agent-define-slash-command "permissions" "Sandbox grants, review, limits" (lambda (_) (efrit-permissions)))
   (efrit-agent-define-slash-command "paste" "Paste the clipboard image as a mention" (lambda (_) (efrit-agent-paste-dwim)))
   (efrit-agent-define-slash-command "menu" "The efrit menu" (lambda (_) (efrit-menu)))
+  (efrit-agent-define-slash-command "diff" "The diff of everything this session wrote"
+                                    (lambda (_)
+                                      (require 'efrit-session-diff)
+                                      (efrit-session-diff-show
+                                       (and efrit-agent--repl-session
+                                            (efrit-repl-session-id efrit-agent--repl-session)))))
+  (efrit-agent-define-slash-command "tools" "The tools you and the model defined (define_tool)"
+                                    (lambda (_) (require 'efrit-tool-defs) (efrit-tool-defs-show)))
   (efrit-agent-define-slash-command "doctor" "Check the setup" (lambda (_) (efrit-doctor))))
 
 (efrit-agent-slash--define-builtins)

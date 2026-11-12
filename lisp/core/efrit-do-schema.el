@@ -543,6 +543,27 @@ Returns: Matches with file path, line number, column, content, and context lines
                                       ("form" . (("type" . "string") ("description" . "A Lisp form to evaluate instead of a command")))
                                       ("buffer" . (("type" . "string") ("description" . "Buffer to run in (default: the user's buffer)")))))
                       ("required" . []))))
+   (("name" . "probe_command")
+    ("description" . "Run a command (or any function) in a THROWAWAY buffer you set up, with named collaborators STUBBED, and see what it did: the value or error, every call each stub received (with arguments), the messages written, the buffer's text/point/mark after, other buffers changed. The buffer is killed afterwards; stubs are restored. Use it to verify behaviour instead of reasoning about it or asking the user: how an Embark action receives its target, what a command sends to efrit-submit, what a hook function inserts. Exec class, reviewed like eval_sexp. Synchronous user input is blocked (a prompting command fails, it does not hang): pass args to supply what the prompt would read. Stubs on efrit's own functions are refused.
+
+EXAMPLES:
+- probe_command command=\"tzz-efrit-explain-region\" args=[\"\\\"some text\\\"\"] stubs=[{\"symbol\":\"efrit-submit\",\"lambda\":\"(lambda (shown &optional api buffer) t)\"}]
+- probe_command command=\"fill-paragraph\" text=\"a long line …\" point=1 mode=\"text-mode\"
+- probe_command command=\"my-insert-date\" stubs=[{\"symbol\":\"current-time-string\",\"lambda\":\"(lambda (&rest _) \\\"Tue Jan 1 00:00:00 2030\\\")\"}]")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("command" . (("type" . "string") ("description" . "The command or function to run")))
+                                      ("text" . (("type" . "string") ("description" . "Initial buffer contents (default empty)")))
+                                      ("point" . (("type" . "integer") ("description" . "Point in the text, 1-based (default 1)")))
+                                      ("mark" . (("type" . "integer") ("description" . "Mark position; given, the region is active")))
+                                      ("mode" . (("type" . "string") ("description" . "Major mode to enable first, e.g. emacs-lisp-mode (default fundamental-mode)")))
+                                      ("args" . (("type" . "array") ("items" . (("type" . "string"))) ("description" . "Lisp source of each argument; with args the function is applied, not called interactively")))
+                                      ("stubs" . (("type" . "array")
+                                                  ("items" . (("type" . "object")
+                                                              ("properties" . (("symbol" . (("type" . "string")))
+                                                                              ("lambda" . (("type" . "string") ("description" . "Source of a lambda replacing the function for the run")))))
+                                                              ("required" . ["symbol" "lambda"])))
+                                                  ("description" . "Functions to replace for the run; every call is recorded")))))
+                      ("required" . ["command"]))))
    (("name" . "project_outline")
     ("description" . "Every top-level definition in the project's source files, by file, with line numbers (imenu). A few thousand tokens for a typical project; cached, so repeating it is free. Call it FIRST when a task spans files you have not read: it answers 'where is X' in one call, then read the two or three files whole. Read-only.")
     ("input_schema" . (("type" . "object")
@@ -563,6 +584,37 @@ EXAMPLES:
                                       ("include_source" . (("type" . "boolean") ("description" . "Include the definition's text (default true)")))
                                       ("include_callers" . (("type" . "boolean") ("description" . "Walk xref for callers (default false; slower)")))))
                       ("required" . ["symbol"]))))
+   (("name" . "library_contract")
+    ("description" . "What to know BEFORE calling, wrapping or rebinding a function, from the definitions loaded in this Emacs, in ONE call: kind (command/macro/alias/autoload), signature and interactive spec, the author's declarations (interactive-only and its replacement, obsolete since/replacement, pure, side-effect-free, indent), the user options and variables the body reads or sets (a ! marks sets), the hooks it runs, advice on it now, the first paragraph of its docstring, what it depends on positionally (point, the region, the mark, the minibuffer, the current buffer), and its callers in the loaded code, the user's own files first. Read-only, not reviewed. Use it instead of reading a library file in slices: magit-status being interactive-only, git-link-commit reading the word at point, an Embark action's minibuffer injection are each one call here.
+
+EXAMPLES:
+- library_contract symbol=\"magit-status\"
+- library_contract symbol=\"git-link-commit\"
+- library_contract symbol=\"embark--mark-target\" include_callers=false")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("symbol" . (("type" . "string") ("description" . "The function's name")))
+                                      ("include_callers" . (("type" . "boolean") ("description" . "List callers from the loaded code (default true)")))))
+                      ("required" . ["symbol"]))))
+   (("name" . "define_tool")
+    ("description" . "Define a NEW TOOL for this project (or globally) from a JSON definition, so a routine you keep rebuilding from eval_sexp/shell_exec calls becomes one call the user approves once. The user sees the definition at the prompt and can edit it; it is written to .efrit/tools.json (scope project) or the global tools.json, and is available from your next call. Body kinds: elisp (ONE form evaluated with `input' bound to the call's input as an alist with string keys; runs exactly as eval_sexp runs: inspected, guarded, no synchronous user input) or template (a shell line with {{field}} placeholders filled, shell-quoted, from the input; runs as shell_exec runs). The class (read/write/exec/net) decides how the reviewer and the sandbox treat calls. Propose one when you notice yourself repeating a 2-4 call sequence, or when a [note: you ran … N times] appears in a result; say in one line what the tool will do before calling define_tool. Write class.
+
+EXAMPLES:
+- define_tool scope=\"project\" pattern=\"shell_exec(make) → eval_sexp(compilation-start)\" definition={\"name\":\"run_tests\",\"description\":\"Run make test; return the failing lines.\",\"class\":\"exec\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"target\":{\"type\":\"string\",\"description\":\"make target (default test)\"}},\"required\":[]},\"body\":{\"kind\":\"template\",\"source\":\"make {{target}} 2>&1 | grep -E 'FAIL|Error' | head -40\"}}
+- define_tool scope=\"global\" definition={\"name\":\"buffer_outline\",\"description\":\"The imenu outline of a buffer.\",\"class\":\"read\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"buffer\":{\"type\":\"string\"}},\"required\":[\"buffer\"]},\"body\":{\"kind\":\"elisp\",\"source\":\"(with-current-buffer (alist-get \\\"buffer\\\" input nil nil #'equal) (mapcar #'car (imenu--make-index-alist t)))\"}}")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("definition" . (("type" . "object") ("description" . "The tool: name, description, class, input_schema, body {kind, source}")))
+                                      ("scope" . (("type" . "string") ("enum" . ["project" "global"]) ("description" . "Where it lives (default project)")))
+                                      ("pattern" . (("type" . "string") ("description" . "The repeated call sequence this replaces, for the record")))))
+                      ("required" . ["definition"]))))
+   (("name" . "undefine_tool")
+    ("description" . "Remove a tool defined with define_tool, by name and scope. Write class.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("name" . (("type" . "string") ("description" . "The tool's name")))
+                                      ("scope" . (("type" . "string") ("enum" . ["project" "global"]) ("description" . "Where it lives (default project)")))))
+                      ("required" . ["name"]))))
+   (("name" . "list_tools")
+    ("description" . "The tools the user and you defined with define_tool, with scope, class and origin. Call it before defining one, so you extend what exists instead of duplicating it.")
+    ("input_schema" . (("type" . "object") ("properties" . ()) ("required" . []))))
    (("name" . "live_state")
     ("description" . "Current values of named variables and the bound/fbound state of names, in one buffer. Names only: nothing is evaluated or called, so it is read-only and not reviewed. Use it for every 'what is X right now' instead of an eval_sexp of (list x y z).
 

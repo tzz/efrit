@@ -19,6 +19,8 @@
 (require 'efrit-do-circuit-breaker)
 (require 'efrit-permissions)
 (require 'efrit-diagnostics-baseline)
+(require 'efrit-session-diff)
+(require 'efrit-tool-defs)
 (require 'efrit-sandbox)
 (require 'efrit-result-struct)
 (require 'efrit-tool-registry)
@@ -140,6 +142,7 @@
     ("imenu_symbols"      . (efrit-do--handle-imenu-symbols . :tool-input))
     ("project_outline"    . (efrit-do--handle-project-outline . :tool-input))
     ("symbol_info"        . (efrit-do--handle-symbol-info . :tool-input))
+    ("library_contract"   . (efrit-do--handle-library-contract . :tool-input))
     ("live_state"         . (efrit-do--handle-live-state . :tool-input))
     ("mode_line_report"   . (efrit-do--handle-mode-line-report . :tool-input))
     ("buffer_scan"        . (efrit-do--handle-buffer-scan . :tool-input))
@@ -147,6 +150,10 @@
     ("load_project_file"  . (efrit-do--handle-load-project-file . :tool-input))
     ("run_ert"            . (efrit-do--handle-run-ert . :tool-input))
     ("reproduce_command"  . (efrit-do--handle-reproduce-command . :tool-input))
+    ("probe_command"      . (efrit-do--handle-probe-command . :tool-input))
+    ("define_tool"        . (efrit-tool-defs-handle-define . :tool-input))
+    ("undefine_tool"      . (efrit-tool-defs-handle-undefine . :tool-input))
+    ("list_tools"         . (efrit-tool-defs-handle-list . :tool-input))
     ("treesit_info"       . (efrit-do--handle-treesit-info . :tool-input))
     ("surrounding_context" . (efrit-do--handle-surrounding-context . :tool-input))
     ("show_location"      . (efrit-do--handle-show-location . :tool-input))
@@ -340,6 +347,8 @@ Applies circuit breaker limits to prevent infinite loops."
           ;; A write: remember the file's diagnostics before it, so the
           ;; result can say what the edit broke (efrit-diagnostics-baseline)
           (efrit-diagnostics-baseline-before-tool tool-name tool-input)
+          ;; and where the file starts from, for the session's one diff
+          (efrit-session-diff-before-tool tool-name tool-input)
 
           ;; If there's a warning message, prepend it to the result
           (let* ((warning (cdr breaker-check))
@@ -357,7 +366,11 @@ Applies circuit breaker limits to prevent infinite loops."
                                     (efrit-sandbox-denied-tool-result (cadr err)))))))
                  ;; Check result for error loops and inject warnings if needed
                  (loop-check (efrit-do--error-loop-check-result result))
-                 (final-result (cdr loop-check))
+                 ;; the same short call sequence for the third time: say
+                 ;; so once, define_tool can make it one call
+                 (repeat-note (and (stringp (cdr loop-check))
+                                   (efrit-tool-defs-watch tool-name tool-input)))
+                 (final-result (if repeat-note (concat (cdr loop-check) repeat-note) (cdr loop-check)))
                  (return-value (if warning
                                    (concat "\n" warning "\n" final-result)
                                  final-result)))

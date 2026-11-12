@@ -36,6 +36,7 @@
 (require 'efrit-tools)   ; efrit-tools--reset-rate-limits
 (require 'efrit-sandbox)
 (require 'efrit-diagnostics-baseline)
+(require 'efrit-tool-defs)
 (require 'efrit-do-circuit-breaker)   ; efrit-do--circuit-breaker-reset
 (require 'efrit-do-prompt)            ; efrit-do--command-system-prompt
 (require 'efrit-do-schema)            ; efrit-do--get-current-tools-schema
@@ -201,7 +202,10 @@ Returns the session ID."
          ;; rejections count per turn, not per session
          (efrit-review-forget-session session-id)
          (efrit-loop-stall-reset session-id)
-         (efrit-diagnostics-baseline-begin-turn)))
+         (efrit-diagnostics-baseline-begin-turn)
+         ;; the user's and the model's own tools, re-read when their
+         ;; JSON changed (efrit-tool-defs)
+         (efrit-tool-defs-load)))
       (efrit-repl-session-begin-turn session)
       (efrit-publish 'turn-start `((:session-id . ,session-id)
                                    (:input . ,user-input)))

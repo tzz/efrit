@@ -530,6 +530,7 @@ an addition to libraries.el, had run two calls before (2026-10-20)."
 
 (declare-function efrit-sandbox-shell-starts-emacs-p "efrit-sandbox")
 (declare-function efrit-review-flags-for-use "efrit-review-flags")
+(declare-function efrit-review-after-edit "efrit-review-flags")
 (declare-function efrit-review-confidence-describe "efrit-review-confidence")
 (declare-function efrit-review-confidence-remember-grant "efrit-review-confidence")
 (declare-function efrit-sandbox-shell-commands "efrit-sandbox")
@@ -612,6 +613,11 @@ per call (or nil), are the decision model's second opinion
        (cl-incf n)
        (concat (format "%d. %s %s" n (nth 1 use) (efrit-review--input-string (nth 2 use)))
                (when-let* ((flag (efrit-review--flags use))) (concat "\n   " flag))
+               ;; the whole function the edit leaves, and who calls it
+               ;; (docs/designs/review-per-file.md, 0.20.0)
+               (when-let* ((after (and (require 'efrit-review-flags nil t)
+                                       (ignore-errors (efrit-review-after-edit use)))))
+                 (concat "\n   " (mapconcat #'identity after "\n   ")))
                (when-let* ((lines (ignore-errors (efrit-review-confidence-describe use))))
                  (concat "\n   " (mapconcat #'identity lines "\n   ")))
                (when-let* ((advice (nth (1- n) advisor-lines))) (concat "\n   " advice))))
@@ -637,6 +643,13 @@ CONVERSATION SO FAR, when shown, is the earlier requests and answers of this ses
 request of the moment continues it: \"try again\", \"go on\", \"from the latest\", \"now the
 next one\" refer to the task set earlier, and a call that serves that task is asked for.
 Judge a short follow-up against the task, not against its own words.
+
+A block [AFTER THE EDIT, NAME: …] under an edit is the whole top-level form the edit leaves
+in the file, computed from the current text, and [CALLED BY: …] names the loaded functions
+that call it.  Judge the function, not the fragment: an edit that reads oddly on its own may
+complete the form shown.  CHANGES THIS SESSION, when present, is the diff of everything the
+agent wrote so far against where each file started; the proposed calls continue that change,
+so judge them as its next step, not as isolated edits.
 
 Lines marked [FLAG kind: …] under a call are facts about what the Lisp it writes or
 evaluates does, read statically: key = binds a key; hook / advice = changes what other
@@ -727,10 +740,24 @@ every turn, because it only saw the request of the moment."
                   (format "\n… [%d more chars]" (- (length text) efrit-review-instructions-max-chars)))
         text))))
 
-(defun efrit-review--user-message (intent proposer-text batch &optional recap conversation)
+(defcustom efrit-review-session-diff-max-chars 8000
+  "Longest CHANGES THIS SESSION diff shown to the reviewer.
+Files past it are named, not shown (efrit-session-diff)."
+  :type 'integer
+  :group 'efrit-review)
+
+(declare-function efrit-session-diff-text "efrit-session-diff" (&optional session-id budget))
+
+(defun efrit-review--session-diff (session-id)
+  "The diff of what SESSION-ID wrote so far, for the reviewer, or nil."
+  (when (require 'efrit-session-diff nil t)
+    (ignore-errors (efrit-session-diff-text session-id efrit-review-session-diff-max-chars))))
+
+(defun efrit-review--user-message (intent proposer-text batch &optional recap conversation session-diff)
   "Assemble the reviewer's single user message.
 INTENT is the request of the moment, RECAP the agent's steps since it,
-CONVERSATION the turns before it (`efrit-review-conversation-recap')."
+CONVERSATION the turns before it (`efrit-review-conversation-recap'),
+SESSION-DIFF the change the session made so far (efrit-session-diff)."
   (concat
    (when-let* ((standing (efrit-review--standing-instructions)))
      (concat "USER'S STANDING INSTRUCTIONS:\n" standing "\n\n"))
@@ -739,10 +766,13 @@ CONVERSATION the turns before it (`efrit-review-conversation-recap')."
              conversation "\n\n"))
    "USER REQUEST:\n" (or intent "(not available)")
    (when recap (concat "\n\nEARLIER THIS TURN (the agent's words and tool calls so far, oldest first; outputs not shown):\n" recap))
+   (when session-diff
+     (concat "\n\nCHANGES THIS SESSION (unified diff of every file the agent wrote, against where it started; the calls below continue it):\n"
+             session-diff))
    "\n\nAGENT SAID THIS TURN:\n" (or proposer-text "(nothing)")
    "\n\nPROPOSED TOOL CALLS:\n" batch))
 
-(defun efrit-review--request-data (intent proposer-text batch &optional recap conversation)
+(defun efrit-review--request-data (intent proposer-text batch &optional recap conversation session-diff)
   "The API request for one review.  No tools: the reviewer only answers."
   `(("model" . ,(or efrit-review-model efrit-default-model))
     ;; 1024 was hit twice on 2026-10-20 with no text at all (the model
@@ -751,7 +781,7 @@ CONVERSATION the turns before it (`efrit-review-conversation-recap')."
     ("max_tokens" . 4096)
     ("system" . ,(efrit-api-cacheable-system efrit-review--system-prompt))
     ("messages" . [(("role" . "user")
-                    ("content" . ,(efrit-review--user-message intent proposer-text batch recap conversation)))])))
+                    ("content" . ,(efrit-review--user-message intent proposer-text batch recap conversation session-diff)))])))
 
 (defvar efrit-review--last-vouch nil
   "(:confidence C :grant SCOPE :emacs REASON-OR-NIL) from the last parsed approve, or nil.
@@ -866,9 +896,10 @@ the calls in the reviewer's view and never decide anything."
          ;; sub-lines inflated "review: 3 tool calls" for one call
          (call-count (length (efrit-review-reviewable-uses content)))
          (classes (efrit-review--batch-classes content))
-         (request (efrit-review--request-data intent proposer batch recap conversation))
+         (session-diff (efrit-review--session-diff session-id))
+         (request (efrit-review--request-data intent proposer batch recap conversation session-diff))
          (done nil)
-         (prompt (efrit-review--user-message intent proposer batch recap conversation))
+         (prompt (efrit-review--user-message intent proposer batch recap conversation session-diff))
          (finish (lambda (verdict)
                    (unless done
                      (setq done t)
