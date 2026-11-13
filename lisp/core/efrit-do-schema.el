@@ -584,6 +584,31 @@ EXAMPLES:
                                       ("include_source" . (("type" . "boolean") ("description" . "Include the definition's text (default true)")))
                                       ("include_callers" . (("type" . "boolean") ("description" . "Walk xref for callers (default false; slower)")))))
                       ("required" . ["symbol"]))))
+   (("name" . "info_lookup")
+    ("description" . "Which node of the Emacs manuals documents a term, from the indices of every Info manual (Emacs, Elisp, Gnus, Org, Tramp, auth, url, the installed GNU manuals…): concepts, variables, functions, keys, programs. Then read a node's text with manual= and node=. Faster and more reliable than searching source or guessing: the manual says what an option is for, what a feature needs, which commands go together. Read class, not reviewed.
+
+EXAMPLES:
+- info_lookup term=\"PDF\"
+- info_lookup term=\"mailcap-user-mime-data\" kind=\"variable\" exact=true
+- info_lookup manual=\"emacs\" node=\"Document View\"")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("term" . (("type" . "string") ("description" . "Word, symbol or phrase to find in the indices")))
+                                      ("kind" . (("type" . "string") ("enum" . ["concept" "variable" "function" "key" "program" "type"]) ("description" . "Only entries of this index")))
+                                      ("exact" . (("type" . "boolean") ("description" . "Only entries equal to term (default: containing it too)")))
+                                      ("manual" . (("type" . "string") ("description" . "With node: the manual to read, e.g. emacs, elisp, gnus")))
+                                      ("node" . (("type" . "string") ("description" . "With manual: the node whose text to return")))))
+                      ("required" . []))))
+   (("name" . "library_profile")
+    ("description" . "What an Emacs LIBRARY touches ON ITS OWN, before you call anything in it: the options that name its files and programs (with defaults), the state/config files it reads or writes, the programs it starts, the hosts it contacts, whether it prompts or reads auth-source, its hooks and requires. From a static index of the whole Emacs lisp tree (not loaded, not run). Use it before calling into mailcap, doc-view, tramp, package, url, epg, ispell, gnus, erc, eww… so you know what the sandbox will see and which option to set, instead of learning it from a denial. query= searches the index (\"pdf\", \"spell\", \"~/.authinfo\", \"mutool\") when you do not know the library's name. Read class, not reviewed.
+
+EXAMPLES:
+- library_profile library=\"mailcap\"
+- library_profile library=\"doc-view\"
+- library_profile query=\"pdf\"")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("library" . (("type" . "string") ("description" . "Feature or file name, e.g. mailcap, doc-view, tramp-cache")))
+                                      ("query" . (("type" . "string") ("description" . "Regexp over names, summaries, keywords, programs, files, hosts")))))
+                      ("required" . []))))
    (("name" . "library_contract")
     ("description" . "What to know BEFORE calling, wrapping or rebinding a function, from the definitions loaded in this Emacs, in ONE call: kind (command/macro/alias/autoload), signature and interactive spec, the author's declarations (interactive-only and its replacement, obsolete since/replacement, pure, side-effect-free, indent), the user options and variables the body reads or sets (a ! marks sets), the hooks it runs, advice on it now, the first paragraph of its docstring, what it depends on positionally (point, the region, the mark, the minibuffer, the current buffer), and its callers in the loaded code, the user's own files first. Read-only, not reviewed. Use it instead of reading a library file in slices: magit-status being interactive-only, git-link-commit reading the word at point, an Embark action's minibuffer injection are each one call here.
 

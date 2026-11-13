@@ -322,8 +322,12 @@ what gets defined (validated again).  A denial signals
     (if (= (length rest) (length defs))
         (format "No tool %s is defined in the %s file." name scope)
       (efrit-sandbox-approve-once 'write file "undefine_tool" (format "remove the tool %s" name))
-      (efrit-tool-defs--write-file file rest)
-      (efrit-tool-defs-load nil t)
+      (let ((pattern (efrit-tool-defs--get (efrit-tool-defs--get (car (cl-set-difference defs rest)) "origin") "pattern")))
+        (efrit-tool-defs--write-file file rest)
+        (efrit-tool-defs-load nil t)
+        ;; the routine may come back: let it be proposed again
+        (when (stringp pattern)
+          (ignore-errors (efrit-tool-defs-history-reset (split-string pattern " → ")))))
       (format "Removed %s from %s." name (abbreviate-file-name file)))))
 
 (defun efrit-tool-defs-list-text ()
@@ -383,12 +387,121 @@ what gets defined (validated again).  A denial signals
   (format "\n[User-defined tools]\n%s" (efrit-tool-defs-list-text)))
 
 ;;;; Noticing a repetition
+;;
+;; Two memories.  Within a session, the last calls' shapes: the same
+;; 2-4 call sequence three times in a row is a routine the model is
+;; rebuilding as it goes.  Across sessions, per project, how many
+;; separate sessions ran each sequence at all: a routine the user
+;; needs once every morning never repeats within one session, so the
+;; first memory never sees it (tzz, 2026-11-12: "something efrit
+;; learns on its own instead of making me catch the patterns").  The
+;; second memory lives in `efrit-data-directory' (never in the
+;; repository) keyed by project root, and counts a sequence once per
+;; session however many times that session ran it.  Either memory
+;; reaching its threshold publishes the note; a sequence noted is not
+;; noted again until a tool for it is defined or removed.
 
 (defvar efrit-tool-defs--recent (make-hash-table :test 'equal)
   "SESSION-ID -> list of call keys, most recent first (capped).")
 
 (defvar efrit-tool-defs--noted (make-hash-table :test 'equal)
   "SESSION-ID -> list of sequences already noted this session.")
+
+(defcustom efrit-tool-defs-session-threshold 3
+  "How many separate sessions must run the same short sequence before a note.
+Counted per project, once per session, in `efrit-tool-defs-history-file'."
+  :type 'integer
+  :group 'efrit-tool-defs)
+
+(defcustom efrit-tool-defs-history-max-sequences 200
+  "Most sequences remembered per project across sessions; the least recent go."
+  :type 'integer
+  :group 'efrit-tool-defs)
+
+(defconst efrit-tool-defs-history-file-name "tool-patterns.json")
+
+(defun efrit-tool-defs-history-file ()
+  "Where the cross-session sequence counts live: in the data directory, by project."
+  (efrit-config-data-file efrit-tool-defs-history-file-name))
+
+(defvar efrit-tool-defs--history nil
+  "The parsed history: ROOT -> (SEQUENCE-KEY -> (:sessions LIST :last TIME :noted BOOL)), or nil until read.")
+
+(defun efrit-tool-defs--history ()
+  "The history table, read from disk on first use."
+  (or efrit-tool-defs--history
+      (setq efrit-tool-defs--history
+            (let ((file (efrit-tool-defs-history-file)))
+              (or (and (file-readable-p file)
+                       (condition-case err
+                           (with-temp-buffer
+                             (insert-file-contents file)
+                             (let ((obj (json-parse-buffer :object-type 'hash-table :array-type 'list)))
+                               (and (hash-table-p obj) obj)))
+                         (error (efrit-log 'warn "tool patterns %s: unreadable (%s), starting empty"
+                                           file (error-message-string err))
+                                nil)))
+                  (make-hash-table :test 'equal))))))
+
+(defun efrit-tool-defs--history-save ()
+  "Write the history to disk (mode 0600, through `efrit-settings-write-json')."
+  (when efrit-tool-defs--history
+    (condition-case err
+        (efrit-settings-write-json (efrit-tool-defs-history-file)
+                                   (efrit-settings--serializable efrit-tool-defs--history))
+      (error (efrit-log 'warn "tool patterns: not saved: %s" (error-message-string err))))))
+
+(defun efrit-tool-defs--history-root ()
+  "The key the history is filed under: the project root, abbreviated."
+  (abbreviate-file-name (file-name-as-directory
+                         (or (ignore-errors (efrit-tool--get-project-root)) default-directory))))
+
+(defun efrit-tool-defs--history-key (seq)
+  "SEQ (a list of call keys) as the string the history is keyed by."
+  (mapconcat #'identity seq " → "))
+
+(defun efrit-tool-defs--history-record (seq session-id)
+  "Count SEQ for SESSION-ID in the project's history; return its entry.
+A session counts once per sequence.  Rotations are one sequence."
+  (let* ((table (efrit-tool-defs--history))
+         (root (efrit-tool-defs--history-root))
+         (per-root (or (gethash root table)
+                       (puthash root (make-hash-table :test 'equal) table)))
+         (key (or (cl-some (lambda (r) (let ((k (efrit-tool-defs--history-key r)))
+                                         (and (gethash k per-root) k)))
+                           (efrit-tool-defs--rotations seq))
+                  (efrit-tool-defs--history-key seq)))
+         (entry (or (gethash key per-root)
+                    (puthash key (let ((h (make-hash-table :test 'equal)))
+                                   (puthash "sessions" nil h) (puthash "noted" :false h) h)
+                             per-root)))
+         (sessions (gethash "sessions" entry)))
+    (unless (member session-id sessions)
+      (puthash "sessions" (seq-take (cons session-id sessions) 50) entry)
+      (puthash "last" (format-time-string "%FT%TZ" nil t) entry)
+      ;; the least recently seen sequences go when the table is full
+      (when (> (hash-table-count per-root) efrit-tool-defs-history-max-sequences)
+        (let ((oldest (car (sort (hash-table-keys per-root)
+                                 (lambda (a b) (string< (or (gethash "last" (gethash a per-root)) "")
+                                                        (or (gethash "last" (gethash b per-root)) "")))))))
+          (remhash oldest per-root)))
+      (efrit-tool-defs--history-save))
+    entry))
+
+(defun efrit-tool-defs--history-noted-p (entry)
+  (eq t (gethash "noted" entry)))
+
+(defun efrit-tool-defs--history-mark-noted (entry)
+  (puthash "noted" t entry)
+  (efrit-tool-defs--history-save))
+
+(defun efrit-tool-defs-history-reset (seq)
+  "Forget that SEQ was noted, so a removed tool's routine can be proposed again."
+  (when-let* ((per-root (gethash (efrit-tool-defs--history-root) (efrit-tool-defs--history))))
+    (dolist (r (efrit-tool-defs--rotations seq))
+      (when-let* ((entry (gethash (efrit-tool-defs--history-key r) per-root)))
+        (puthash "noted" :false entry)))
+    (efrit-tool-defs--history-save)))
 
 (defconst efrit-tool-defs--recent-max 40)
 
@@ -436,27 +549,64 @@ call order; or nil."
                                    always (equal head (seq-subseq keys (* i len) (* (1+ i) len))))
                           (reverse head)))))
 
+(defun efrit-tool-defs--candidate-sequences (keys)
+  "The 2- to 4-call sequences ending at the head of KEYS (most recent first),
+in call order, each of more than one distinct call.  What a session
+contributes to the cross-session count."
+  (cl-loop for len from 2 to 4
+           when (>= (length keys) len)
+           for head = (seq-take keys len)
+           when (> (length (delete-dups (copy-sequence head))) 1)
+           collect (reverse head)))
+
+(defun efrit-tool-defs--note (id seq why)
+  "Publish the note for SEQ in session ID; WHY says which memory tripped.
+Returns the text for the tool result."
+  (push seq (gethash id efrit-tool-defs--noted))
+  (let* ((pattern (efrit-tool-defs--history-key seq))
+         (text (format "you ran %s %s; define_tool can make that one call the user approves once (list_tools shows what exists)"
+                       pattern why)))
+    (when (fboundp 'efrit-publish)
+      (efrit-publish 'note `((:session-id . ,id) (:text . ,(concat "⚙ " text)) (:kind . tool-defs))))
+    (efrit-log 'info "tool definitions: repetition noted for %s: %s (%s)" id pattern why)
+    (format "\n[note: %s]" text)))
+
 (defun efrit-tool-defs-watch (tool input &optional session-id)
   "Record TOOL's call; when a short sequence repeats, publish a note once.
-Returns the note text when one was made (the dispatcher appends it to
-the result), else nil.  Calls to define_tool and the definitions
-themselves are not watched."
+Within the session: the same 2-4 calls `efrit-tool-defs-repeat-threshold'
+times in a row.  Across sessions: the same calls in
+`efrit-tool-defs-session-threshold' separate sessions of this project
+\(the history file).  Returns the note text when one was made (the
+dispatcher appends it to the result), else nil.  Calls to define_tool
+and the definitions themselves are not watched."
   (when (and efrit-tool-defs-enabled
              (not (member tool '("define_tool" "undefine_tool" "list_tools")))
              (not (assoc tool efrit-tool-defs--active)))
     (let* ((id (or session-id (bound-and-true-p efrit-current-session-id)))
            (keys (cons (efrit-tool-defs--call-key tool input) (gethash id efrit-tool-defs--recent))))
       (puthash id (seq-take keys efrit-tool-defs--recent-max) efrit-tool-defs--recent)
-      (when-let* ((seq (efrit-tool-defs--find-repeat keys))
-                  ((not (efrit-tool-defs--sequence-noted-p id seq))))
-        (push seq (gethash id efrit-tool-defs--noted))
-        (let* ((pattern (mapconcat #'identity seq " → "))
-               (text (format "you ran %s %d times this session; define_tool can make that one call the user approves once (list_tools shows what exists)"
-                             pattern efrit-tool-defs-repeat-threshold)))
-          (when (fboundp 'efrit-publish)
-            (efrit-publish 'note `((:session-id . ,id) (:text . ,(concat "⚙ " text)) (:kind . tool-defs))))
-          (efrit-log 'info "tool definitions: repetition noted for %s: %s" id pattern)
-          (format "\n[note: %s]" text))))))
+      (or
+       ;; the routine within this session
+       (when-let* ((seq (efrit-tool-defs--find-repeat keys))
+                   ((not (efrit-tool-defs--sequence-noted-p id seq))))
+         (efrit-tool-defs--history-mark-noted (efrit-tool-defs--history-record seq id))
+         (efrit-tool-defs--note id seq (format "%d times this session" efrit-tool-defs-repeat-threshold)))
+       ;; the routine across sessions: every short sequence this call
+       ;; completes counts once for this session; one that enough
+       ;; sessions ran is noted, the longest first
+       (cl-loop for seq in (reverse (efrit-tool-defs--candidate-sequences keys))
+                for entry = (condition-case err
+                                (efrit-tool-defs--history-record seq id)
+                              (error (efrit-log 'warn "tool patterns: %s" (error-message-string err)) nil))
+                thereis (and entry
+                             (not (efrit-tool-defs--history-noted-p entry))
+                             (not (efrit-tool-defs--sequence-noted-p id seq))
+                             (>= (length (gethash "sessions" entry)) efrit-tool-defs-session-threshold)
+                             (progn
+                               (efrit-tool-defs--history-mark-noted entry)
+                               (efrit-tool-defs--note id seq
+                                                      (format "in %d separate sessions of this project"
+                                                              (length (gethash "sessions" entry)))))))))))
 
 (defun efrit-tool-defs-forget (&optional session-id)
   "Drop SESSION-ID's repetition memory."

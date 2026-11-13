@@ -336,7 +336,123 @@ include_callers (default t)."
                                   (t "not found")))))
            ,@(when include-callers
                `((callers . ,(vconcat (mapcar (lambda (c) (format "%s in %s" (cdr c) (abbreviate-file-name (car c)))) shown-callers)))
-                 (callers_omitted . ,(max 0 (- (length callers) (length shown-callers))))))))))))
+                 (callers_omitted . ,(max 0 (- (length callers) (length shown-callers))))))
+           ;; what the library behind this function touches on its own
+           ;; (programs, state files, hosts, prompts): the Emacs library
+           ;; index, so the model learns it here, not from a denial
+           ,@(when-let* ((entry (and (require 'efrit-emacs-index nil t)
+                                     (efrit-emacs-index-entry-for-function symbol))))
+               `((library . ,(efrit-tool-contract--library-profile entry))))))))))
+
+(declare-function efrit-emacs-index-entry-for-function "efrit-emacs-index" (symbol))
+(declare-function efrit-emacs-index-programs "efrit-emacs-index" (entry))
+(declare-function efrit-emacs-index--file-options "efrit-emacs-index" (entry))
+(declare-function efrit-emacs-index--program-options "efrit-emacs-index" (entry))
+(declare-function efrit-emacs-index-expected-files "efrit-emacs-index" (entry))
+
+(defun efrit-tool-contract--library-profile (entry)
+  "The index ENTRY as the `library' field of library_contract / library_profile."
+  (let ((v (lambda (l) (vconcat (mapcar (lambda (x) (format "%s" x)) l)))))
+    `((name . ,(plist-get entry :name))
+      (summary . ,(or (plist-get entry :summary) :json-null))
+      ,@(when (plist-get entry :obsolete) '((obsolete . t)))
+      (file_options . ,(vconcat (mapcar (lambda (o) (if (cadr o) (format "%s=%s" (car o) (cadr o)) (symbol-name (car o))))
+                                        (efrit-emacs-index--file-options entry))))
+      (program_options . ,(vconcat (mapcar (lambda (o) (if (cadr o) (format "%s=%s" (car o) (cadr o)) (symbol-name (car o))))
+                                           (efrit-emacs-index--program-options entry))))
+      (files . ,(funcall v (mapcar #'abbreviate-file-name (efrit-emacs-index-expected-files entry))))
+      (programs . ,(funcall v (efrit-emacs-index-programs entry)))
+      (hosts . ,(funcall v (plist-get entry :hosts)))
+      (network . ,(funcall v (plist-get entry :network)))
+      (processes . ,(funcall v (plist-get entry :processes)))
+      (prompts . ,(funcall v (plist-get entry :prompts)))
+      (auth_source . ,(if (plist-get entry :auth) t :json-false))
+      (hooks . ,(funcall v (seq-take (plist-get entry :hooks) 20)))
+      (requires . ,(funcall v (plist-get entry :requires)))
+      (documented_in . ,(funcall v (plist-get entry :info))))))
+
+;;;; library_profile: the index entry by library name, or a search
+
+(defun efrit-tool-library-profile (args)
+  "What a LIBRARY touches on its own, from the Emacs library index.
+ARGS: library (a feature or file name) or query (a regexp over names,
+summaries, keywords, programs, files, hosts); either is required."
+  (efrit-tool-execute library_profile args
+    (require 'efrit-emacs-index)
+    (let ((library (alist-get 'library args))
+          (query (alist-get 'query args)))
+      (unless (efrit-emacs-index-available-p)
+        (signal 'user-error (list "no Emacs library index: M-x efrit-emacs-index-rebuild builds one")))
+      (cond
+       ((and (stringp library) (not (string-empty-p library)))
+        (if-let* ((entry (efrit-emacs-index-entry library)))
+            (efrit-tool-success (efrit-tool-contract--library-profile entry))
+          (signal 'user-error (list (format "%s is not in the index (a third-party package? symbol_info on one of its functions names the file)" library)))))
+       ((and (stringp query) (not (string-empty-p query)))
+        (efrit-tool-success
+         `((query . ,query)
+           (libraries . ,(vconcat (mapcar (lambda (e)
+                                            `((name . ,(plist-get e :name))
+                                              (summary . ,(or (plist-get e :summary) :json-null))
+                                              (programs . ,(vconcat (efrit-emacs-index-programs e)))
+                                              (files . ,(vconcat (mapcar #'abbreviate-file-name (efrit-emacs-index-expected-files e))))
+                                              (hosts . ,(vconcat (plist-get e :hosts)))))
+                                          (efrit-emacs-index-search query 15)))))))
+       (t (signal 'user-error (list "library or query is required")))))))
+
+(declare-function efrit-emacs-index-available-p "efrit-emacs-index")
+(declare-function efrit-emacs-index-status "efrit-emacs-index")
+(declare-function efrit-emacs-index-manual-hits "efrit-emacs-index" (term &optional kind exact))
+(declare-function efrit-emacs-index-node-text "efrit-emacs-index" (manual node &optional max-chars))
+(defvar efrit-emacs-index-kind-names)
+
+(defcustom efrit-tool-info-lookup-max-hits 15
+  "Most index entries info_lookup returns."
+  :type 'integer
+  :group 'efrit-tools)
+
+(defcustom efrit-tool-info-lookup-node-chars 4000
+  "Longest node text info_lookup returns."
+  :type 'integer
+  :group 'efrit-tools)
+
+;;;; info_lookup: the Info manuals' indices, and a node's text
+
+(defun efrit-tool-info-lookup (args)
+  "Which manual nodes document a term, and optionally one node's text.
+ARGS: term (searched in every index: concepts, variables, functions,
+keys, programs), kind (concept/variable/function/key/program/type),
+exact (default nil: entries containing the term follow the exact
+ones); or manual + node to read that node from the installed Info."
+  (efrit-tool-execute info_lookup args
+    (require 'efrit-emacs-index)
+    (let ((term (alist-get 'term args))
+          (kind (let ((k (alist-get 'kind args)))
+                  (and (stringp k) (car (rassoc k efrit-emacs-index-kind-names)))))
+          (exact (let ((e (alist-get 'exact args))) (and e (not (eq e :json-false)))))
+          (manual (alist-get 'manual args))
+          (node (alist-get 'node args)))
+      (cond
+       ((and (stringp manual) (stringp node) (not (string-empty-p node)))
+        (if-let* ((text (efrit-emacs-index-node-text manual node efrit-tool-info-lookup-node-chars)))
+            (efrit-tool-success `((manual . ,manual) (node . ,node) (text . ,text)))
+          (signal 'user-error (list (format "(%s)%s is not in the installed Info (is the manual installed? info_lookup term=… finds the node names)" manual node)))))
+       ((and (stringp term) (not (string-empty-p term)))
+        (unless (efrit-emacs-index-available-p)
+          (signal 'user-error (list (or (plist-get (efrit-emacs-index-status) :problem) "no Emacs index"))))
+        (let* ((hits (efrit-emacs-index-manual-hits term kind exact))
+               (shown (seq-take hits efrit-tool-info-lookup-max-hits)))
+          (efrit-tool-success
+           `((term . ,term)
+             (hits . ,(vconcat (mapcar (lambda (h)
+                                         `((entry . ,(nth 0 h))
+                                           (kind . ,(cdr (assq (nth 1 h) efrit-emacs-index-kind-names)))
+                                           (node . ,(format "(%s)%s" (nth 2 h) (nth 3 h)))))
+                                       shown)))
+             (more . ,(max 0 (- (length hits) (length shown))))))))
+       (t (signal 'user-error (list "term, or manual and node, is required")))))))
+(declare-function efrit-emacs-index-entry "efrit-emacs-index" (library))
+(declare-function efrit-emacs-index-search "efrit-emacs-index" (query &optional limit))
 
 (provide 'efrit-tool-contract)
 

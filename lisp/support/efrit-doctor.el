@@ -630,6 +630,31 @@ carries a cache_control block, which is the caching probe."
                                   "Upgrade curl or disable streaming."
                                   "Disable streaming" (lambda () (setq efrit-api-streaming nil))))))))))
 
+(declare-function efrit-emacs-index-status "efrit-emacs-index")
+(declare-function efrit-emacs-index-rebuild "efrit-emacs-index")
+
+(defun efrit-doctor--check-emacs-index ()
+  (efrit-doctor--layer "Emacs library index"
+    (if (not (require 'efrit-emacs-index nil t))
+        (efrit-doctor--warn "efrit-emacs-index not loadable" "lisp/core/ is incomplete.")
+      (let ((st (efrit-emacs-index-status)))
+        (cond
+         ((plist-get st :problem)
+          (efrit-doctor--warn "No index"
+                              (concat (plist-get st :problem)
+                                      ".  The index is advisory: library_profile, info_lookup and the sandbox's library rules work without it, knowing less.")
+                              "Build one for this Emacs now"
+                              (lambda () (efrit-emacs-index-rebuild))))
+         ((not (plist-get st :matches))
+          (efrit-doctor--warn (format "Index built for Emacs %s, this is %s" (plist-get st :emacs) emacs-version)
+                              (format "%s.  Most of it still holds; options and nodes added since are missing." (abbreviate-file-name (plist-get st :file)))
+                              "Rebuild for this Emacs"
+                              (lambda () (efrit-emacs-index-rebuild))))
+         (t (efrit-doctor--ok (format "%d libraries, %d manuals" (plist-get st :libraries) (plist-get st :manuals))
+                              (format "Emacs %s%s, built %s, %s" (plist-get st :emacs)
+                                      (if (plist-get st :revision) (format " (%s)" (plist-get st :revision)) "")
+                                      (plist-get st :built) (abbreviate-file-name (plist-get st :file))))))))))
+
 (defun efrit-doctor--check-ui ()
   (efrit-doctor--layer "UI"
     (if (fboundp 'efrit-agent-mode)
@@ -722,6 +747,7 @@ endpoint, model and prompt-caching setting work end to end."
   (efrit-doctor--check-tramp)
   (efrit-doctor--check-permissions)
   (efrit-doctor--check-context)
+  (efrit-doctor--check-emacs-index)
   (efrit-doctor--check-ui)
   (with-current-buffer (get-buffer-create "*efrit-doctor*")
     (let ((inhibit-read-only t))

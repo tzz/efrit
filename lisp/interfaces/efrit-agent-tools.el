@@ -45,7 +45,8 @@
   summary             ; String or nil: explicit summary for collapsed view
   importance          ; Symbol: normal, success, warning, error
   annotations         ; Plist or nil: structured metadata for smart summaries
-  expanded-p)         ; Bool: is this tool expanded?
+  expanded-p          ; Bool: is this tool expanded?
+  merged)             ; List of (INPUT . RESULT) when the row stands for several calls
 
 ;;; Centralized Tool Rendering
 
@@ -321,7 +322,8 @@ marking the end of the turn."
                             (_ (if (and (not running) (not success-p))
                                    'efrit-agent-error
                                  nil))))))
-         (summary (efrit-agent--tool-view-summary tv))
+         (merged (efrit-agent-tool-view-merged tv))
+         (summary (if merged (efrit-agent--merged-summary name merged) (efrit-agent--tool-view-summary tv)))
          (start (point)))
     ;; Insert header line
     (insert "  ")
@@ -333,9 +335,13 @@ marking the end of the turn."
                         'face (or status-face
                                   (if running 'efrit-agent-status-working 'efrit-agent-timestamp))))
     (insert (propertize (or name "tool") 'face 'efrit-agent-tool-name))
-    ;; Show target (file path, pattern, etc.)
-    (when target
-      (insert (propertize (format ": %s" target) 'face 'efrit-agent-session-id)))
+    (cond
+     ;; several calls in one row: the count stands where the target would
+     (merged
+      (insert (propertize (format " ×%d" (length merged)) 'face 'efrit-agent-tool-name)))
+     ;; Show target (file path, pattern, etc.)
+     (target
+      (insert (propertize (format ": %s" target) 'face 'efrit-agent-session-id))))
     ;; One line: the summary follows the name on the same row; the
     ;; status glyph at the start already says success/failure
     (cond
@@ -361,9 +367,15 @@ marking the end of the turn."
     ;; The body is always in the buffer; collapsed means invisible.
     ;; Folding by deleting and re-rendering meant isearch could not
     ;; find collapsed output and every toggle rewrote the row.
-    (when (or input result)
+    (when (or input result merged)
       (let ((body-start (point)))
-        (insert (efrit-agent--format-tool-expansion input result success-p id render-type annotations name))
+        (if merged
+            (cl-loop for (call-input . call-result) in merged
+                     for n from 1
+                     do (insert (propertize (format "       %d/%d\n" n (length merged))
+                                            'face 'efrit-agent-section-header))
+                        (insert (efrit-agent--format-tool-expansion call-input call-result t id render-type nil name)))
+          (insert (efrit-agent--format-tool-expansion input result success-p id render-type annotations name)))
         (add-text-properties body-start (point) '(efrit-tool-body t))
         (unless expanded-p
           (put-text-property body-start (point) 'invisible 'efrit-tool-body))))
@@ -381,6 +393,7 @@ marking the end of the turn."
                                'efrit-tool-summary (efrit-agent-tool-view-summary tv)
                                'efrit-tool-importance importance
                                'efrit-tool-annotations annotations
+                               'efrit-tool-merged merged
                                'efrit-tool-expanded expanded-p
                                'read-only t))
     (point)))
@@ -400,7 +413,8 @@ Returns an efrit-agent-tool-view struct."
    :summary (get-text-property start 'efrit-tool-summary)
    :importance (get-text-property start 'efrit-tool-importance)
    :annotations (get-text-property start 'efrit-tool-annotations)
-   :expanded-p (get-text-property start 'efrit-tool-expanded)))
+   :expanded-p (get-text-property start 'efrit-tool-expanded)
+   :merged (get-text-property start 'efrit-tool-merged)))
 
 ;;; Tool Call Display
 
@@ -587,7 +601,102 @@ Uses the centralized tool-view renderer for consistent display."
         (save-excursion
           (goto-char start)
           (delete-region start end)
-          (efrit-agent--render-tool-call tv))))))
+          (efrit-agent--render-tool-call tv))
+        (when success-p (efrit-agent--merge-with-previous-row tool-id))))))
+
+;;; Merging a run of the same read tool into one row
+;;
+;; Three elisp_docs calls in a row were three rows, each with its own
+;; fold, between which nothing else happened (tzz, 2026-11-12: "merge
+;; sequential calls to the same tool with the same approval").  When a
+;; row finishes and the row just before it is the same tool, finished
+;; well, under the same review status (nothing but blank lines between
+;; them), the two become one: `elisp_docs ×3 · a, b, c', the body
+;; listing each call's input and result in order.  The merged row
+;; keeps the first row's id, so its expansion state and a later
+;; display_hint still find it.  Exec and write tools never merge: each
+;; of those is its own decision and its own diff.
+
+(defconst efrit-agent--never-merge-tools
+  '("review" "session_complete" "todo_write" "eval_sexp" "shell_exec" "run_program"
+    "edit_file" "create_file" "edit_buffer" "write_file" "format_file" "undo_edit"
+    "define_tool" "undefine_tool" "request_user_input" "display_hint" "probe_command"
+    "generate_image" "generate_video" "decide")
+  "Tools whose rows stay one per call.")
+
+(defcustom efrit-agent-merge-tool-runs t
+  "When non-nil, consecutive successful calls of one read tool share a row."
+  :type 'boolean
+  :group 'efrit-agent)
+
+(defun efrit-agent--previous-row-start (pos)
+  "The start of the `efrit-id' run that ends just before POS, skipping blank
+text; nil when there is none or something other than a row lies between."
+  (let ((p pos))
+    (while (and (> p (point-min)) (memq (char-before p) '(?\n ?\s))) (setq p (1- p)))
+    (when (and (> p (point-min)) (get-text-property (1- p) 'efrit-id))
+      (or (previous-single-property-change p 'efrit-id) (point-min)))))
+
+(defun efrit-agent--merge-with-previous-row (tool-id)
+  "Fold the row TOOL-ID into the finished row of the same tool just before it, if any."
+  (when efrit-agent-merge-tool-runs
+    (when-let* ((region (efrit-agent--find-tool-region tool-id))
+                (start (car region)) (end (cdr region))
+                (name (get-text-property start 'efrit-tool-name))
+                ((not (member name efrit-agent--never-merge-tools)))
+                ((get-text-property start 'efrit-tool-success))
+                (prev-start (efrit-agent--previous-row-start start))
+                ((eq (get-text-property prev-start 'efrit-type) 'tool-call))
+                ((equal (get-text-property prev-start 'efrit-tool-name) name))
+                ((not (get-text-property prev-start 'efrit-tool-running)))
+                ((get-text-property prev-start 'efrit-tool-success))
+                (prev-id (get-text-property prev-start 'efrit-id))
+                ((not (equal prev-id tool-id))))
+      (let* ((prev-region (efrit-agent--find-tool-region prev-id))
+             (prev-tv (efrit-agent--tool-view-from-properties (car prev-region)))
+             (calls (append (or (efrit-agent-tool-view-merged prev-tv)
+                                (list (cons (efrit-agent-tool-view-input prev-tv)
+                                            (efrit-agent-tool-view-result prev-tv))))
+                            (list (cons (get-text-property start 'efrit-tool-input)
+                                        (get-text-property start 'efrit-tool-result)))))
+             (elapsed (+ (or (efrit-agent-tool-view-elapsed prev-tv) 0)
+                         (or (get-text-property start 'efrit-tool-elapsed) 0)))
+             (expanded (and efrit-agent--expansion-state
+                            (eq t (gethash prev-id efrit-agent--expansion-state 'not-found)))))
+        (setf (efrit-agent-tool-view-merged prev-tv) calls
+              (efrit-agent-tool-view-elapsed prev-tv) elapsed
+              (efrit-agent-tool-view-expanded-p prev-tv) expanded
+              (efrit-agent-tool-view-summary prev-tv) nil
+              (efrit-agent-tool-view-annotations prev-tv) nil)
+        (efrit-agent--with-render
+          ;; the new row goes, then the old one is redrawn with both
+          (delete-region start end)
+          (let ((pr (efrit-agent--find-tool-region prev-id)))
+            (goto-char (car pr))
+            (delete-region (car pr) (cdr pr))
+            (efrit-agent--render-tool-call prev-tv)))
+        (when efrit-agent--expansion-state (remhash tool-id efrit-agent--expansion-state))
+        prev-id))))
+
+(defun efrit-agent--merged-summary (name calls)
+  "The header summary of a merged row: each call's target, in order."
+  (let ((targets (mapcar (lambda (c) (or (efrit-agent--extract-tool-target name (car c))
+                                         (efrit-agent--merged-call-label (car c))))
+                         calls)))
+    (mapconcat #'identity (delq nil targets) ", ")))
+
+(defun efrit-agent--merged-call-label (input)
+  "A short label for a call with no path/pattern target: its first string field."
+  (cond
+   ((hash-table-p input)
+    (catch 'found
+      (maphash (lambda (_k v)
+                 (cond ((stringp v) (throw 'found (truncate-string-to-width v 40 nil nil "…")))
+                       ((and (vectorp v) (> (length v) 0) (stringp (aref v 0)))
+                        (throw 'found (truncate-string-to-width (mapconcat #'identity (append v nil) " ") 40 nil nil "…")))))
+               input)
+      nil))
+   ((stringp input) (truncate-string-to-width input 40 nil nil "…"))))
 
 ;;; Tool Call Expansion (collapsed/expanded toggle)
 

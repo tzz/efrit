@@ -143,6 +143,8 @@
     ("project_outline"    . (efrit-do--handle-project-outline . :tool-input))
     ("symbol_info"        . (efrit-do--handle-symbol-info . :tool-input))
     ("library_contract"   . (efrit-do--handle-library-contract . :tool-input))
+    ("library_profile"    . (efrit-do--handle-library-profile . :tool-input))
+    ("info_lookup"        . (efrit-do--handle-info-lookup . :tool-input))
     ("live_state"         . (efrit-do--handle-live-state . :tool-input))
     ("mode_line_report"   . (efrit-do--handle-mode-line-report . :tool-input))
     ("buffer_scan"        . (efrit-do--handle-buffer-scan . :tool-input))

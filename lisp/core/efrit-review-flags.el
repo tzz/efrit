@@ -151,7 +151,10 @@ OWN-PREFIXES are symbol prefixes that count as the file's own (a
                          (push (cons 'core-var (format "%s %S" head var)) out)))
                      (setq args (if (memq head '(customize-set-variable set-default)) nil (cddr args))))))
                 ((memq head efrit-review-flags--load-fns)
-                 (push (cons 'load (format "%s %s" head (efrit-review-flags--name (cadr f)))) out))
+                 (push (cons 'load (format "%s %s" head (efrit-review-flags--name (cadr f)))) out)
+                 ;; what that library brings along (the Emacs library index)
+                 (when-let* ((note (efrit-review-flags--library-note (cadr f))))
+                   (push (cons 'library note) out)))
                 ((and (assq head efrit-review-flags--tool-equivalents)
                       ;; only when the file is a literal: a computed path
                       ;; inside a larger program is the program's business
@@ -214,6 +217,24 @@ OWN-PREFIXES are symbol prefixes that count as the file's own (a
                      (walk (pop rest)))))))))
       (walk form))
     (nreverse out)))
+
+(declare-function efrit-emacs-index-entry "efrit-emacs-index" (library))
+(declare-function efrit-emacs-index-describe "efrit-emacs-index" (entry &optional short))
+
+(defun efrit-review-flags--library-note (name-form)
+  "One line on what the library NAME-FORM (quoted symbol or string) touches on
+its own: programs, hosts, prompts, auth.  Nil when it touches nothing
+of note or is not indexed."
+  (let ((name (cond ((and (consp name-form) (eq (car name-form) 'quote)) (cadr name-form))
+                    ((stringp name-form) (file-name-base name-form))
+                    ((symbolp name-form) name-form))))
+    (when (and name (require 'efrit-emacs-index nil t))
+      (when-let* ((entry (efrit-emacs-index-entry name)))
+        (when (or (plist-get entry :programs) (plist-get entry :hosts)
+                  (plist-get entry :network) (plist-get entry :auth) (plist-get entry :prompts))
+          (let ((short (efrit-emacs-index-describe entry t)))
+            (unless (string-empty-p short)
+              (format "%s %s" (plist-get entry :name) short))))))))
 
 (defun efrit-review-flags--text-effects (text own-prefixes)
   "Effects of every form in TEXT; nil when TEXT is not Lisp."

@@ -214,12 +214,29 @@ freezes the editor when called from the async tool loop (ef-bdg).")
 
 (defvar efrit-tools-input-allowed) ; defined in efrit-events, bound by `efrit-with-user-waiting'
 
+(defconst efrit-tools--timed-read-functions
+  '((read-event . 2) (read-char . 2))
+  "Input functions whose Nth argument (0-based) is a timeout in seconds.
+A call that passes one returns after that many seconds at worst, so
+it cannot freeze Emacs: `sit-for' is `(read-event nil t SECONDS)'.
+Such a call is a wait, not a prompt, and runs.  2026-11-12: a
+`(sit-for 2)' in a use-package :config block, reached by a reload
+from an eval, was refused and the rest of the block never ran.")
+
+(defun efrit-tools--timed-wait-p (fn args)
+  "Non-nil when the call (FN . ARGS) is bounded by a timeout argument."
+  (when-let* ((pos (alist-get fn efrit-tools--timed-read-functions)))
+    (let ((secs (nth pos args)))
+      (and (numberp secs) (> secs 0)))))
+
 (defun efrit-tools--call-with-input-blocked (thunk)
   "Call THUNK with synchronous input functions overridden to signal errors.
 Temporarily replaces each function in
 `efrit-tools--blocked-input-functions' with a stub that errors,
 directing the model to the request_user_input tool instead.  With
-`efrit-tools-input-allowed' non-nil the real function runs."
+`efrit-tools-input-allowed' non-nil the real function runs.  A read
+bounded by a timeout (`efrit-tools--timed-read-functions', what
+`sit-for' does) runs too: it is a pause, not a question."
   (let ((saved (mapcar (lambda (fn) (cons fn (symbol-function fn)))
                        efrit-tools--blocked-input-functions)))
     (unwind-protect
@@ -228,7 +245,8 @@ directing the model to the request_user_input tool instead.  With
             (let ((fn-name (car pair)) (orig (cdr pair)))
               (fset fn-name
                     (lambda (&rest args)
-                      (if efrit-tools-input-allowed
+                      (if (or efrit-tools-input-allowed
+                              (efrit-tools--timed-wait-p fn-name args))
                           (apply orig args)
                         (error "`%s' is blocked in eval_sexp: synchronous user input freezes Emacs.  Use the request_user_input tool to ask the user"
                                fn-name))))))

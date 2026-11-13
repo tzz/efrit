@@ -45,8 +45,18 @@ jobs:
     - name: Compile Emacs Lisp files
       run: make compile
 
+    - name: Build the Emacs library index for this Emacs
+      run: make emacs-index
+
     - name: Run tests
       run: make test-simple
+
+    - name: Keep the Emacs library index
+      uses: actions/upload-artifact@v4
+      with:
+        name: efrit-emacs-index-${{ matrix.emacs_version }}
+        path: lisp/core/efrit-emacs-index.eld
+        if-no-files-found: error
 
     - name: Archive compilation warnings
       if: always()

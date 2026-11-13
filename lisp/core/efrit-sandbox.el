@@ -1061,6 +1061,91 @@ temporary directory and the pasted-images directory by default."
   :type '(repeat (choice directory function))
   :group 'efrit-sandbox)
 
+(defun efrit-sandbox--library-config-files ()
+  "Files core libraries consult on their own, by name, as a list.
+`mailcap-mime-info' parses the mailcap and mime.types lists the first
+time it is called (RFC 1524 locations plus the MAILCAPS and MIMETYPES
+environment paths); a stat of each goes through the sandbox.  On
+2026-11-12 one `(mailcap-mime-info \"application/pdf\")' in an eval
+asked the user four times for files the eval never named.  These are
+expected reads: the user's answer to \"may Emacs look at ~/.mailcap\"
+is yes."
+  (append
+   (if-let* ((env (getenv "MAILCAPS")))
+       (split-string env path-separator t)
+     '("~/.mailcap" "/etc/mailcap" "/usr/etc/mailcap" "/usr/local/etc/mailcap"))
+   (if-let* ((env (getenv "MIMETYPES")))
+       (split-string env path-separator t)
+     '("~/.mime.types" "/etc/mime.types" "/usr/etc/mime.types" "/usr/local/etc/mime.types"
+       "/usr/local/www/conf/mime.types" "~/mime.typ" "~/etc/mime.typ"))
+   ;; what the other RFC 1524 readers look at
+   '("~/.mailrc" "/etc/mail.rc" "~/.netrc.gpg")))
+
+(declare-function efrit-emacs-index-entry "efrit-emacs-index" (library))
+(declare-function efrit-emacs-index-entry-for-function "efrit-emacs-index" (symbol))
+(declare-function efrit-emacs-index-expected-files "efrit-emacs-index" (entry))
+(declare-function efrit-emacs-index-describe "efrit-emacs-index" (entry &optional short))
+(declare-function efrit-emacs-index-available-p "efrit-emacs-index")
+
+(defvar efrit-sandbox--asking-library nil
+  "The library function behind the request being checked, set by the eval guard.
+`efrit-sandbox-eval--handler' binds it to the first non-efrit,
+non-primitive frame above the file access (mailcap-parse-mailcaps for
+a stat of ~/.mailcap); the expected-request rules read it.")
+
+(defcustom efrit-sandbox-expected-library-files t
+  "Non-nil treats a file a library names in its own options as expected
+when that library is the one asking (the Emacs library index,
+efrit-emacs-index): savehist's history file, recentf's list,
+transient's history, the mailcap files, and so on, each for the code
+that owns it.  The home directory and `.efrit/' are never expected
+this way."
+  :type 'boolean
+  :group 'efrit-sandbox)
+
+(defun efrit-sandbox--library-expected-p (target)
+  "Why TARGET is an expected request of the asking library, or nil.
+The library behind the request (`efrit-sandbox--asking-library') must
+own TARGET through one of its file options or literal paths in the
+index; a file some other library owns is not covered."
+  (when (and efrit-sandbox-expected-library-files
+             efrit-sandbox--asking-library (stringp target)
+             (require 'efrit-emacs-index nil t)
+             (efrit-emacs-index-available-p))
+    (when-let* ((entry (or (efrit-emacs-index-entry-for-function efrit-sandbox--asking-library)
+                           (efrit-emacs-index-entry
+                            (car (split-string (symbol-name efrit-sandbox--asking-library) "-")))))
+                (files (mapcar #'efrit-sandbox-canonical (efrit-emacs-index-expected-files entry)))
+                (home (file-name-as-directory (efrit-sandbox-canonical "~/"))))
+      (when (cl-some (lambda (f)
+                       (and (not (equal (file-name-as-directory f) home))
+                            (not (efrit-sandbox--always-denied-p f))
+                            (or (equal f target)
+                                (and (file-directory-p f)
+                                     (efrit-sandbox--under-p target (file-name-as-directory f))))))
+                     files)
+        (format "%s's own file (%s)" (plist-get entry :name) (efrit-sandbox-abbreviate target))))))
+
+(defcustom efrit-sandbox-expected-read-files
+  (list #'efrit-sandbox--library-config-files)
+  "Files the model may read without asking, by exact name.
+Each element is a file name or a function of no arguments returning
+one or a list.  For the configuration files core libraries consult on
+their own (mailcap, mime.types); the directories those live in
+\(`~', `/etc') are never expected as a whole.  A file named here that
+`efrit-sandbox-always-deny' matches stays denied."
+  :type '(repeat (choice file function))
+  :group 'efrit-sandbox)
+
+(defun efrit-sandbox--expected-files (option)
+  "The files OPTION (names or thunks) names, canonical, minus the always-denied."
+  (cl-remove-if #'efrit-sandbox--always-denied-p
+                (delq nil
+                      (mapcar (lambda (f) (and (stringp f) (efrit-sandbox-canonical f)))
+                              (cl-loop for x in option
+                                       for v = (if (functionp x) (ignore-errors (funcall x)) x)
+                                       if (listp v) append v else collect v)))))
+
 (defun efrit-sandbox--housekeeping-directories ()
   "Where Emacs and its packages keep their own state, as a list of directories.
 The places a `save-buffer', a `package-refresh-contents' or an idle
@@ -1292,6 +1377,14 @@ The reason is a short string for the transcript note."
            (cl-some (lambda (d) (efrit-sandbox--under-p target d))
                     (efrit-sandbox--expected-roots efrit-sandbox-expected-read-roots)))
       "a read under the Emacs installation or the temporary directory")
+     ;; a configuration file a core library consults by name
+     ((and (eq cap 'read) (stringp target)
+           (member target (efrit-sandbox--expected-files efrit-sandbox-expected-read-files)))
+      (format "%s is a file Emacs libraries consult on their own" (efrit-sandbox-abbreviate target)))
+     ;; the library on the stack owns the file (the Emacs library index)
+     ((and (memq cap '(read write)) (stringp target)
+           (not (efrit-sandbox-repo-of target))
+           (efrit-sandbox--library-expected-p target)))
      ;; a scratch or housekeeping write: under the temporary directory
      ;; or one of Emacs's own state directories, but not inside a
      ;; repository that happens to live there (a checkout under /tmp is
@@ -1322,9 +1415,15 @@ The reason is a short string for the transcript note."
   "Grant CAP on TARGET for the session as an expected request; say so.
 A scratch write is granted on the file alone: a grant on the whole
 temporary directory would also cover any checkout living under it."
-  (let ((grant-target (if (and (eq cap 'write) (stringp target)
-                               (cl-some (lambda (d) (efrit-sandbox--under-p target d))
-                                        (efrit-sandbox--expected-roots efrit-sandbox-expected-write-roots)))
+  (let ((grant-target (if (and (memq cap '(read write)) (stringp target)
+                               (or (and (eq cap 'write)
+                                        (cl-some (lambda (d) (efrit-sandbox--under-p target d))
+                                                 (efrit-sandbox--expected-roots efrit-sandbox-expected-write-roots)))
+                                   ;; a library's config file: that file, never ~/ or /etc
+                                   (and (eq cap 'read)
+                                        (member target (efrit-sandbox--expected-files efrit-sandbox-expected-read-files)))
+                                   ;; the asking library's own file: that file
+                                   (efrit-sandbox--library-expected-p target)))
                           target
                         (efrit-sandbox--suggest-target cap target root))))
     (efrit-sandbox-grant cap grant-target 'session root)

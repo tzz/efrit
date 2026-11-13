@@ -510,14 +510,49 @@ so, for example: not reviewed: read-only turn (fetch_url)."
   :type 'boolean
   :group 'efrit-agent)
 
+(defun efrit-agent--review-note-merge (reason)
+  "When the last row is a read-only review note, fold REASON's tools into it.
+Returns non-nil when merged.  Two `read-only turn (…)' notes with only
+tool rows of the kind that merge between them read as one; the tool
+names are joined, each once."
+  (when (string-match "\\`read-only turn (\\(.*\\))\\'" reason)
+    (let ((new-tools (split-string (match-string 1 reason) ", " t))
+          (pos (efrit-agent--insertion-point)))
+      ;; back over blank text and merged-tool rows to the last note
+      (while (and (> pos (point-min))
+                  (or (memq (char-before pos) '(?\n ?\s))
+                      (and (eq (get-text-property (1- pos) 'efrit-type) 'tool-call)
+                           (not (member (get-text-property (1- pos) 'efrit-tool-name)
+                                        efrit-agent--never-merge-tools))
+                           (get-text-property (1- pos) 'efrit-tool-success))))
+        (setq pos (if (memq (char-before pos) '(?\n ?\s)) (1- pos)
+                    (or (previous-single-property-change pos 'efrit-id) (point-min)))))
+      (when (and (> pos (point-min)) (eq (get-text-property (1- pos) 'efrit-type) 'review-note))
+        (let* ((start (or (previous-single-property-change pos 'efrit-type) (point-min)))
+               (text (buffer-substring-no-properties start pos)))
+          (when (string-match "not reviewed: read-only turn (\\(.*\\))" text)
+            (let ((tools (cl-remove-duplicates
+                          (append (split-string (match-string 1 text) ", " t) new-tools)
+                          :test #'equal :from-end t)))
+              (efrit-agent--with-render
+                (goto-char start)
+                (delete-region start pos)
+                (insert (propertize (format "  ⚖ not reviewed: read-only turn (%s)" (string-join tools ", "))
+                                    'face 'efrit-agent-timestamp
+                                    'efrit-type 'review-note))
+                (efrit-agent--seal-rendered start (point)))
+              t)))))))
+
 (defun efrit-agent--on-review-skipped (event)
   (when efrit-agent-show-review-skips
     (efrit-agent--in-agent-buffer event
-      (efrit-agent--append-to-conversation
-       (concat (propertize (format "  ⚖ not reviewed: %s" (alist-get :reason event))
-                           'face 'efrit-agent-timestamp)
-               "\n")
-       (list 'efrit-type 'review-note)))))
+      (let ((reason (alist-get :reason event)))
+        (unless (and efrit-agent-merge-tool-runs (efrit-agent--review-note-merge reason))
+          (efrit-agent--append-to-conversation
+           (concat (propertize (format "  ⚖ not reviewed: %s" reason)
+                               'face 'efrit-agent-timestamp)
+                   "\n")
+           (list 'efrit-type 'review-note)))))))
 
 ;; Subscribed at load, not in eval-after-load: efrit-events is already
 ;; required above, and an eval-after-load body would run again on

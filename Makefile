@@ -21,7 +21,7 @@ DOC_FILES = README.md CONTRIBUTING.md AUTHORS AGENTS.md LICENSE
 # Distribution files
 DIST_FILES = lisp/ test/ bin/ plans/ $(DOC_FILES) Makefile .gitignore
 
-.PHONY: all compile test test-unit autoloads clean distclean install uninstall check help dist mcp-install mcp-build mcp-test mcp-start mcp-clean coverage coverage-simple coverage-report coverage-check lint lint-defun lint-toplevel clean-orphan-elc checkdoc
+.PHONY: all compile test test-unit autoloads emacs-index clean distclean install uninstall check help dist mcp-install mcp-build mcp-test mcp-start mcp-clean coverage coverage-simple coverage-report coverage-check lint lint-defun lint-toplevel clean-orphan-elc checkdoc
 
 # Default target
 all: compile autoloads
@@ -32,6 +32,7 @@ help:
 	@echo ""
 	@echo "Building:"
 	@echo "  compile     - Byte compile all Elisp files"
+	@echo "  emacs-index - Index the libraries and manuals of one Emacs (EMACS_SRC=, EMACS_REF=)"
 	@echo "  clean       - Remove compiled files"
 	@echo "  distclean   - Remove all generated files"
 	@echo ""
@@ -268,6 +269,33 @@ lint-defun:
 # EFRIT_TEST_JOBS (default 4) suites run at once.
 TEST_FILES ?=
 
+# The Emacs library index (lisp/core/efrit-emacs-index.eld): what each
+# library and manual of one Emacs touches and documents.  A build
+# artifact for that Emacs, never committed.  Pinning:
+#   make emacs-index                         the $(EMACS) binary's own lisp and Info
+#   make emacs-index EMACS_SRC=~/src/emacs   a source checkout as it is (lisp/ doc/)
+#   make emacs-index EMACS_SRC=~/src/emacs EMACS_REF=emacs-30.1
+#                                            one tag or commit, read with git archive;
+#                                            the checkout is not touched
+EMACS_INDEX = lisp/core/efrit-emacs-index.eld
+EMACS_SRC ?=
+EMACS_REF ?=
+emacs-index:
+	@if [ -z "$(EMACS_SRC)" ]; then \
+		$(EMACS_BATCH) -L lisp/dev -l efrit-emacs-index-build -f efrit-emacs-index-build-batch \
+			installed out=$(EMACS_INDEX); \
+	elif [ -z "$(EMACS_REF)" ]; then \
+		$(EMACS_BATCH) -L lisp/dev -l efrit-emacs-index-build -f efrit-emacs-index-build-batch \
+			lisp=$(EMACS_SRC)/lisp doc=$(EMACS_SRC)/doc configure=$(EMACS_SRC)/configure.ac \
+			revision=$$(git -C $(EMACS_SRC) rev-parse --short HEAD 2>/dev/null) out=$(EMACS_INDEX); \
+	else \
+		tmp=$$(mktemp -d) && trap 'rm -rf "$$tmp"' EXIT && \
+		git -C $(EMACS_SRC) archive --format=tar $(EMACS_REF) lisp doc configure.ac | tar -x -C "$$tmp" && \
+		$(EMACS_BATCH) -L lisp/dev -l efrit-emacs-index-build -f efrit-emacs-index-build-batch \
+			lisp="$$tmp/lisp" doc="$$tmp/doc" configure="$$tmp/configure.ac" \
+			revision=$$(git -C $(EMACS_SRC) rev-parse --short $(EMACS_REF)) ref=$(EMACS_REF) out=$(EMACS_INDEX); \
+	fi
+
 # Autoloads.  package.el only scans lisp/ itself, so the commands that
 # live in lisp/{core,interfaces,support,tools} (efrit-doctor,
 # efrit-select-model, efrit-menu, ...) would not be reachable before
@@ -396,6 +424,7 @@ build: compile autoloads mcp-build
 clean: mcp-clean
 	@echo "Removing compiled files..."
 	@rm -f lisp/*.elc lisp/core/*.elc lisp/support/*.elc lisp/interfaces/*.elc
+	@rm -f $(EMACS_INDEX)
 	@rm -f lisp/*.elc~ lisp/core/*.elc~ lisp/support/*.elc~ lisp/interfaces/*.elc~
 
 distclean: clean

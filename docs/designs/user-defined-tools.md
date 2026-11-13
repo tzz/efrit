@@ -99,6 +99,18 @@ model sees it. The note does not call `define_tool`: the model
 proposes a definition and the user approves it at the prompt. A
 sequence that was noted is not noted again in the session.
 
+A routine the user needs once per session ("open the ticket for this
+branch", every morning) never repeats within a session. So there is a
+second memory, across sessions: `tool-patterns.json` in the data
+directory (never in the repository), keyed by project root, counts
+for each 2–4 call sequence the sessions that ran it, once per session.
+When `efrit-tool-defs-session-threshold` (3) separate sessions ran the
+same sequence, the same note appears, saying so. A noted sequence
+stays noted until `undefine_tool` removes a tool whose origin names
+that pattern; then it can be proposed again. The file holds call
+shapes only (`eval_sexp(project-root) → shell_exec(make)`), never
+arguments or file names.
+
 ## Running one
 
 An `elisp` definition is evaluated through `efrit-tools--eval-with-context`

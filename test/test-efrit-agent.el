@@ -576,6 +576,79 @@ blank until the next send)."
       (should-not (text-property-not-all efrit-agent--conversation-end (point-max) 'invisible nil))
       (should (equal "half-typed question" (efrit-agent--get-input-raw))))))
 
+(ert-deftest test-efrit-agent-merges-a-run-of-the-same-read-tool ()
+  "Three elisp_docs calls in a row become one row `elisp_docs ×3' whose
+summary lists each call's target and whose body holds each call; the
+row keeps the first call's id, so its fold toggles as one.  The
+read-only review notes between them merge into one note naming each
+tool once.  A different tool, an eval, or a failed call starts a new
+row.  tzz, 2026-11-12: \"merge sequential calls to the same tool\"."
+  (with-efrit-agent-test-buffer
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions)
+    (let* ((efrit-agent-display-mode 'minimal)
+           (efrit-agent-merge-tool-runs t)
+           (efrit-agent-show-review-skips t)
+           (sym (lambda (name) (let ((h (make-hash-table :test 'equal))) (puthash "symbol" name h) h)))
+           (note (lambda (reason) (efrit-agent--on-review-skipped `((:reason . ,reason)))))
+           (call (lambda (tool input result &optional ok)
+                   (let ((id (efrit-agent--add-tool-call tool input)))
+                     (efrit-agent--update-tool-result id result (if (eq ok 'fail) nil t) 0.1)
+                     id)))
+           (rows (lambda ()
+                   (let ((ids nil) (pos (point-min)))
+                     (while (< pos (marker-position efrit-agent--conversation-end))
+                       (when (and (eq (get-text-property pos 'efrit-type) 'tool-call)
+                                  (not (member (get-text-property pos 'efrit-id) ids)))
+                         (push (get-text-property pos 'efrit-id) ids))
+                       (setq pos (or (next-single-property-change pos 'efrit-id) (point-max))))
+                     (nreverse ids))))
+           (text (lambda () (buffer-substring-no-properties (point-min) (marker-position efrit-agent--conversation-end)))))
+      (efrit-agent--add-user-message "how do I set up doc-view?")
+      (funcall note "read-only turn (search_content, elisp_docs)")
+      (funcall call "search_content" '(("pattern" . "doc-view") ("path" . "/x/emacs")) "{\"matches\":[]}")
+      (let ((first (funcall call "elisp_docs" (funcall sym "doc-view-pdf->png-converter-function") "{\"docstring\":\"Function to call\"}")))
+        (funcall note "read-only turn (elisp_docs, read_file)")
+        (funcall call "elisp_docs" (funcall sym "doc-view-mupdf-use-svg") "{\"docstring\":\"Whether svg\"}")
+        (funcall call "elisp_docs" (funcall sym "doc-view-pdfdraw-program") "{\"docstring\":\"Name of mutool\"}")
+        ;; one row for the three, under the first id
+        (should (= 2 (length (funcall rows))))
+        (should (equal first (cadr (funcall rows))))
+        ;; the row is chopped to the window; the full summary is in
+        ;; the row's property
+        (should (string-match-p "elisp_docs ×3 .*doc-view-pdf->png-converter-function, doc-view-mu" (funcall text)))
+        (should (equal "doc-view-pdf->png-converter-function, doc-view-mupdf-use-svg, doc-view-pdfdraw-program"
+                       (efrit-agent--merged-summary "elisp_docs"
+                                                    (get-text-property (car (efrit-agent--find-tool-region first)) 'efrit-tool-merged))))
+        ;; the body carries each call
+        (let ((region (efrit-agent--find-tool-region first)))
+          (should (= 3 (length (get-text-property (car region) 'efrit-tool-merged))))
+          (should (string-match-p "1/3" (buffer-substring-no-properties (car region) (cdr region))))
+          (should (string-match-p "Name of mutool" (buffer-substring-no-properties (car region) (cdr region)))))
+        ;; the two notes became one, each tool once
+        (should (= 1 (cl-count-if (lambda (l) (string-match-p "not reviewed" l))
+                                  (split-string (funcall text) "\n"))))
+        (should (string-match-p "not reviewed: read-only turn (search_content, elisp_docs, read_file)" (funcall text)))
+        ;; the merged row folds and unfolds as one
+        (should (efrit-agent--set-tool-expanded first t))
+        (let ((region (efrit-agent--find-tool-region first)))
+          (should-not (text-property-any (car region) (cdr region) 'invisible 'efrit-tool-body)))
+        ;; a different read tool: its own row; a fourth elisp_docs after it: a new run
+        (funcall call "read_file" '(("path" . "/x/a.el")) "text")
+        (funcall call "elisp_docs" (funcall sym "mailcap-user-mime-data") "{}")
+        (should (= 4 (length (funcall rows))))
+        ;; an eval never merges, even with an eval before it
+        (funcall call "eval_sexp" '(("expr" . "(+ 1 1)")) "2")
+        (funcall call "eval_sexp" '(("expr" . "(+ 2 2)")) "4")
+        (should (= 6 (length (funcall rows))))
+        ;; a failed call stays apart from the successful one before it
+        (funcall call "elisp_docs" (funcall sym "a") "{}")
+        (funcall call "elisp_docs" (funcall sym "b") "Error: no such symbol" 'fail)
+        (should (= 8 (length (funcall rows))))
+        ;; the fold summary counts the merged row once
+        (let ((bounds (efrit-agent-fold--last-turn-bounds)))
+          (should (string-match-p "\\`8 steps" (efrit-agent-fold--summary (car bounds) (cdr bounds)))))))))
+
 (ert-deftest test-efrit-agent-copy-last-output-and-restart ()
   "Copy-last-output takes the newest answer wherever point is; restart
 gives a fresh session in the same windows and drops the queue."

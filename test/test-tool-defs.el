@@ -42,6 +42,7 @@ and definition state, the sandbox off."
           (efrit-tool-defs--loaded nil)
           (efrit-tool-defs--recent (make-hash-table :test 'equal))
           (efrit-tool-defs--noted (make-hash-table :test 'equal))
+          (efrit-tool-defs--history nil)
           (efrit-tool-defs-enabled t)
           (efrit-sandbox-enabled nil)
           (efrit-current-session-id "td-test"))
@@ -269,6 +270,82 @@ refusal defines nothing."
         (should (= 2 (length seen)))
         (should-not (efrit-registered-tool-get "other"))
         (should (= 1 (length (efrit-tool-defs--read-file (efrit-tool-defs-project-file root)))))))))
+
+(ert-deftest test-tool-defs-watch-notes-a-routine-seen-in-enough-sessions ()
+  "A 2-call sequence run once in each of three sessions of the same project
+is noted in the third, from the history file; the file holds shapes
+only; a fourth session says nothing; another project starts from zero;
+undefining a tool whose origin names the pattern lets it be proposed
+again; the within-session note also marks the history."
+  (test-td--with-roots
+    (let ((published nil)
+          (efrit-tool-defs-session-threshold 3)
+          (eval-in (lambda (expr) (let ((h (make-hash-table :test 'equal))) (puthash "expr" expr h) h)))
+          (shell-in (lambda (line) (let ((h (make-hash-table :test 'equal))) (puthash "command" line h) h))))
+      (cl-letf (((symbol-function 'efrit-publish) (lambda (type data) (push (cons type data) published))))
+        (dolist (id '("morning-1" "morning-2"))
+          (let ((efrit-current-session-id id)
+                (efrit-tool-defs--recent (make-hash-table :test 'equal)))
+            (should-not (efrit-tool-defs-watch "eval_sexp" (funcall eval-in "(vc-git-branch)")))
+            (should-not (efrit-tool-defs-watch "shell_exec" (funcall shell-in "jira view ABC-1")))))
+        ;; the file is there, with shapes and session ids, no arguments
+        (let ((text (with-temp-buffer (insert-file-contents (efrit-tool-defs-history-file)) (buffer-string))))
+          (should (string-match-p "eval_sexp(vc-git-branch) → shell_exec(jira)" text))
+          (should (string-match-p "morning-2" text))
+          (should-not (string-match-p "ABC-1" text)))
+        ;; a fresh Emacs: the history is read back from disk
+        (setq efrit-tool-defs--history nil)
+        (let ((efrit-current-session-id "morning-3")
+              (efrit-tool-defs--recent (make-hash-table :test 'equal)))
+          (should-not (efrit-tool-defs-watch "eval_sexp" (funcall eval-in "(vc-git-branch)")))
+          (let ((note (efrit-tool-defs-watch "shell_exec" (funcall shell-in "jira view ABC-2"))))
+            (should note)
+            (should (string-match-p "you ran eval_sexp(vc-git-branch) → shell_exec(jira) in 3 separate sessions of this project" note)))
+          (should (= 1 (length published))))
+        ;; the fourth session: noted already
+        (let ((efrit-current-session-id "morning-4")
+              (efrit-tool-defs--recent (make-hash-table :test 'equal)))
+          (should-not (efrit-tool-defs-watch "eval_sexp" (funcall eval-in "(vc-git-branch)")))
+          (should-not (efrit-tool-defs-watch "shell_exec" (funcall shell-in "jira view ABC-3"))))
+        ;; another project: its own count
+        (let* ((other (file-name-as-directory (make-temp-file "efrit-td-other-" t)))
+               (efrit-project-root other) (default-directory other)
+               (efrit-current-session-id "elsewhere")
+               (efrit-tool-defs--recent (make-hash-table :test 'equal)))
+          (unwind-protect
+              (progn
+                (should-not (efrit-tool-defs-watch "eval_sexp" (funcall eval-in "(vc-git-branch)")))
+                (should-not (efrit-tool-defs-watch "shell_exec" (funcall shell-in "jira view X-1")))
+                (should (= 1 (length (gethash "sessions"
+                                              (gethash "eval_sexp(vc-git-branch) → shell_exec(jira)"
+                                                       (gethash (abbreviate-file-name other) (efrit-tool-defs--history))))))))
+            (delete-directory other t)))
+        ;; a tool defined from the pattern, then removed: the routine can be proposed again
+        (let ((input (make-hash-table :test 'equal)))
+          (puthash "definition" (test-td--def "name" "ticket" "description" "d" "class" "read" :kind "elisp" :source "1") input)
+          (puthash "pattern" "eval_sexp(vc-git-branch) → shell_exec(jira)" input)
+          (should (string-match-p "Defined ticket" (efrit-tool-defs-handle-define input)))
+          (let ((u (make-hash-table :test 'equal)))
+            (puthash "name" "ticket" u)
+            (should (string-match-p "Removed ticket" (efrit-tool-defs-handle-undefine u)))))
+        (let ((efrit-current-session-id "morning-5")
+              (efrit-tool-defs--recent (make-hash-table :test 'equal)))
+          (should-not (efrit-tool-defs-watch "eval_sexp" (funcall eval-in "(vc-git-branch)")))
+          (should (efrit-tool-defs-watch "shell_exec" (funcall shell-in "jira view ABC-5"))))
+        ;; the within-session detector marks the history too: no second
+        ;; note from the other memory later
+        (let ((efrit-current-session-id "busy")
+              (efrit-tool-defs--recent (make-hash-table :test 'equal))
+              (before (length published)))
+          (dotimes (_ 2)
+            (efrit-tool-defs-watch "eval_sexp" (funcall eval-in "(project-root)"))
+            (efrit-tool-defs-watch "eval_sexp" (funcall eval-in "(buffer-list)")))
+          (efrit-tool-defs-watch "eval_sexp" (funcall eval-in "(project-root)"))
+          (should (efrit-tool-defs-watch "eval_sexp" (funcall eval-in "(buffer-list)")))
+          (should (= (1+ before) (length published)))
+          (should (efrit-tool-defs--history-noted-p
+                   (gethash "eval_sexp(project-root) → eval_sexp(buffer-list)"
+                            (gethash (efrit-tool-defs--history-root) (efrit-tool-defs--history))))))))))
 
 (provide 'test-tool-defs)
 ;;; test-tool-defs.el ends here

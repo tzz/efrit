@@ -28,6 +28,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `efrit-api-url`: Use `efrit-api-base-url` in efrit-common.el instead. The legacy variable still works as an override but is deprecated.
 
 
+## [0.22.0] - 2026-11-12
+
+The Emacs index is a build artifact pinned to one Emacs, and it
+indexes the manuals too (tzz: "It's a build artifact, belongs in CI.
+But developers like me should be building it locally, pinned to the
+Emacs version from Git or by release.  It's advisory anyway").
+
+### Added
+
+- The Info manuals' indices: every concept, variable, function, key, program and type entry of every manual, with the node it points to, from the Texinfo sources of an Emacs checkout (`doc/`: explicit `@cindex`/`@vindex`/… entries, the implicit ones of `@defun`/`@defopt`/`@deffn`/…, chapters pulled in by `@include`, `@value` in titles) or from installed `.info` files (their index nodes; system manuals like grep and find too).  Emacs 32: 41 000 entries in 82 manuals.  Each library lists the nodes that document what it defines (`documented_in` in `library_profile`)
+- `info_lookup` tool (read, not reviewed): which node documents a term (exact entries first, then entries containing it; `kind` narrows to one index), and a node's text read from the installed `.info` without an Info buffer
+- `make emacs-index`: the `$(EMACS)` binary's own lisp and Info directories; `EMACS_SRC=DIR` a source checkout as it is; `EMACS_SRC=DIR EMACS_REF=REF` one tag or commit through `git archive`, the checkout untouched.  The index records the Emacs version (from `configure.ac` for sources), the revision and the ref
+- CI builds the index for each Emacs it tests and keeps it as a build artifact (`efrit-emacs-index-<version>`)
+- The doctor has an "Emacs library index" layer: none built, built for another Emacs (with a Rebuild button), or what is loaded
+
+### Changed
+
+- `efrit-emacs-index.eld` is no longer in the repository (`.gitignore`); `make clean` removes it.  An index of another format is not read; one for another Emacs version is read and the doctor says so
+- `M-x efrit-emacs-index-rebuild` indexes the installed manuals as well as the libraries
+- An installed library shipped as `foo.el.gz` is named `foo`, not `foo.el`
+
+## [0.21.1] - 2026-11-12
+
+### Fixed
+
+- A read bounded by a timeout is a pause, not a prompt: `(read-event nil t SECONDS)` and `(read-char … SECONDS)` run under eval_sexp's input guard, so `sit-for` works inside an eval.  A `(sit-for 2)` in a use-package `:config` block, reached by a reload from an eval, was refused with "`read-event' is blocked" and the rest of the block (timers, demon init) never ran; the error stayed in `*Warnings*`.  A `read-event` without a timeout is still refused (`efrit-tools--timed-read-functions`)
+
+## [0.21.0] - 2026-11-12
+
+The Emacs library index: what every core library touches on its
+own, known before a call instead of learned from a denial (tzz: "a
+valuable index for AI use to avoid investigating it last minute").
+
+### Added
+
+- `efrit-emacs-index.eld`: 1567 libraries of the Emacs lisp tree read without loading (`lisp/dev/efrit-emacs-index-build.el`, 2 s): per library the options naming files and programs with their defaults rendered (`locate-user-emacs-file`, `expand-file-name` under the Emacs directory, literals), the programs started by name, the configuration and state files mentioned, the hosts in URL literals, the primitive classes used (reads, writes, processes, network, prompts, auth-source), hooks, requires, commands.  A copy ships with efrit; `M-x efrit-emacs-index-rebuild` indexes the running Emacs into the data directory, which then wins (`lisp/core/efrit-emacs-index.el`)
+- The sandbox waves a library through to its own files: when the library behind an access (the frame above it) owns the file through one of its options or literal paths, the read or write is expected and granted on that file alone (`efrit-sandbox-expected-library-files`).  savehist's history, recentf's list, transient's files, tramp's cache, the mailcap files, and 800 more, with no list written by hand.  `~/`, `/`, the Emacs directory and `.efrit/` are never covered this way
+- The sandbox prompt's detail for a library's access names the library and its profile: `write-region, from savehist-save (reads/writes ~/.emacs.d/history)`
+- `library_profile` tool (read, not reviewed): a library's profile by name, or a search of the index by regexp over names, summaries, keywords, programs, files and hosts (`library_profile query="pdf"` → doc-view).  `library_contract` carries the same profile under `library` for the function's library
+- The reviewer gets `[FLAG library: doc-view runs gs, …; may prompt]` under a `require`/`load` of a library that starts programs, contacts hosts, prompts or reads credentials
+- Consecutive successful calls of one read tool share a row in the agent buffer: `elisp_docs ×3 · a, b, c`, each call's input and result in the body, the first call's id kept so the fold toggles as one; the `not reviewed: read-only turn (…)` notes between them merge into one naming each tool once (`efrit-agent-merge-tool-runs`).  Exec and write tools, failures, and different tools stay one row per call (tzz: "merge sequential calls to the same tool with the same approval")
+
+### Changed
+
+- System prompt: `library_profile` before calling into a library; the tool selection guide lists it
+
+## [0.20.1] - 2026-11-12
+
+### Added
+
+- Routines noticed across sessions: `tool-patterns.json` in the data directory counts, per project, the sessions that ran each 2–4 call sequence (once per session, shapes only, never arguments).  When `efrit-tool-defs-session-threshold` (3) separate sessions ran the same sequence, the `⚙ define_tool` note appears, saying so.  A once-a-morning routine never repeats inside one session, so the in-session detector alone never saw it (tzz: "something efrit learns on its own instead of making me catch the patterns").  A noted sequence is proposed again after `undefine_tool` removes a tool whose origin names it
+
+### Fixed
+
+- A stat of `~/.mailcap`, `/etc/mime.types` and the other RFC 1524 files from an eval is an expected read, granted on that file alone: `mailcap-mime-info`'s first call parses them and one `(mailcap-mime-info "application/pdf")` asked the user four times for files the form never named, offering "read files under ~/" (`efrit-sandbox-expected-read-files`, `efrit-sandbox--library-config-files`, `MAILCAPS`/`MIMETYPES` honoured)
+- The sandbox prompt for a file an eval reaches through a library names the library: `file-attributes, from mailcap-parse-mailcaps`, not `file-attributes` alone (`efrit-sandbox-eval--asking-library`)
+
 ## [0.20.0] - 2026-11-12
 
 Results as good as a careful reader's, as fast: ask Emacs about the

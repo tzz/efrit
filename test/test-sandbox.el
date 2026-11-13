@@ -1622,6 +1622,72 @@ reload from an eval asked seven times for these."
         (efrit-unsubscribe 'note listener)
         (delete-directory base t)))))
 
+(ert-deftest test-sb-library-config-files-are-expected-reads ()
+  "A stat of ~/.mailcap or /etc/mime.types from an eval passes with a
+note and a grant on that file alone (never on ~/ or /etc); the same
+file under `efrit-sandbox-always-deny' stays denied; a neighbour in
+the home directory still asks.  A library's read names the library in
+the prompt detail.  2026-11-12: `(mailcap-mime-info \"application/pdf\")'
+asked four times for files the eval never named."
+  (test-sb--in-project
+    (let* ((asked nil) (notes nil)
+           (efrit-sandbox-expected-read-files
+            (eval (car (get 'efrit-sandbox-expected-read-files 'standard-value)) t))
+           (efrit-sandbox-request-function
+            (lambda (req) (push req asked) nil))
+           (listener (lambda (e) (when (string-match-p "allowed without asking" (alist-get :text e))
+                                   (push (alist-get :text e) notes)))))
+      (efrit-subscribe 'note listener)
+      (unwind-protect
+          (cl-letf (((symbol-function 'getenv)
+                     (let ((real (symbol-function 'getenv)))
+                       (lambda (v &optional f) (unless (member v '("MAILCAPS" "MIMETYPES")) (funcall real v f))))))
+            (let ((files (efrit-sandbox--expected-files efrit-sandbox-expected-read-files)))
+              (should (member (efrit-sandbox-canonical "~/.mailcap") files))
+              (should (member (efrit-sandbox-canonical "/etc/mime.types") files))
+              ;; the always-denied stay out even when named
+              (let ((efrit-sandbox-expected-read-files (list "~/.ssh/config" "~/.mailcap")))
+                (should-not (member (efrit-sandbox-canonical "~/.ssh/config")
+                                    (efrit-sandbox--expected-files efrit-sandbox-expected-read-files)))))
+            (should (efrit-sandbox-check 'read (expand-file-name "~/.mailcap") "eval_sexp" "file-attributes"))
+            (should (efrit-sandbox-check 'read "/etc/mime.types" "eval_sexp" "file-attributes"))
+            (should (null asked))
+            (should (= 2 (length notes)))
+            (should (cl-every (lambda (n) (string-match-p "a file Emacs libraries consult on their own" n)) notes))
+            ;; the grants are on the files, so a neighbour still asks
+            (should-error (efrit-sandbox-check 'read (expand-file-name "~/.notes") "eval_sexp" "file-attributes")
+                          :type 'efrit-sandbox-denied)
+            (should (= 1 (length asked)))
+            (should-error (efrit-sandbox-check 'read "/etc/hosts" "eval_sexp" "file-attributes")
+                          :type 'efrit-sandbox-denied)
+            ;; the whole thing from an eval: mailcap's parse asks nothing
+            (setq asked nil)
+            (let ((mailcap-parsed-p nil) (mailcap--computed-mime-data nil))
+              (require 'mailcap)
+              (efrit-sandbox-grant 'elisp t 'session root)
+              (should (efrit-sandbox-eval-form '(progn (mailcap-mime-info "application/pdf" 'all) t)))
+              (should (null asked))))
+        (efrit-unsubscribe 'note listener)))))
+
+(defun test-sb--library-that-reads (file)
+  "A stand-in for a core library consulting FILE on its own."
+  (file-attributes file))
+
+(ert-deftest test-sb-eval-prompt-names-the-library-behind-a-read ()
+  "When an eval's form calls a library and the library reads a file the
+form never named, the request detail says `file-attributes, from
+LIBRARY' so the user knows who asked."
+  (test-sb--in-project
+    (let* ((outside (expand-file-name "~/.nothing-here-efrit-test"))
+           (details nil)
+           (efrit-sandbox-request-function
+            (lambda (req) (push (efrit-sandbox-request-detail req) details) nil)))
+      (efrit-sandbox-grant 'elisp t 'session root)
+      (should-error (efrit-sandbox-eval-form `(test-sb--library-that-reads ,outside))
+                    :type 'efrit-sandbox-denied)
+      (should (= 1 (length details)))
+      (should (equal "file-attributes, from test-sb--library-that-reads" (car details))))))
+
 (ert-deftest test-sb-expected-hosts-are-the-configured-gateways ()
   "A net request to efrit's API host, to a media backend's host, or to a
 host in `efrit-sandbox-expected-hosts' (subdomains included) passes

@@ -507,6 +507,28 @@ A turn that pauses on request_user_input must end in `waiting', not
   (let ((efrit-tools-block-interactive-input t))
     (should (equal (efrit-tools-eval-sexp "(+ 1 2)") "3"))))
 
+(ert-deftest test-eval-sexp-guard-lets-timed-waits-through ()
+  "A read bounded by a timeout is a pause, not a prompt: `sit-for' (which
+is `read-event' with SECONDS) runs under the guard; a bare `read-event'
+is still refused.  2026-11-12: `(sit-for 2)' in a use-package :config
+reached by a reload from an eval was refused, and the block aborted."
+  (let ((efrit-tools-block-interactive-input t)
+        (calls nil))
+    ;; in batch, sit-for sleeps; stub read-event's real definition under
+    ;; the guard's to see the arguments reach it
+    (cl-letf* ((real (symbol-function 'read-event))
+               ((symbol-function 'read-event)
+                (lambda (&rest args) (push args calls) nil)))
+      (ignore real)
+      (should (equal "t" (efrit-tools-eval-sexp "(progn (read-event nil t 0.01) t)")))
+      (should (equal '(nil t 0.01) (car calls)))
+      (should (string-match-p "blocked in eval_sexp" (efrit-tools-eval-sexp "(read-event)")))
+      (should (string-match-p "blocked in eval_sexp" (efrit-tools-eval-sexp "(read-event \"key? \")")))
+      (should (string-match-p "blocked in eval_sexp" (efrit-tools-eval-sexp "(read-char nil nil 0)")))
+      (should (= 1 (length calls))))
+    ;; the real thing: sit-for itself completes
+    (should (equal "\"done\"" (efrit-tools-eval-sexp "(progn (sit-for 0.01) \"done\")")))))
+
 (provide 'test-do-handlers)
 
 ;;; test-do-handlers.el ends here

@@ -439,6 +439,49 @@ file comes back through this handler and is checked then."
      ((or 'process-file 'start-file-process 'shell-command) nil) ; capability only
      (_ (and (stringp (car args)) (list (car args)))))))
 
+(defconst efrit-sandbox-eval--own-frame-prefixes '("efrit-" "ad-Advice-" "apply" "funcall" "eval" "mapbacktrace")
+  "Frames that are the machinery, not the library that asked for a file.")
+
+(defun efrit-sandbox-eval--asking-library ()
+  "The function outside efrit and the primitives nearest the file access, or nil.
+When a form calls `mailcap-mime-info' and the sandbox sees a stat of
+`~/.mailcap', the user is told \"from mailcap-parse-mailcaps\": the
+read is the library's, not the model's, and the prompt says so
+\(2026-11-12)."
+  (let ((found nil))
+    (mapbacktrace (lambda (_evald func _args _flags)
+                    (when (and (not found) (symbolp func) func)
+                      (let ((name (symbol-name func)))
+                        (unless (or (cl-some (lambda (p) (string-prefix-p p name))
+                                             efrit-sandbox-eval--own-frame-prefixes)
+                                    (memq func '(file-attributes file-exists-p file-readable-p
+                                                 insert-file-contents file-has-changed-p
+                                                 file-newer-than-file-p file-directory-p
+                                                 file-truename expand-file-name
+                                                 condition-case let let* progn if when unless
+                                                 and or while save-excursion save-restriction
+                                                 with-temp-buffer unwind-protect))
+                                    (subrp (symbol-function func)))
+                          (setq found func))))))
+    found))
+
+(defun efrit-sandbox-eval--access-detail (op &optional lib)
+  "The prompt's detail for file OP: the operation, the library behind it,
+and what the index says that library touches."
+  (let ((lib (or lib (efrit-sandbox-eval--asking-library))))
+    (if (not lib)
+        (format "%s" op)
+      (let ((profile (and (require 'efrit-emacs-index nil t)
+                          (when-let* ((entry (efrit-emacs-index-entry-for-function lib)))
+                            (efrit-emacs-index-describe entry t)))))
+        (if (and profile (not (string-empty-p profile)))
+            (format "%s, from %s (%s)" op lib profile)
+          (format "%s, from %s" op lib))))))
+
+(declare-function efrit-emacs-index-entry-for-function "efrit-emacs-index" (symbol))
+(declare-function efrit-emacs-index-describe "efrit-emacs-index" (entry &optional short))
+(defvar efrit-sandbox--asking-library)
+
 (defun efrit-sandbox-eval--handler (op &rest args)
   "The file-name handler: check, then run the real OP."
   (let ((inhibit-file-name-handlers
@@ -457,9 +500,15 @@ file comes back through this handler and is checked then."
          ;; the native compiler writing its trampoline / eln: housekeeping
          ((efrit-sandbox-eval--native-comp-p) nil)
          (t
-          (dolist (p (efrit-sandbox-eval--op-paths op args))
-            (unless (and (eq cap 'read) (efrit-sandbox-eval--exempt-p p))
-              (efrit-sandbox-check cap p "eval_sexp" (format "%s" op))))))))
+          (let ((paths (cl-remove-if (lambda (p) (and (eq cap 'read) (efrit-sandbox-eval--exempt-p p)))
+                                     (efrit-sandbox-eval--op-paths op args))))
+            (when paths
+              ;; who asked: the library frame above the access, for the
+              ;; expected-request rules and the prompt
+              (let ((efrit-sandbox--asking-library (efrit-sandbox-eval--asking-library)))
+                (dolist (p paths)
+                  (efrit-sandbox-check cap p "eval_sexp"
+                                       (efrit-sandbox-eval--access-detail op efrit-sandbox--asking-library))))))))))
     ;; A remote operation was checked above as the remote name.  What
     ;; TRAMP then does to carry it out (a local temp copy, a
     ;; write-region into `temporary-file-directory') is the transport,

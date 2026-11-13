@@ -77,6 +77,8 @@
 (declare-function efrit-tool-reproduce-command "efrit-tool-lisp-dev")
 (declare-function efrit-tool-symbol-info "efrit-tool-introspect")
 (declare-function efrit-tool-library-contract "efrit-tool-contract")
+(declare-function efrit-tool-library-profile "efrit-tool-contract")
+(declare-function efrit-tool-info-lookup "efrit-tool-contract")
 (declare-function efrit-tool-probe-command "efrit-tool-lisp-dev")
 (declare-function efrit-tool-show-ui-element "efrit-agent-screenshot")
 (declare-function efrit-tool-live-state "efrit-tool-introspect")
@@ -937,6 +939,18 @@ Returns JSON-encoded list of checkpoint metadata."
   :fields ("symbol" "buffer" "include_source" "include_callers")
   :fn efrit-tool-symbol-info
   :label "Symbol Info")
+
+(efrit-define-optional-input-handler efrit-do--handle-info-lookup "info_lookup"
+  :require efrit-tool-contract
+  :fields ("term" "kind" "exact" "manual" "node")
+  :fn efrit-tool-info-lookup
+  :label "Info Lookup")
+
+(efrit-define-optional-input-handler efrit-do--handle-library-profile "library_profile"
+  :require efrit-tool-contract
+  :fields ("library" "query")
+  :fn efrit-tool-library-profile
+  :label "Library Profile")
 
 (efrit-define-simple-tool-handler efrit-do--handle-library-contract "library_contract"
   :require efrit-tool-contract
