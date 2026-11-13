@@ -88,6 +88,11 @@ the report lists what was opened."
               (should (eq (plist-get v :verdict) 'approve))
               (should (equal (plist-get v :reads) '("baz.el")))
               (should (= 2 (length test-pr--requests)))
+              ;; the echo-area counter restarts per request: the purpose
+              ;; names the round so the restart reads as progress
+              (let ((purposes (reverse test-pr--purposes)))
+                (should (equal (nth 0 purposes) "reviewing package baz 1.0"))
+                (should (equal (nth 1 purposes) "reviewing package baz 1.0 (round 2, 1 file read)")))
               ;; second request carries assistant tool_use + user tool_result
               (let ((second (car test-pr--requests)))
                 (should (= 3 (length second)))

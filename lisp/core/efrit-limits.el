@@ -65,10 +65,13 @@ nil restores the old behaviour: the turn ends at the cap."
   "The section of the project settings file this module owns.")
 
 (defconst efrit-limits-known
-  '(max-iterations max-tool-calls)
+  '(max-iterations max-tool-calls session-timeout)
   "Limit names this module manages.  A name maps to an integer.
 `max-iterations' is API calls per turn (the loop engine);
-`max-tool-calls' is tool calls per turn (the circuit breaker).")
+`max-tool-calls' is tool calls per turn (the circuit breaker);
+`session-timeout' is working seconds per turn.  A name missing here
+is dropped when the project file is read: until 0.22.2 a project
+raise of the time limit was saved and never used.")
 
 ;;; State
 ;;
@@ -249,9 +252,13 @@ Same rule as the sandbox prompt: nothing but the user decides."
          (var (efrit-limits--variable name))
          (root (abbreviate-file-name (directory-file-name (plist-get c :root)))))
     (concat
-     (propertize (format "Efrit reached %s %s this turn — the limit for %s"
+     (propertize (format "Efrit reached %s %s this turn — the limit for %s%s"
                          (efrit-limits--num (plist-get c :current))
-                         (efrit-limits--unit name) root)
+                         (efrit-limits--unit name) root
+                         (let ((limit (plist-get c :limit)))
+                           (if (and limit (/= limit (plist-get c :current)))
+                               (format " is %s" (efrit-limits--num limit))
+                             "")))
                  'face 'efrit-limits-heading)
      "\n  "
      (propertize (efrit-limits--why name) 'face 'efrit-limits-dim)
@@ -384,12 +391,15 @@ Same rule as the sandbox prompt: nothing but the user decides."
   "Publish TEXT in FACE as a transcript note (the agent buffer shows it)."
   (efrit-publish 'note `((:text . ,(concat "⏱ " text)) (:face . ,face) (:kind . limits))))
 
-(defun efrit-limits-ask-to-raise (name current &optional root)
-  "Ask whether to go past limit NAME, currently CURRENT, for ROOT.
+(defun efrit-limits-ask-to-raise (name current &optional root limit)
+  "Ask whether to go past limit NAME, reached at CURRENT, for ROOT.
+CURRENT is what the turn used, which may be past LIMIT (the clock is
+read between iterations); every raise counts from CURRENT.  LIMIT, the
+limit in force, is shown when it differs from CURRENT.
 Applies the chosen raise and returns the new effective limit, or nil
 when the user stops (or nothing can ask).  Never signals."
   (let* ((root (or root (efrit-limits-project-root)))
-         (efrit-limits--context (list :name name :current current
+         (efrit-limits--context (list :name name :current current :limit limit
                                       :step (efrit-limits--default-step name) :root root))
          (answer (and efrit-limits-ask
                       (not noninteractive)

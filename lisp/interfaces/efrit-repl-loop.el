@@ -112,7 +112,8 @@ requiring an active efrit-do session (ef-dcn).")
                    ;; Minus the time the user spent on prompts and
                    ;; questions: a slow answer is not a slow turn
                    (efrit-elapsed-working
-                    start (efrit-repl-session-turn-waiting-mark session))))
+                    start (efrit-repl-session-turn-waiting-mark session)
+                    (efrit-repl-session-id session))))
    :timeout-fn (lambda () efrit-session-timeout)
    :record-tool-fn #'efrit-repl-session-record-tool
    :wrap-dispatch-fn (lambda (session thunk)

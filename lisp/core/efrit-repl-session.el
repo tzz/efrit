@@ -799,7 +799,8 @@ Resets per-turn state."
   (when session
     (setf (efrit-repl-session-current-turn-tools session) nil)
     (setf (efrit-repl-session-current-turn-start session) (current-time))
-    (setf (efrit-repl-session-turn-waiting-mark session) efrit-user-waiting-seconds)
+    (setf (efrit-repl-session-turn-waiting-mark session)
+          (efrit-user-waiting-seconds-of (efrit-repl-session-id session)))
     (efrit-repl-session-set-status session 'working)))
 
 (defun efrit-repl-session-end-turn (session)

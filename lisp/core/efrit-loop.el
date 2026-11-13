@@ -164,9 +164,14 @@ the next API request."
             (efrit-log 'info "%s %s: iteration limit raised to %d" name session-id raised)
             (setq max-iterations raised)))
         ;; The wall clock asks the same way (2026-10-01: a hard stop at
-        ;; 300 s ended turns that were making progress)
+        ;; 300 s ended turns that were making progress).  It is read
+        ;; between iterations only, so one long tool can carry the turn
+        ;; past the limit by more than a step: the raise counts from the
+        ;; time used, or "continue" ended the turn at once (0.22.2:
+        ;; 5775 s used, raised to 3600, stopped)
         (when (and timeout (> timeout 0) elapsed (>= elapsed timeout))
-          (when-let* ((raised (efrit-limits-ask-to-raise 'session-timeout timeout)))
+          (when-let* ((raised (efrit-limits-ask-to-raise
+                               'session-timeout (max timeout (ceiling elapsed)) nil timeout)))
             (efrit-log 'info "%s %s: time limit raised to %d s" name session-id raised)
             (setq timeout raised)))
         (cond
@@ -568,6 +573,13 @@ the turn is handed to the user instead."
     (efrit-review-turn
      session-id messages content
      (lambda (verdict)
+      ;; The verdict arrives from a timer, outside the session.  Run
+      ;; what follows as the session's code: the next iteration's clock,
+      ;; its limits prompt and its project root are the session's
+      ;; (0.22.2: from here the turn clock missed a 66-minute prompt)
+      (efrit-loop--run-as-session
+       session adapter
+       (lambda ()
        (when (efrit-loop-adapter-thinking-p adapter)
          (efrit-publish 'thinking-stop `((:session-id . ,session-id))))
        (let ((count (efrit-review-note-verdict session-id (car verdict)
@@ -650,7 +662,7 @@ the turn is handed to the user instead."
                  session adapter "review-rejected"
                  (format "The reviewer rejected the same proposal %d times this turn. Last reason: %s"
                          count (or reason "none given"))))
-               (t (funcall (efrit-loop-adapter-continue-fn adapter) session)))))))))))
+               (t (funcall (efrit-loop-adapter-continue-fn adapter) session)))))))))))))
 
 (declare-function efrit-review-describe-batch "efrit-review")
 (declare-function efrit-review-batch-signature "efrit-review")

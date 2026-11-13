@@ -316,13 +316,27 @@ published so a desktop notification can say that efrit is waiting
              (setq efrit-prompt--owner outer)
              (efrit-publish 'prompt-closed (list (cons :label ,label) (cons :session-id efrit-current-session-id)))))))))))
 
-(defun efrit-elapsed-working (since &optional waiting-at-start)
+(defun efrit-user-waiting-seconds-of (session-id)
+  "SESSION-ID's `efrit-user-waiting-seconds', wherever this runs.
+The variable is session-local: outside `efrit-with-session' it holds
+the global value.  The turn clock took its readings in whatever
+context it ran: the turn began in a command (global counter), tool
+prompts were booked inside the session (its counter), and the clock
+was read from a reviewer's timer (global again).  A 66-minute
+confirm_action wait was never subtracted and the turn timed out the
+moment it was answered (2026-11-13, 0.22.2)."
+  (efrit-with-session session-id efrit-user-waiting-seconds))
+
+(defun efrit-elapsed-working (since &optional waiting-at-start session-id)
   "Seconds since SINCE (a time value) minus time spent waiting on the user.
-WAITING-AT-START is `efrit-user-waiting-seconds' when the clock
-started; nil means all waiting so far is subtracted, which is right
-for a clock that started before any prompt of its own."
+WAITING-AT-START is the waiting counter when the clock started; nil
+means all waiting so far is subtracted, which is right for a clock
+that started before any prompt of its own.  SESSION-ID names the
+session whose counter both readings use (`efrit-user-waiting-seconds-of');
+nil means the counter in force here."
   (max 0 (- (float-time (time-since since))
-            (- efrit-user-waiting-seconds (or waiting-at-start 0)))))
+            (- (if session-id (efrit-user-waiting-seconds-of session-id) efrit-user-waiting-seconds)
+               (or waiting-at-start 0)))))
 
 (defun efrit-publish (type &optional data)
   "Publish an event of TYPE with DATA (an alist of :keyword . value).

@@ -387,9 +387,20 @@ with a brace after the object; a fence around the object is fine."
    :info info
    :messages (list `((role . "user") (content . ,(efrit-package-review--user-message info))))))
 
-(defun efrit-package-review--purpose (info)
-  "The `efrit-api-request-purpose' for a review of INFO."
-  (format "reviewing package %s %s" (plist-get info :name) (plist-get info :version)))
+(defun efrit-package-review--purpose (state)
+  "The `efrit-api-request-purpose' for the next request of review STATE.
+A review is a loop of requests, one per batch of files the reviewer
+asks for, and the echo-area counter restarts with each.  Name the round
+and the files read so far, so the restarts read as progress."
+  (let* ((info (efrit-package-review-state-info state))
+         (reads (length (efrit-package-review-state-reads state)))
+         ;; one user message at the start, then assistant+user per round
+         (round (1+ (/ (length (efrit-package-review-state-messages state)) 2))))
+    (if (zerop reads)
+        (format "reviewing package %s %s" (plist-get info :name) (plist-get info :version))
+      (format "reviewing package %s %s (round %d, %d file%s read)"
+              (plist-get info :name) (plist-get info :version)
+              round reads (if (= reads 1) "" "s")))))
 
 (defun efrit-package-review--finish (state verdict)
   "VERDICT with STATE's reads attached: what every driver returns."
@@ -465,15 +476,15 @@ the parse, or the read budget failed.  Blocks: for `package-review',
 which is synchronous itself.  `efrit-package-review-run-async' is the
 same review without blocking."
   (let* ((state (efrit-package-review--begin info))
-         (result nil)
-         (efrit-api-request-purpose (efrit-package-review--purpose info)))
+         (result nil))
     (condition-case err
         (while (not result)
-          (let ((step (efrit-package-review--step
-                       state
-                       (efrit-api-request-sync
-                        (efrit-package-review--request (efrit-package-review-state-messages state))
-                        efrit-package-review-timeout))))
+          (let* ((efrit-api-request-purpose (efrit-package-review--purpose state))
+                 (step (efrit-package-review--step
+                        state
+                        (efrit-api-request-sync
+                         (efrit-package-review--request (efrit-package-review-state-messages state))
+                         efrit-package-review-timeout))))
             (when (eq (car step) 'done) (setq result (cdr step)))))
       (error (setq result (list :verdict 'error :summary (error-message-string err)))))
     (efrit-package-review--finish state result)))
@@ -496,7 +507,7 @@ the request in flight."
 
 (defun efrit-package-review--send (state callback)
   "Send STATE's next request; on the answer, step and send again or finish."
-  (let ((efrit-api-request-purpose (efrit-package-review--purpose (efrit-package-review-state-info state))))
+  (let ((efrit-api-request-purpose (efrit-package-review--purpose state)))
     (efrit-api-request-async
      (efrit-package-review--request (efrit-package-review-state-messages state))
      (lambda (response)

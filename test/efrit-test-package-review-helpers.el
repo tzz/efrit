@@ -45,17 +45,21 @@
 
 (defmacro test-pr--with-responses (responses &rest body)
   "Run BODY with `efrit-api-request-sync' answering RESPONSES in order and
-recording each request's messages in `test-pr--requests'."
+recording each request's messages in `test-pr--requests' and the
+`efrit-api-request-purpose' it was sent under in `test-pr--purposes'."
   (declare (indent 1))
-  `(let ((test-pr--queue ,responses) (test-pr--requests nil))
+  `(let ((test-pr--queue ,responses) (test-pr--requests nil) (test-pr--purposes nil))
      (cl-letf (((symbol-function 'efrit-api-request-sync)
                 (lambda (req &rest _)
                   (push (append (alist-get "messages" req nil nil #'equal) nil) test-pr--requests)
+                  (push efrit-api-request-purpose test-pr--purposes)
                   (or (pop test-pr--queue) (error "no more canned responses")))))
        ,@body)))
 
 (defvar test-pr--queue nil)
 (defvar test-pr--requests nil)
+(defvar test-pr--purposes nil)
+(defvar efrit-api-request-purpose)
 
 (defconst test-pr--approve
   "{\"verdict\":\"approve\",\"summary\":\"ok\",\"findings\":[],\"files_read\":[\"foo.el\"],\"saw_everything\":true}")
