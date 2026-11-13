@@ -709,6 +709,9 @@ with the user's configuration absent, and the agent wrote \"This needs a separat
 because …\" in its text.  When you are confident of that, add \"emacs\": \"testing\" and
 \"emacs_reason\": \"<why, one sentence>\" beside your confidence; at or above the user's threshold
 efrit then asks the user instead of refusing.  Never add it for a task the running Emacs can do.
+Package installs, upgrades and archive refreshes are refused in eval_sexp as well (they freeze
+the user's Emacs): the agent asks the user to run them.  Never tell the agent to call
+package-install or package-refresh-contents from eval_sexp.
 
 Answer with one JSON object and nothing else -- no prose before it, no code fence.  Write the
 object FIRST; a reply that runs out of room before the object counts as no verdict:

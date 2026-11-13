@@ -18,7 +18,7 @@
 
 ;;; Version Management
 
-(defconst efrit-version "0.22.2"
+(defconst efrit-version "0.22.3"
   "Version number of Efrit.
 This is the canonical version used throughout the project.
 Update this when releasing new versions.")

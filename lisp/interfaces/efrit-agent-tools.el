@@ -736,7 +736,9 @@ Diffs are syntax-highlighted if `efrit-agent-show-diff' is non-nil."
         ;; result text is instructions for the model, not for here.
         ((efrit-agent--denied-result-p result)
          (concat indent "  "
-                 (propertize "You declined; the model was told to continue without it."
+                 (propertize (if (string-search efrit-sandbox-refused-by-rule result)
+                                 "Refused by efrit's rules, without asking you; the model was told to continue without it."
+                               "You declined; the model was told to continue without it.")
                              'face 'efrit-agent-timestamp)
                  "\n"))
         (success-p

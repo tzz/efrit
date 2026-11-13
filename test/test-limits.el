@@ -177,6 +177,71 @@ ends with session-timeout.  Default 1800 s (2026-10-01)."
             (efrit-repl-continue session "go" (lambda (_s r) (setq reason r)))
             (should (equal reason "session-timeout"))))))))
 
+(ert-deftest test-limits-timeout-raise-counts-from-the-time-used ()
+  "The clock is read between iterations, so a long tool can carry the
+turn past the limit by more than a step.  A once-raise then counts from
+the time used, not from the old limit; before 0.22.2 \"continue\" set
+3600 with 5775 s used and the turn ended at once.  The menu shows both
+numbers."
+  (test-limits--in-project
+    (let ((efrit-session-timeout 1800) (efrit-limits-ask t) (noninteractive nil)
+          (session (efrit-repl-session-create)) (reason nil) (heading nil))
+      (cl-letf (((symbol-function 'efrit-limits--define-menu) (lambda () nil))
+                ((symbol-function 'efrit-limits--ask-in-echo-area)
+                 (lambda ()
+                   (setq heading (substring-no-properties (efrit-limits--menu-description)))
+                   'once))
+                ((symbol-function 'efrit-elapsed-working) (lambda (&rest _) 5775)))
+        (test-limits--with-loop
+            (list (test-limits--response (vector (test-limits--tool-use "a")) "tool_use")
+                  (test-limits--response (vector (test-limits--text "done")) "end_turn"))
+          (efrit-repl-continue session "go" (lambda (_s r) (setq reason r)))
+          (message "timeout raise: reason %S, heading %S" reason heading)
+          (should (equal reason "end_turn"))
+          (should (string-match-p "reached 5775 working seconds" heading))
+          (should (string-match-p "is 1800" heading)))))
+    ;; the arithmetic itself, for every answer
+    (let ((noninteractive nil) (efrit-limits-ask t))
+      (dolist (case '((once . 7575) (session . 9000)))
+        (efrit-limits-reset-session)
+        (cl-letf (((symbol-function 'efrit-limits--define-menu) (lambda () nil))
+                  ((symbol-function 'efrit-limits--ask-in-echo-area) (lambda () (car case))))
+          (should (= (cdr case) (efrit-limits-ask-to-raise 'session-timeout 5775 nil 1800))))))))
+
+(ert-deftest test-limits-project-time-limit-is-read-back ()
+  "A project raise of the time limit is saved and used.  Until 0.22.2
+`efrit-limits-known' lacked session-timeout: the file had the value and
+the loop never saw it."
+  (test-limits--in-project
+    (efrit-limits-set 'session-timeout 5400 'project)
+    (efrit-settings-forget)
+    (should (= 5400 (efrit-limits-effective 'session-timeout 1800)))))
+
+(ert-deftest test-limits-turn-clock-uses-the-sessions-waiting-time ()
+  "The turn clock subtracts the prompt time of its own session, wherever
+it is read.  Prompts are booked inside the session (tools run there);
+the turn begins in a command and the reviewer's verdict arrives from a
+timer, both outside.  Before 0.22.2 a 66-minute confirm_action counted
+as working time and the turn timed out the moment it was answered;
+and prompt time booked outside any session inflated every turn."
+  (let* ((efrit-session--locals (make-hash-table :test 'equal))
+         (efrit-current-session-id nil)
+         (efrit-user-waiting-seconds 4000) ; global: prompts of other code
+         (session (efrit-repl-session-create default-directory))
+         (id (efrit-repl-session-id session))
+         (clock (efrit-loop-adapter-elapsed-fn efrit-repl-loop--adapter)))
+    (efrit-repl-session-begin-turn session)
+    (aset session (cl-struct-slot-offset 'efrit-repl-session 'current-turn-start)
+          (time-subtract (current-time) 4010))
+    ;; a tool's prompt: 4000 s booked to the session
+    (efrit-with-session id (cl-incf efrit-user-waiting-seconds 4000))
+    (let ((outside (funcall clock session))
+          (inside (efrit-with-session id (funcall clock session))))
+      (message "turn clock after 10 s of work and a 4000 s prompt: outside %.0f, inside %.0f"
+               outside inside)
+      (should (< outside 15))
+      (should (< inside 15)))))
+
 (ert-deftest test-limits-eval-cannot-raise-cap ()
   (require 'efrit-sandbox-eval)
   (should (efrit-sandbox-eval-inspect '(efrit-limits-set 'max-iterations 9999 'session)))

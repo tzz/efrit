@@ -136,11 +136,30 @@ Package operations download archives, verify signatures with gpg
 through `call-process' and compile, with the user's Emacs frozen the
 whole time and no timer able to interrupt them (the eval timeout did
 not fire; 2026-10-21 a `package-upgrade' from eval_sexp sat on
-\"Importing package-keyring.gpg...\" until the user's C-g).  They
-belong in a batch Emacs via run_program, or in the user's hands.")
+\"Importing package-keyring.gpg...\" until the user's C-g).  Package
+operations belong in the user's hands (`efrit-sandbox-eval-package-advice');
+a URL is fetched with fetch_url.")
 
 (defun efrit-sandbox-eval--blocking-p (sym)
   (and (symbolp sym) (memq sym efrit-sandbox-eval--blocking-symbols)))
+
+(defconst efrit-sandbox-eval-package-advice
+  "Ask the user to run it (for example M-x package-install RET NAME RET) and wait for their answer; then verify with package-installed-p or locate-library. Do not start a second Emacs for it: the reviewer refuses that, and a batch install would skip the user's own package review."
+  "What every refusal of a package operation tells the model to do.
+One text for the inspector, the run-time guard and the system prompt.
+Until 0.22.2 they said \"run it in a batch Emacs with run_program\",
+the reviewer refused that batch Emacs and suggested eval_sexp, and
+the model reported the guards as contradicting each other.")
+
+(defun efrit-sandbox-eval--blocking-advice (symbols)
+  "What to do instead of the blocking SYMBOLS: the user for packages, fetch_url for URLs."
+  (string-join
+   (delq nil
+         (list (when (cl-some (lambda (s) (string-prefix-p "package-" (symbol-name s))) symbols)
+                 efrit-sandbox-eval-package-advice)
+               (when (cl-some (lambda (s) (string-prefix-p "url-" (symbol-name s))) symbols)
+                 "Fetch a URL with the fetch_url tool, which does not block.")))
+   " "))
 
 (defconst efrit-sandbox-eval--install-fns
   '(package-install package-install-file package-vc-install package-vc-install-from-checkout
@@ -174,8 +193,9 @@ install, use-package's for one, cannot carry on past it."
                        ((and (fboundp 'package-desc-p) (package-desc-p arg))
                         (symbol-name (package-desc-name arg)))
                        (t (format "%S" arg))))
-           (why (format "the form reached `%s'%s at run time (through a macro or a reload the inspector could not see). A package operation freezes the user's Emacs and may prompt them from inside the eval. Ask the user to run it (M-x package-install), or run it in a batch Emacs with run_program; then verify with package-installed-p."
-                        op (if what (format " for %s" what) "")))
+           (why (format "the form reached `%s'%s at run time (through a macro or a reload the inspector could not see). A package operation freezes the user's Emacs and may prompt them from inside the eval. %s"
+                        op (if what (format " for %s" what) "")
+                        efrit-sandbox-eval-package-advice))
            (req (efrit-sandbox-request-create :cap 'elisp :target t :tool "eval_sexp" :detail why)))
       (efrit-log 'warn "sandbox: refused %s%s reached at run time inside eval_sexp" op
                  (if what (format " for %s" what) ""))
@@ -257,8 +277,9 @@ A `cl-letf' over the function cell of an ordinary symbol is allowed
       (format "the form references %s, which the sandbox never permits from eval_sexp. Use the dedicated tools instead: read_file, edit_file, run_program; load_project_file to load a project .el file; run_ert to run tests. Or ask the user."
               (mapconcat (lambda (s) (format "`%s'" s)) bad ", ")))
      (blocking
-      (format "the form calls %s, which freezes the user's Emacs until it finishes and cannot be interrupted or timed out. Run it in a separate Emacs with run_program (emacs --batch --eval ...), or ask the user to run it themselves; then verify the outcome from eval_sexp (package-installed-p, locate-library)."
-              (mapconcat (lambda (s) (format "`%s'" s)) blocking ", "))))))
+      (format "the form calls %s, which freezes the user's Emacs until it finishes and cannot be interrupted or timed out. %s"
+              (mapconcat (lambda (s) (format "`%s'" s)) blocking ", ")
+              (efrit-sandbox-eval--blocking-advice blocking))))))
 
 ;;; 2. Dynamic enforcement
 

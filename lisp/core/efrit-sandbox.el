@@ -397,7 +397,10 @@ the default is noise in the user's repository (tzz, 2026-10-07)."
   edited
   ;; set by the prompt when the user refused with a reason: the words
   ;; go to the model in the denial, so it learns what was wrong
-  feedback)
+  feedback
+  ;; non-nil when the user saw a prompt (or a standing N answered it):
+  ;; a refusal without it is efrit's rule, and the denial says so
+  asked)
 
 ;;; Per-turn state, per session
 ;;
@@ -1632,6 +1635,7 @@ With `efrit-sandbox-enabled' nil this is a no-op that returns t."
                      :target (efrit-sandbox--suggest-target cap ctarget root)
                      :tool tool :detail detail))
                (scope (and (efrit-sandbox--request-function)
+                           (setf (efrit-sandbox-request-asked req) t)
                            ;; a standing N from earlier this turn: no prompt
                            (not (eq (efrit-sandbox-turn-answer) 'deny-all))
                            (efrit-sandbox--ask-without-clock req))))
@@ -1700,6 +1704,7 @@ a refusal.  With `efrit-sandbox-enabled' nil, t."
               "the user asked a question this turn: answer it; do not change, run or evaluate anything")
         (signal 'efrit-sandbox-denied (list req)))
       (let ((scope (and (efrit-sandbox--request-function)
+                        (setf (efrit-sandbox-request-asked req) t)
                         (not (eq (efrit-sandbox-turn-answer) 'deny-all))
                         (efrit-sandbox--ask-without-clock req))))
         (when (eq (efrit-sandbox-turn-answer) 'abort)
@@ -1804,18 +1809,25 @@ buffers visiting a file inside the project are allowed without asking."
   "Prefix of a denied tool result.  The agent buffer recognises it to
 render the row as a denial rather than a tool failure.")
 
+(defconst efrit-sandbox-refused-by-rule "Refused by efrit's rules; the user was not asked"
+  "What a denied tool result says when no prompt was shown.
+The agent buffer looks for it to say \"refused by a rule\" instead of
+\"You declined\": until 0.22.2 every refusal claimed the user's no.")
+
 (defun efrit-sandbox-denied-tool-result (req)
   "The tool_result text (after `efrit-sandbox-denied-prefix') for a denied REQ.
-Says what was refused.  The turn continues: the model is told to go
-on without that access, not to retry it or route around it.  When the
-user refused with words (the prompt's `w'), those words are the
+Says what was refused and who refused it: the user at a prompt, or
+efrit's rules without one.  The turn continues: the model is told to
+go on without that access, not to retry it or route around it.  When
+the user refused with words (the prompt's `w'), those words are the
 instruction: the model follows them instead of giving up."
   (let ((feedback (efrit-sandbox-request-feedback req)))
-    (format "%s%s. The user declined%s"
+    (format "%s%s. %s%s"
             (efrit-sandbox-describe-request req)
             (if (efrit-sandbox-request-detail req)
                 (format " (%s)" (efrit-sandbox-request-detail req))
               "")
+            (if (efrit-sandbox-request-asked req) "The user declined" efrit-sandbox-refused-by-rule)
             (if (and (stringp feedback) (not (string-empty-p feedback)))
                 (format " and said: \"%s\". Follow that: do what they say instead, with the tools and Emacs facilities you have; do not retry this request as it was."
                         feedback)

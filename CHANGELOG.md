@@ -28,6 +28,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `efrit-api-url`: Use `efrit-api-base-url` in efrit-common.el instead. The legacy variable still works as an override but is deprecated.
 
 
+## [0.22.3] - 2026-11-13
+
+### Fixed
+
+- The guards no longer give the model opposite advice about package installs.  The eval_sexp refusal said "run it in a batch Emacs with run_program"; the reviewer refuses a batch Emacs for anything but a clean `emacs -Q` test and told the model to use eval_sexp.  The model reported that the guards contradict each other and stopped.  Now every refusal of a package operation (the inspector, the run-time guard, the agent's prompt) says one thing: ask the user to run it (`M-x package-install`) and wait.  `efrit-sandbox-eval-package-advice` holds the text.  A refused URL fetch points at `fetch_url`.  The reviewer's prompt says never to send the agent to `package-install` in eval_sexp
+- A refusal by efrit's own rules no longer claims the user said no.  The tool result said "The user declined" and the agent buffer said "You declined" when no prompt was shown.  Now the result says "Refused by efrit's rules; the user was not asked", and the row says so too (`efrit-sandbox-request-asked`)
+- The agent's prompt about a second Emacs matches the reviewer's rule: a clean `emacs -Q` test only, with the sentence "This needs a separate Emacs because …"
+
+## [0.22.2] - 2026-11-13
+
+Committed in 643307d with the package-review round counter.
+
+### Fixed
+
+- "Continue" at the time limit ended the turn at once.  The clock is read between iterations, so a long tool can carry the turn past the limit by more than a step.  The raise counted from the old limit (1800 + 1800 = 3600) while the turn had used 5775 s, so the check after the prompt failed again.  A raise now counts from the time used, and the menu shows both numbers ("reached 5775 working seconds … is 1800")
+- The turn clock subtracted the wrong prompt time.  `efrit-user-waiting-seconds` is per session, but the turn began in a command (the global counter), tool prompts were booked inside the session, and the reviewer's verdict continued the loop from a timer outside it.  A 66-minute confirm_action counted as working time, and the turn timed out the moment it was answered.  Both readings now use the session's counter (`efrit-user-waiting-seconds-of`), and the code after a review verdict runs as the session's code
+- A project raise of the time limit was saved and never read back: `session-timeout` was missing from `efrit-limits-known`
+
 ## [0.22.1] - 2026-11-12
 
 ### Changed

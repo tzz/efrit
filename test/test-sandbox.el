@@ -394,15 +394,28 @@ an exact-line target is never persisted."
 (ert-deftest test-sb-eval-inspect-refuses-blocking-package-ops ()
   "Package installs and synchronous url fetches freeze Emacs with no
 way to interrupt them from a timer (2026-10-21); the inspector refuses
-them and points at run_program.  Reading package state is fine."
+them.  A package operation goes to the user, a URL to fetch_url; never
+a batch Emacs, which the reviewer refuses (0.22.2: the two guards gave
+opposite advice).  Reading package state is fine."
   (dolist (form '((package-refresh-contents)
                   (progn (add-to-list 'package-pinned-packages '(embark . "gnu-devel"))
                          (package-upgrade 'embark))
-                  (package-vc-install "https://example.invalid/x")
-                  (url-retrieve-synchronously "https://example.invalid/")))
+                  (package-vc-install "https://example.invalid/x")))
     (let ((why (efrit-sandbox-eval-inspect form)))
       (should why)
-      (should (string-match-p "run_program" why))))
+      (should (string-match-p "M-x package-install" why))
+      (should (string-match-p "Do not start a second Emacs" why))
+      (should-not (string-match-p "run_program" why))))
+  (let ((why (efrit-sandbox-eval-inspect '(url-retrieve-synchronously "https://example.invalid/"))))
+    (should (string-match-p "fetch_url" why))
+    (should-not (string-match-p "package-install" why)))
+  ;; the agent's prompt and the reviewer's say the same
+  (require 'efrit-do-prompt)
+  (require 'efrit-review)
+  (let ((agent (efrit-do--command-system-prompt nil nil nil nil nil)))
+    (should (string-match-p "Ask the user to run a package operation" agent))
+    (should-not (string-match-p "run them with run_program in a batch Emacs" agent)))
+  (should (string-match-p "Never tell the agent to call\npackage-install" efrit-review--system-prompt))
   (dolist (form '((package-installed-p 'embark)
                   (locate-library "embark")
                   (assq 'embark package-alist)))
@@ -430,7 +443,8 @@ read-multiple-choice."
                 (let ((detail (efrit-sandbox-request-detail (cadr err))))
                   (should (string-match-p "package-install" detail))
                   (should (string-match-p "mdired" detail))
-                  (should (string-match-p "run_program" detail))))
+                  (should (string-match-p "M-x package-install" detail))
+                  (should-not (string-match-p "run_program" detail))))
               (should-not downloaded)
               ;; outside an eval the operation is not touched
               (should-not efrit-sandbox-eval--active))
@@ -1827,6 +1841,28 @@ raised by eval_sexp failed with the blocked-input error)."
                       (efrit-with-user-waiting (read-string "x: "))))
        ;; and blocked again after the prompt
        (should-error (read-string "x: ") :type 'error)))))
+
+(ert-deftest test-sb-refusal-says-who-refused ()
+  "A denial with no prompt says efrit's rules refused it; one the user
+answered says the user declined.  Until 0.22.2 a rule's refusal told the
+model and the transcript \"The user declined\" / \"You declined\"."
+  (require 'efrit-sandbox-eval)
+  (test-sb--in-project
+    (efrit-sandbox-grant 'elisp t 'session)
+    (let* ((err (should-error (efrit-sandbox-eval-form '(package-install 'emureader))
+                              :type 'efrit-sandbox-denied))
+           (text (efrit-sandbox-denied-tool-result (cadr err))))
+      (message "rule refusal: %s" text)
+      (should (string-match-p (regexp-quote efrit-sandbox-refused-by-rule) text))
+      (should-not (string-match-p "The user declined" text))))
+  (test-sb--in-project
+    (let* ((efrit-sandbox-request-function (lambda (_req) nil))
+           (err (should-error (efrit-sandbox-check 'write "/somewhere/else/x" "edit_file")
+                              :type 'efrit-sandbox-denied))
+           (text (efrit-sandbox-denied-tool-result (cadr err))))
+      (message "user refusal: %s" text)
+      (should (string-match-p "The user declined" text))
+      (should-not (string-match-p (regexp-quote efrit-sandbox-refused-by-rule) text)))))
 
 (ert-deftest test-sb-refusal-with-words-reaches-the-model ()
   "The user's words at the prompt ride in the denial text as the instruction."

@@ -1505,6 +1505,22 @@ animate.  thinking-stop clears both."
             (setq has-added-face t)))
         (should has-added-face)))))
 
+(ert-deftest test-efrit-agent-denial-row-says-who-refused ()
+  "A denial row says \"You declined\" only when the user was asked; a
+rule's refusal says so (0.22.2: the package-install refusal read as the
+user's no)."
+  (let ((efrit-agent-verbosity 'normal))
+    (let ((rule (efrit-agent--format-tool-expansion
+                 nil (concat efrit-sandbox-denied-prefix "evaluate Emacs Lisp (x). "
+                             efrit-sandbox-refused-by-rule ". Do not retry this.")
+                 nil))
+          (user (efrit-agent--format-tool-expansion
+                 nil (concat efrit-sandbox-denied-prefix "run shell commands. The user declined. Do not retry this.")
+                 nil)))
+      (should (string-match-p "Refused by efrit's rules, without asking you" rule))
+      (should-not (string-match-p "You declined" rule))
+      (should (string-match-p "You declined" user)))))
+
 (ert-deftest test-efrit-agent-diff-disabled ()
   "Test that diff highlighting can be disabled."
   (let ((efrit-agent-show-diff nil)
