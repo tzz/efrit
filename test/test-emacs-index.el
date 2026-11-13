@@ -328,5 +328,61 @@ arguments parse; an installed .el.gz library is named without .gz."
               (should (equal "compressed" (plist-get e :summary))))))
       (delete-directory dir t))))
 
+(ert-deftest test-emacs-index-checkout-and-current-check ()
+  "checkout=DIR reads an Emacs source checkout (lisp/, doc/, configure.ac,
+HEAD through vc-git); the index records the commit; the current-check
+holds for that HEAD and fails after a new commit, for a missing index,
+and for another format.  The default output is efrit's data directory,
+never a checkout."
+  (skip-unless (executable-find "git"))
+  (let* ((dir (file-name-as-directory (make-temp-file "efrit-idx-co-" t)))
+         (co (file-name-as-directory (expand-file-name "emacs" dir)))
+         (out (expand-file-name "data/efrit-emacs-index.eld" dir)))
+    (unwind-protect
+        (let ((default-directory co))
+          (make-directory co t)
+          (test-idx--write (expand-file-name "configure.ac" co) "AC_INIT([GNU Emacs], [32.0.50], [bug-gnu-emacs@gnu.org])")
+          (test-idx--write (expand-file-name "lisp/fixco.el" co)
+                           ";;; fixco.el --- checkout fixture  -*- lexical-binding: t; -*-" "(provide 'fixco)")
+          (test-idx--write (expand-file-name "doc/misc/fixco.texi" co)
+                           "@setfilename ../../info/fixco.info" "@settitle Fixco" "@node Top" "@cindex fixture")
+          (dolist (args '(("init" "-q") ("config" "user.email" "t@example.invalid") ("config" "user.name" "t")
+                          ("add" "-A") ("commit" "-qm" "one")))
+            (apply #'call-process "git" nil nil nil args))
+          (let* ((plist (efrit-emacs-index-build--args (list (concat "checkout=" co) (concat "out=" out))))
+                 (head (plist-get plist :revision)))
+            (should (equal "32.0.50" (plist-get plist :version)))
+            (should (and (stringp head) (>= (length head) 7)))
+            (should (equal (expand-file-name "lisp" co) (plist-get plist :lisp-dir)))
+            (should-not (efrit-emacs-index-build-current-p out co))
+            (efrit-emacs-index-build-write out :lisp-dir (plist-get plist :lisp-dir) :doc-dir (plist-get plist :doc-dir)
+                                           :version (plist-get plist :version) :revision head)
+            (should (efrit-emacs-index-build-current-p out co))
+            ;; nothing was written into the checkout
+            (should-not (cl-some (lambda (f) (string-suffix-p ".eld" f)) (directory-files-recursively co ".")))
+            (should (string-match-p "\\`built from HEAD " (efrit-emacs-index-build-current-p out co)))
+            ;; a new commit makes it stale...
+            (test-idx--write (expand-file-name "lisp/fixco2.el" co) ";;; fixco2.el --- two" "(provide 'fixco2)")
+            (call-process "git" nil nil nil "add" "-A")
+            (call-process "git" nil nil nil "commit" "-qm" "two")
+            (should-not (efrit-emacs-index-build-current-p out co))
+            ;; ...unless it is younger than max-age: once a day, not per commit
+            (should (string-match-p "under the 24.0h max-age" (efrit-emacs-index-build-current-p out co 86400)))
+            ;; a day-old index of an old HEAD is due
+            (set-file-times out (time-subtract nil (* 25 3600)))
+            (should-not (efrit-emacs-index-build-current-p out co 86400))
+            (should (= 86400 (plist-get (efrit-emacs-index-build--args '("max-age=1d")) :max-age)))
+            (should (= 5400 (plist-get (efrit-emacs-index-build--args '("max-age=1.5h")) :max-age)))
+            (should (= 90 (plist-get (efrit-emacs-index-build--args '("max-age=90")) :max-age)))
+            (should-error (efrit-emacs-index-build--args '("max-age=daily")))))
+      (delete-directory dir t)))
+  ;; not a checkout
+  (should-error (efrit-emacs-index-build--args (list (concat "checkout=" temporary-file-directory "no-such-emacs"))))
+  ;; the default output is the data directory
+  (should (string-suffix-p "/.emacs.d/.efrit/efrit-emacs-index.eld"
+                           (let ((user-emacs-directory "~/.emacs.d/")) (efrit-emacs-index-build-default-out))))
+  (should (equal (efrit-emacs-index-user-file)
+                 (expand-file-name "efrit-emacs-index.eld" efrit-data-directory))))
+
 (provide 'test-emacs-index)
 ;;; test-emacs-index.el ends here

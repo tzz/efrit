@@ -46,7 +46,7 @@ jobs:
       run: make compile
 
     - name: Build the Emacs library index for this Emacs
-      run: make emacs-index
+      run: make emacs-index EMACS_INDEX=dist/efrit-emacs-index.eld
 
     - name: Run tests
       run: make test-simple
@@ -55,7 +55,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: efrit-emacs-index-${{ matrix.emacs_version }}
-        path: lisp/core/efrit-emacs-index.eld
+        path: dist/efrit-emacs-index.eld
         if-no-files-found: error
 
     - name: Archive compilation warnings

@@ -28,6 +28,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `efrit-api-url`: Use `efrit-api-base-url` in efrit-common.el instead. The legacy variable still works as an override but is deprecated.
 
 
+## [0.22.1] - 2026-11-12
+
+### Changed
+
+- The Emacs index lives in efrit's data directory only (`efrit-emacs-index.eld` in `efrit-data-directory`), never beside efrit's code or in an Emacs checkout (tzz: "conflicts with the way emacs is organized").  `make emacs-index` writes `$(EMACS_INDEX)`, default `~/.emacs.d/.efrit/efrit-emacs-index.eld`; pass `EMACS_INDEX=` when `efrit-data-directory` is set elsewhere.  CI writes `dist/`.  The `.gitignore` entry is gone with the in-tree file
+
+### Added
+
+- `checkout=DIR` for the builder: an Emacs source checkout's `lisp/`, `doc/`, `configure.ac` version and HEAD (through vc-git) in one argument; `make emacs-index EMACS_SRC=` uses it
+- `efrit-emacs-index-build-check-batch`: exits 0 when the index needs no rebuild, else 1 — the probe a configuration manager runs first.  Current means built in this format from the checkout's HEAD, or, with `max-age=1d` (seconds or s/m/h/d), younger than that: a checkout following master is indexed at most once a day, and never while it stands still (tzz: "Once a day is fine")
+
 ## [0.22.0] - 2026-11-12
 
 The Emacs index is a build artifact pinned to one Emacs, and it

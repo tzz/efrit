@@ -30,10 +30,12 @@
 ;; "which node documents X" without opening Info, and each library
 ;; names the nodes that document what it defines.
 ;;
-;; The file is a build artifact for one Emacs, never committed: `make
-;; emacs-index' (pinned to an Emacs checkout, release or the installed
-;; binary), CI for each Emacs it tests, or M-x efrit-emacs-index-rebuild
-;; for the running Emacs into the data directory.  It is advisory:
+;; The file is a build artifact for one Emacs and lives in efrit's
+;; data directory (`efrit-emacs-index-user-file'), never in efrit's
+;; checkout or an Emacs checkout: `make emacs-index' (pinned to an
+;; Emacs checkout, release or the installed binary), a configuration
+;; manager running efrit-emacs-index-build-batch with checkout=, CI
+;; for each Emacs it tests, or M-x efrit-emacs-index-rebuild.  It is advisory:
 ;; everything in it is in Emacs already, it only takes time to find.
 ;; An index for another Emacs version is still read (most of it holds)
 ;; and the doctor says so; an index of another format is not read.
@@ -74,8 +76,7 @@
   "The .eld format this file reads (`efrit-emacs-index-build-version').")
 
 (defcustom efrit-emacs-index-file nil
-  "The index file to read; nil means the rebuilt one in the data directory
-when it exists, else the copy shipped with efrit."
+  "The index file to read; nil means efrit-emacs-index.eld in `efrit-data-directory'."
   :type '(choice (const nil) file)
   :group 'efrit-emacs-index)
 
@@ -97,23 +98,15 @@ when it exists, else the copy shipped with efrit."
 (defvar efrit-emacs-index--problem nil
   "Why no index is loaded (a string), or nil.  For the doctor and the tools.")
 
-(defun efrit-emacs-index-shipped-file ()
-  "The index shipped beside this file."
-  (expand-file-name efrit-emacs-index-file-name
-                    (file-name-directory (or load-file-name buffer-file-name
-                                             (locate-library "efrit-emacs-index")))))
-
 (defun efrit-emacs-index-user-file ()
   "The rebuilt index in the data directory."
   (efrit-config-data-file efrit-emacs-index-file-name))
 
 (defun efrit-emacs-index-current-file ()
   "The file the index is read from, or nil when none exists.
-`efrit-emacs-index-file' when set; else the one built for this Emacs
-in the data directory; else the one `make emacs-index' wrote beside
-this file."
-  (cl-find-if (lambda (f) (and f (file-readable-p f)))
-              (list efrit-emacs-index-file (efrit-emacs-index-user-file) (efrit-emacs-index-shipped-file))))
+`efrit-emacs-index-file' when set, else the one in the data directory."
+  (let ((f (or efrit-emacs-index-file (efrit-emacs-index-user-file))))
+    (and (file-readable-p f) f)))
 
 (defun efrit-emacs-index--read (file)
   "Parse FILE; nil on any error or when its format is not `efrit-emacs-index-format'."
@@ -163,7 +156,9 @@ this file."
                      (plist-get data :built)))
       (unless efrit-emacs-index--problem
         (setq efrit-emacs-index--problem
-              "no index built: make emacs-index in the efrit checkout, or M-x efrit-emacs-index-rebuild"))
+              (format "no index at %s: make emacs-index EMACS_INDEX=%s in the efrit checkout, or M-x efrit-emacs-index-rebuild"
+                      (abbreviate-file-name (or efrit-emacs-index-file (efrit-emacs-index-user-file)))
+                      (abbreviate-file-name (or efrit-emacs-index-file (efrit-emacs-index-user-file))))))
       (setq efrit-emacs-index--data nil)))
   (and efrit-emacs-index--data (plist-get efrit-emacs-index--data :entries)))
 

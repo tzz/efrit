@@ -31,20 +31,31 @@
 ;; in those indices are linked back to the library that defines them,
 ;; so a library's entry says where the manual documents it.
 ;;
-;; The index is a build artifact, pinned to one Emacs: `make
-;; emacs-index' (see the Makefile) indexes the $(EMACS) binary's own
-;; installation, EMACS_SRC=DIR a source checkout, EMACS_SRC=DIR
-;; EMACS_REF=REF one release or commit of it without touching the
-;; checkout.  CI builds one per Emacs it tests.  M-x
-;; efrit-emacs-index-rebuild builds one for the running Emacs into the
-;; data directory.  Batch use:
+;; The index is a build artifact pinned to one Emacs, and it lives in
+;; efrit's data directory: never in efrit's checkout, never in an Emacs
+;; checkout.  `make emacs-index' (see the Makefile) indexes the $(EMACS)
+;; binary's own installation, EMACS_SRC=DIR a source checkout,
+;; EMACS_SRC=DIR EMACS_REF=REF one release or commit of it without
+;; touching the checkout.  CI builds one per Emacs it tests.  M-x
+;; efrit-emacs-index-rebuild builds one for the running Emacs.  Batch:
 ;;
 ;;   emacs -Q --batch -L lisp/dev -l efrit-emacs-index-build \
 ;;         -f efrit-emacs-index-build-batch KEY=VALUE...
+;;   emacs -Q --batch -L lisp/dev -l efrit-emacs-index-build \
+;;         -f efrit-emacs-index-build-check-batch checkout=DIR out=FILE
 ;;
-;; Keys: lisp=DIR doc=DIR info=DIR (repeatable) installed (this
-;; Emacs's lisp and Info directories) configure=FILE (the version from
-;; AC_INIT) revision=SHA ref=NAME out=FILE.
+;; Keys: checkout=DIR (an Emacs source checkout: its lisp/, doc/,
+;; configure.ac and HEAD, read through vc-git), lisp=DIR doc=DIR
+;; info=DIR (repeatable) installed (this Emacs's lisp and Info
+;; directories) configure=FILE (the version from AC_INIT) revision=SHA
+;; ref=NAME out=FILE (default: efrit's default data directory, which a
+;; batch Emacs without your init file cannot know is yours; pass out=).
+;; The check entry exits 0 when OUT exists in this format and is current
+;; enough, else 1: a configuration manager's "rebuild?" probe.  Current
+;; means built from the checkout's HEAD; with max-age=AGE (seconds, or
+;; a number with s/m/h/d), an index younger than AGE is current even
+;; when HEAD moved, so a checkout that follows master is indexed at
+;; most once per AGE, and not at all while it stands still.
 
 ;;; Code:
 
@@ -630,6 +641,32 @@ Returns (LIBRARIES . MANUALS), the counts."
         (insert "\n")))
     (cons (length entries) (length manuals))))
 
+(declare-function vc-git--run-command-string "vc-git" (file &rest args))
+
+(defun efrit-emacs-index-build-checkout-revision (dir)
+  "The commit HEAD of the git checkout DIR is at, short, or nil when DIR is not one.
+Through vc-git's command runner: `vc-git--rev-parse' changed its
+arity between Emacs releases."
+  (when (file-exists-p (expand-file-name ".git" dir))
+    (require 'vc-git)
+    (let ((default-directory (file-name-as-directory (expand-file-name dir))))
+      (when-let* ((out (ignore-errors (vc-git--run-command-string nil "rev-parse" "--short" "HEAD"))))
+        (let ((rev (string-trim out)))
+          (and (string-match-p "\\`[0-9a-f]\\{4,\\}\\'" rev) rev))))))
+
+(defun efrit-emacs-index-build-default-out ()
+  "Where an index goes when out= is not given: efrit's default data directory.
+Mirrors `efrit-config-default-data-directory'; a batch Emacs started
+with -Q does not see a `efrit-data-directory' set in an init file."
+  (expand-file-name "efrit-emacs-index.eld" (expand-file-name ".efrit" user-emacs-directory)))
+
+(defun efrit-emacs-index-build--seconds (text)
+  "TEXT, a number of seconds or a number with s, m, h or d, as seconds."
+  (if (string-match "\\`\\([0-9]+\\(?:\\.[0-9]+\\)?\\)\\([smhd]?\\)\\'" text)
+      (* (string-to-number (match-string 1 text))
+         (pcase (match-string 2 text) ("m" 60) ("h" 3600) ("d" 86400) (_ 1)))
+    (error "efrit-emacs-index: max-age %S is not N, Ns, Nm, Nh or Nd" text)))
+
 (defun efrit-emacs-index-build--args (args)
   "ARGS (KEY=VALUE strings, `installed') as a plist for `efrit-emacs-index-build-write'."
   (let (plist infos)
@@ -639,9 +676,19 @@ Returns (LIBRARIES . MANUALS), the counts."
         (let ((dirs (efrit-emacs-index-build-installed-dirs)))
           (setq plist (plist-put plist :lisp-dir (or (plist-get plist :lisp-dir) (car dirs))))
           (setq infos (append infos (cdr dirs)))))
-       ((string-match "\\`\\([a-z]+\\)=\\(.*\\)\\'" a)
+       ((string-match "\\`\\([a-z][a-z-]*\\)=\\(.*\\)\\'" a)
         (let ((k (match-string 1 a)) (v (match-string 2 a)))
           (pcase k
+            ("checkout"
+             (let ((dir (file-name-as-directory (expand-file-name v))))
+               (unless (file-directory-p (expand-file-name "lisp" dir))
+                 (error "efrit-emacs-index: %s is not an Emacs source checkout (no lisp/)" v))
+               (setq plist (plist-put plist :lisp-dir (expand-file-name "lisp" dir)))
+               (setq plist (plist-put plist :doc-dir (expand-file-name "doc" dir)))
+               (setq plist (plist-put plist :version (efrit-emacs-index-build--configure-version
+                                                      (expand-file-name "configure.ac" dir))))
+               (setq plist (plist-put plist :revision (efrit-emacs-index-build-checkout-revision dir)))
+               (setq plist (plist-put plist :checkout dir))))
             ("lisp" (setq plist (plist-put plist :lisp-dir v)))
             ("doc" (setq plist (plist-put plist :doc-dir v)))
             ("info" (push v infos))
@@ -650,6 +697,7 @@ Returns (LIBRARIES . MANUALS), the counts."
             ("revision" (setq plist (plist-put plist :revision (and (not (string-empty-p v)) v))))
             ("ref" (setq plist (plist-put plist :ref (and (not (string-empty-p v)) v))))
             ("out" (setq plist (plist-put plist :out v)))
+            ("max-age" (setq plist (plist-put plist :max-age (efrit-emacs-index-build--seconds v))))
             (_ (error "efrit-emacs-index: unknown key %s" k)))))
        (t (error "efrit-emacs-index: argument %S is not KEY=VALUE" a))))
     (when infos (setq plist (plist-put plist :info-dirs (delete-dups infos))))
@@ -659,7 +707,7 @@ Returns (LIBRARIES . MANUALS), the counts."
   "Batch entry: KEY=VALUE arguments (see the Commentary); with none, this Emacs's installation."
   (let* ((args (or command-line-args-left '("installed")))
          (plist (efrit-emacs-index-build--args args))
-         (out (or (plist-get plist :out) "lisp/core/efrit-emacs-index.eld")))
+         (out (or (plist-get plist :out) (efrit-emacs-index-build-default-out))))
     (setq command-line-args-left nil)
     (unless (or (plist-get plist :lisp-dir) (plist-get plist :doc-dir) (plist-get plist :info-dirs))
       (error "efrit-emacs-index: nothing to index; give lisp=, doc=, info= or installed"))
@@ -671,6 +719,44 @@ Returns (LIBRARIES . MANUALS), the counts."
                (car counts) (cdr counts) (or (plist-get plist :version) emacs-version)
                (if (plist-get plist :revision) (format " (%s)" (plist-get plist :revision)) "")
                out))))
+
+(defun efrit-emacs-index-build-current-p (out checkout &optional max-age)
+  "Why the index OUT for CHECKOUT needs no rebuild (a string), or nil.
+OUT must exist in this format.  Then it is current when built from
+CHECKOUT's HEAD, or, with MAX-AGE seconds, when OUT is younger than
+that whatever HEAD is now."
+  (when (file-readable-p out)
+    (let ((head (efrit-emacs-index-build-checkout-revision checkout))
+          (data (condition-case nil
+                    (with-temp-buffer
+                      (insert-file-contents out)
+                      (goto-char (point-min))
+                      (forward-comment (buffer-size))
+                      (read (current-buffer)))
+                  (error nil)))
+          (age (float-time (time-since (file-attribute-modification-time (file-attributes out))))))
+      (when (eql (plist-get data :version) efrit-emacs-index-build-version)
+        (cond
+         ((and head (equal (plist-get data :revision) head))
+          (format "built from HEAD %s" head))
+         ((and max-age (< age max-age))
+          (format "built from %s %.1fh ago, under the %.1fh max-age (HEAD is %s)"
+                  (or (plist-get data :revision) "?") (/ age 3600) (/ max-age 3600.0) (or head "?"))))))))
+
+(defun efrit-emacs-index-build-check-batch ()
+  "Batch: exit 0 when out= is current for checkout=, 1 when it must be rebuilt.
+Prints why on stderr."
+  (let* ((plist (efrit-emacs-index-build--args command-line-args-left))
+         (out (or (plist-get plist :out) (efrit-emacs-index-build-default-out)))
+         (checkout (plist-get plist :checkout)))
+    (setq command-line-args-left nil)
+    (unless checkout (error "efrit-emacs-index: the check needs checkout="))
+    (if-let* ((why (efrit-emacs-index-build-current-p out checkout (plist-get plist :max-age))))
+        (progn (message "efrit-emacs-index: %s is current: %s" out why)
+               (kill-emacs 0))
+      (message "efrit-emacs-index: %s must be built for %s at %s"
+               out checkout (or (plist-get plist :revision) "?"))
+      (kill-emacs 1))))
 
 (provide 'efrit-emacs-index-build)
 

@@ -27,9 +27,6 @@ dist/
 # Generated context/state files (should be in data directory)
 lisp/*-context.el
 
-# The Emacs library index: a build artifact for one Emacs (make emacs-index)
-lisp/core/efrit-emacs-index.eld
-
 # IDE files
 .vscode/
 .idea/

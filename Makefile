@@ -269,30 +269,29 @@ lint-defun:
 # EFRIT_TEST_JOBS (default 4) suites run at once.
 TEST_FILES ?=
 
-# The Emacs library index (lisp/core/efrit-emacs-index.eld): what each
-# library and manual of one Emacs touches and documents.  A build
-# artifact for that Emacs, never committed.  Pinning:
+# The Emacs library index: what each library and manual of one Emacs
+# touches and documents.  A build artifact for that Emacs; it goes in
+# efrit's data directory, never into this checkout or an Emacs one.
+# EMACS_INDEX defaults to efrit's default data directory; if you set
+# `efrit-data-directory', pass EMACS_INDEX=<that dir>/efrit-emacs-index.eld.
 #   make emacs-index                         the $(EMACS) binary's own lisp and Info
-#   make emacs-index EMACS_SRC=~/src/emacs   a source checkout as it is (lisp/ doc/)
+#   make emacs-index EMACS_SRC=~/src/emacs   a source checkout as it is (lisp/ doc/ HEAD)
 #   make emacs-index EMACS_SRC=~/src/emacs EMACS_REF=emacs-30.1
 #                                            one tag or commit, read with git archive;
 #                                            the checkout is not touched
-EMACS_INDEX = lisp/core/efrit-emacs-index.eld
+EMACS_INDEX ?= $(HOME)/.emacs.d/.efrit/efrit-emacs-index.eld
 EMACS_SRC ?=
 EMACS_REF ?=
+EMACS_INDEX_BUILD = $(EMACS_BATCH) -L lisp/dev -l efrit-emacs-index-build -f efrit-emacs-index-build-batch
 emacs-index:
 	@if [ -z "$(EMACS_SRC)" ]; then \
-		$(EMACS_BATCH) -L lisp/dev -l efrit-emacs-index-build -f efrit-emacs-index-build-batch \
-			installed out=$(EMACS_INDEX); \
+		$(EMACS_INDEX_BUILD) installed out=$(EMACS_INDEX); \
 	elif [ -z "$(EMACS_REF)" ]; then \
-		$(EMACS_BATCH) -L lisp/dev -l efrit-emacs-index-build -f efrit-emacs-index-build-batch \
-			lisp=$(EMACS_SRC)/lisp doc=$(EMACS_SRC)/doc configure=$(EMACS_SRC)/configure.ac \
-			revision=$$(git -C $(EMACS_SRC) rev-parse --short HEAD 2>/dev/null) out=$(EMACS_INDEX); \
+		$(EMACS_INDEX_BUILD) checkout=$(EMACS_SRC) out=$(EMACS_INDEX); \
 	else \
 		tmp=$$(mktemp -d) && trap 'rm -rf "$$tmp"' EXIT && \
 		git -C $(EMACS_SRC) archive --format=tar $(EMACS_REF) lisp doc configure.ac | tar -x -C "$$tmp" && \
-		$(EMACS_BATCH) -L lisp/dev -l efrit-emacs-index-build -f efrit-emacs-index-build-batch \
-			lisp="$$tmp/lisp" doc="$$tmp/doc" configure="$$tmp/configure.ac" \
+		$(EMACS_INDEX_BUILD) lisp="$$tmp/lisp" doc="$$tmp/doc" configure="$$tmp/configure.ac" \
 			revision=$$(git -C $(EMACS_SRC) rev-parse --short $(EMACS_REF)) ref=$(EMACS_REF) out=$(EMACS_INDEX); \
 	fi
 
@@ -424,7 +423,6 @@ build: compile autoloads mcp-build
 clean: mcp-clean
 	@echo "Removing compiled files..."
 	@rm -f lisp/*.elc lisp/core/*.elc lisp/support/*.elc lisp/interfaces/*.elc
-	@rm -f $(EMACS_INDEX)
 	@rm -f lisp/*.elc~ lisp/core/*.elc~ lisp/support/*.elc~ lisp/interfaces/*.elc~
 
 distclean: clean
