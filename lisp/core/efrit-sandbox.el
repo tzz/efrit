@@ -413,7 +413,9 @@ the default is noise in the user's repository (tzz, 2026-10-07)."
 ;; key (multi-session audit, 2026-09-28).
 
 (defvar efrit-sandbox--turn-state (make-hash-table :test 'equal)
-  "Session id (or nil) -> plist (:once GRANT :edited (TOOL . TEXT) :answer SYMBOL).")
+  "Session id (or nil) -> plist of per-turn state.
+:once GRANT, :edited (TOOL . TEXT), :answer SYMBOL, and :refused, the
+\(CAP . TARGET) pairs the user said no to at a prompt this turn.")
 
 (defvar efrit-current-session-id)
 
@@ -1626,6 +1628,20 @@ With `efrit-sandbox-enabled' nil this is a no-op that returns t."
               (efrit-publish 'sandbox-reviewer-grant `((:cap . ,cap) (:target . ,ctarget)
                                                         (:confidence . ,(plist-get vouch :confidence)))))
             (efrit-sandbox-allowed-p cap ctarget root))))
+       ;; the user said no to this very request earlier this turn: the
+       ;; answer stands, no second prompt (2026-11-13: three evals in
+       ;; one turn asked three times for the same remote buffer)
+       ((member (cons cap ctarget) (efrit-sandbox--turn-get :refused))
+        (efrit-log 'info "sandbox: %s %s refused earlier this turn; not asking again (%s)" cap
+                   (if (stringp ctarget) (efrit-sandbox-abbreviate ctarget) ctarget) tool)
+        (when (fboundp 'efrit-publish)
+          (efrit-publish 'sandbox-denied `((:cap . ,cap) (:target . ,ctarget) (:tool . ,tool))))
+        (signal 'efrit-sandbox-denied
+                (list (efrit-sandbox-request-create
+                       :cap cap :target ctarget :tool tool :asked t
+                       :detail (concat (or detail "")
+                                       (if detail "; " "")
+                                       "the user refused this earlier in this turn and was not asked again")))))
        (t
         (efrit-log 'debug "sandbox: %s %s not covered for %s; asking (%s)" cap
                    (if (stringp ctarget) (efrit-sandbox-abbreviate ctarget) ctarget)
@@ -1683,6 +1699,10 @@ With `efrit-sandbox-enabled' nil this is a no-op that returns t."
                                      :detail (format "efrit bug: the user granted %s on %s but %s was not matched by it; report this with M-x efrit-agent-diagnose"
                                                      cap (efrit-sandbox-request-target req) ctarget)))))))
             (efrit-log 'info "sandbox: denied %s %s (%s)" cap ctarget tool)
+            ;; only a named target: every eval_sexp asks with target t,
+            ;; and a no to one form is not a no to the next
+            (when (and (efrit-sandbox-request-asked req) (not (eq ctarget t)))
+              (efrit-sandbox--turn-set :refused (cons (cons cap ctarget) (efrit-sandbox--turn-get :refused))))
             (when (fboundp 'efrit-publish)
               (efrit-publish 'sandbox-denied `((:cap . ,cap) (:target . ,ctarget) (:tool . ,tool))))
             (signal 'efrit-sandbox-denied (list req)))))))))

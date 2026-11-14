@@ -68,9 +68,10 @@
       (setq test-sb--answers '(once))
       (should (efrit-sandbox-check 'write (expand-file-name "a" root)))
       (should-error (efrit-sandbox-check 'write (expand-file-name "a" root)) :type 'efrit-sandbox-denied)
-      ;; session: sticks, not persisted
+      ;; session: sticks, not persisted (another file: the no to `a'
+      ;; stands for the rest of the turn)
       (setq test-sb--answers '(session))
-      (should (efrit-sandbox-check 'write (expand-file-name "a" root)))
+      (should (efrit-sandbox-check 'write (expand-file-name "b" root)))
       (should (efrit-sandbox-allowed-p 'write (expand-file-name "other" root)))
       (should-not (file-exists-p (efrit-sandbox-store-file root)))
       ;; project: persisted
@@ -926,6 +927,87 @@ asked for ten).  The form's own walk still asks."
           (kill-buffer a)
           (fmakunbound 'test-sb-hook-mode)
           (delete-directory outside t))))))
+
+(define-globalized-minor-mode test-sb-global-pretty-mode prettify-symbols-mode
+  (lambda () (prettify-symbols-mode 1)))
+
+(ert-deftest test-sb-eval-theme-and-global-modes-may-walk-buffers ()
+  "`enable-theme' re-applies every customized variable through its
+`:set' function; for a globalized minor mode that visits every buffer.
+That walk is Emacs's, not the form's, and asks nothing (2026-11-13:
+`(enable-theme \\='ujelly)' asked three times for a remote buffer).
+Naming the buffer in the form still asks."
+  (test-sb--in-project
+    (test-sb--with-buffers
+      (let* ((outside (make-temp-file "efrit-sb-theme-" t))
+             (a (test-sb--file-buffer (expand-file-name "a.txt" outside) "A"))
+             (asked nil)
+             (efrit-sandbox-request-function (lambda (req) (push (efrit-sandbox-request-detail req) asked) nil))
+             (custom-enabled-themes custom-enabled-themes))
+        (unwind-protect
+            (progn
+              (efrit-sandbox-grant 'elisp t 'session)
+              (customize-set-variable 'test-sb-global-pretty-mode nil)
+              (deftheme test-sb-theme)
+              (custom-theme-set-faces 'test-sb-theme '(bold ((t (:weight bold)))))
+              (provide-theme 'test-sb-theme)
+              (dolist (form '((enable-theme 'test-sb-theme)
+                              (disable-theme 'test-sb-theme)
+                              (test-sb-global-pretty-mode 1)
+                              (test-sb-global-pretty-mode -1)))
+                (efrit-sandbox-eval-form form)
+                (message "theme walk %S: prompts %S" form asked)
+                (should-not asked))
+              (should-error (efrit-sandbox-eval-form
+                             `(with-current-buffer ,(buffer-name a) (point)))
+                            :type 'efrit-sandbox-denied)
+              (should asked))
+          (disable-theme 'test-sb-theme)
+          (put 'test-sb-global-pretty-mode 'theme-value nil)
+          (kill-buffer a)
+          (delete-directory outside t))))))
+
+(ert-deftest test-sb-refusal-stands-for-the-turn ()
+  "The user's no at a prompt holds for that request until the turn ends:
+three evals in one turn asked three times for the same buffer before
+0.22.4.  Another target still asks; the next turn asks again."
+  (test-sb--in-project
+    (let* ((asked 0)
+           (efrit-sandbox-request-function (lambda (_req) (cl-incf asked) nil))
+           (out (make-temp-file "efrit-sb-refused-" t))
+           (a (expand-file-name "a" out))
+           (b (expand-file-name "b" out)))
+      (unwind-protect
+          (progn
+            (efrit-sandbox-begin-turn "go")
+            (dotimes (_ 3)
+              (should-error (efrit-sandbox-check 'write a "edit_file") :type 'efrit-sandbox-denied))
+            (should (= 1 asked))
+            (let ((err (should-error (efrit-sandbox-check 'write a "edit_file") :type 'efrit-sandbox-denied)))
+              (should (string-match-p "refused this earlier in this turn"
+                                      (efrit-sandbox-denied-tool-result (cadr err))))
+              (should (string-match-p "The user declined" (efrit-sandbox-denied-tool-result (cadr err)))))
+            ;; a different target: its own question
+            (should-error (efrit-sandbox-check 'write (expand-file-name "x/y" "/elsewhere/") "edit_file")
+                          :type 'efrit-sandbox-denied)
+            (should (= 2 asked))
+            ;; with no way to ask, the refusal is a rule's: not remembered
+            (let ((efrit-sandbox-request-function nil))
+              (should-error (efrit-sandbox-check 'write b "edit_file") :type 'efrit-sandbox-denied))
+            (should-error (efrit-sandbox-check 'write b "edit_file") :type 'efrit-sandbox-denied)
+            (should (= 3 asked))
+            ;; eval_sexp asks with target t: a no to one form is not a
+            ;; no to the next
+            (let ((n asked))
+              (should-error (efrit-sandbox-check 'elisp t "eval_sexp" "(one)") :type 'efrit-sandbox-denied)
+              (should-error (efrit-sandbox-check 'elisp t "eval_sexp" "(two)") :type 'efrit-sandbox-denied)
+              (should (= (+ n 2) asked))
+              (setq asked n))
+            ;; the next turn asks again
+            (efrit-sandbox-begin-turn "again")
+            (should-error (efrit-sandbox-check 'write a "edit_file") :type 'efrit-sandbox-denied)
+            (should (= 4 asked)))
+        (delete-directory out t)))))
 
 (defvar org-persist-directory)
 

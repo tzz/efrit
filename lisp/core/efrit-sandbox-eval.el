@@ -787,6 +787,29 @@ own code never calls them."
                       (setq found func))))
     found))
 
+(defconst efrit-sandbox-eval--custom-apply-functions
+  '(custom-theme-recalc-variable custom-set-minor-mode)
+  "Custom functions that apply a saved setting by calling its `:set' function.
+`enable-theme' ends by re-enabling the `user' theme, which runs them
+for every variable the user customized.")
+
+(defun efrit-sandbox-eval--emacs-buffer-walk-p ()
+  "Non-nil when a buffer switch is a walk Emacs makes to apply a mode or a setting.
+Two sources, both Emacs's design, neither the form's choice of buffer:
+a globalized minor mode visits every buffer to turn its local mode
+on or off, and Custom applies saved settings through their `:set'
+functions (`efrit-sandbox-eval--custom-apply-functions'), which for a
+globalized minor mode is that walk.  `(enable-theme \\='ujelly)'
+asked three times for a remote buffer the model never named
+\(2026-11-13).  Returns the function that made the walk."
+  (let ((found nil))
+    (mapbacktrace (lambda (_evald func _args _flags)
+                    (when (and (not found) (symbolp func)
+                               (or (get func 'globalized-minor-mode)
+                                   (memq func efrit-sandbox-eval--custom-apply-functions)))
+                      (setq found func))))
+    found))
+
 (defun efrit-sandbox-eval--check-buffer (buffer-or-name op)
   "Check BUFFER-OR-NAME for the `buffer' capability if it visits a file.
 OP names the operation for the prompt.  Fileless or missing buffers
@@ -801,6 +824,7 @@ a switch made inside one of efrit's own functions passes
                (not (efrit-sandbox-buffer-allowed-p buffer))
                (not (efrit-sandbox-eval--switched-by-efrit-p))
                (not (efrit-sandbox-eval--emacs-file-hooks-p))
+               (not (efrit-sandbox-eval--emacs-buffer-walk-p))
                (not efrit-sandbox-eval--sweep-allowed))
       (let* ((callers (efrit-sandbox-eval--caller-summary))
              ;; a form walking `buffer-list' meets every out-of-project

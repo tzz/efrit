@@ -28,6 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `efrit-api-url`: Use `efrit-api-base-url` in efrit-common.el instead. The legacy variable still works as an override but is deprecated.
 
 
+## [0.22.4] - 2026-11-13
+
+### Fixed
+
+- `enable-theme`, `disable-theme` and a globalized minor mode no longer ask for buffers the model never named.  `enable-theme` ends by re-enabling the `user` theme, which re-runs the `:set` function of every customized variable; for a globalized minor mode that function visits every buffer.  An eval that only enabled a theme asked three times for a remote file buffer.  The eval guard now treats a buffer switch made by a globalized minor mode, or by Custom applying a saved setting, as Emacs's own walk (`efrit-sandbox-eval--emacs-buffer-walk-p`).  A buffer the form itself names still asks
+- The user's no at a prompt now holds for the rest of the turn for that request.  Before, each eval asked again about the same buffer.  The denial says the user refused it earlier in the turn.  eval_sexp's own question (target `t`) is not covered: a no to one form is not a no to the next.  The next turn asks again
+
 ## [0.22.3] - 2026-11-13
 
 ### Fixed
